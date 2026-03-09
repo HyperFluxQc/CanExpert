@@ -29,7 +29,7 @@ pip install -r requirements.txt
 1. Select a configuration from the list (or create one)
 2. Click **Connect**
 3. The app sends the UDS command from `connection_database.json`
-4. When the response returns (e.g. database ID `1001`), it loads `databases/1001.xml`
+4. When the response returns (e.g. database ID `1001`), it loads `Databases/1001.xml`
 5. The UI is built from the XML: buttons, values, checkboxes, sliders
 6. Values update automatically from incoming CAN messages
 7. Buttons and controls send CAN messages when used
@@ -60,9 +60,9 @@ Defines the UDS request and how to parse the response:
 
 ## Application Database (XML)
 
-Place XML files in the `databases/` folder, named by database ID (e.g. `1001.xml`).
+Place XML files in the `Databases/` folder, named by database ID (e.g. `1001.xml`).
 
-### Example: `databases/1001.xml`
+### Example: `Databases/1001.xml`
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -101,13 +101,19 @@ Place XML files in the `databases/` folder, named by database ID (e.g. `1001.xml
 ## File structure
 
 ```
-EZCan2/
+CanExpert/
 ├── main.py
 ├── uds_discovery.py
 ├── database_loader.py
+├── database_api.py
+├── uds_services.py
+├── form_designer.py (Form Designer dialog)
 ├── connection_database.json
-├── databases/
-│   └── 1001.xml
-├── config_*.json
+├── Databases/
+│   ├── 1001.xml
+│   └── 1001_script.py
+├── Configurations/
+│   └── config_*.json
+├── DOCUMENTATION.md   # Developer docs + architecture diagrams
 └── requirements.txt
 ```
