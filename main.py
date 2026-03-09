@@ -1,34 +1,59 @@
 #!/usr/bin/env python3
 """
-Kvaser CAN Interface with Qt GUI - Main Application
+CAN Expert - Main Application
+
+Connect to a CAN channel, run UDS discovery to get a database ID, then load and display
+an application database (forms with buttons, values, checkboxes, etc.).
 """
-import sys
-import os
 import json
+import sys
 import time
 from datetime import datetime
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QGroupBox, QPushButton, QComboBox, QLabel, QLineEdit, QTableWidget, 
-                             QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox,
-                             QCheckBox, QSpinBox, QFormLayout, QFrame, QTabWidget, 
-                             QListWidget, QListWidgetItem, QSplitter, QScrollArea, QSlider,
-                             QProgressBar, QActionGroup, QPlainTextEdit)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot, QSettings
-from PyQt5.QtGui import QFont, QColor, QPalette
-import can
 from pathlib import Path
 
-from uds_discovery import send_uds_and_wait_response
+import can
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSettings
+from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGroupBox, QPushButton, QComboBox, QLabel, QLineEdit, QFormLayout,
+    QListWidget, QListWidgetItem, QSplitter, QScrollArea, QPlainTextEdit,
+    QFileDialog, QMessageBox, QTabWidget, QSlider, QFrame,
+)
+from PyQt5.QtWidgets import QSpinBox, QCheckBox  # noqa: F401 - used by config
 
 from database_loader import load_application_database, decode_value_from_can_data
 from form_designer import FormDesigner
+from uds_discovery import send_uds_and_wait_response
 
-# Supported CAN interfaces (python-can backend names)
+# -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
+
+DEFAULT_BITRATE = 500000
+DEFAULT_DID = 0xF1F0
+DEFAULT_REQUEST_ID = 0x7DF
+CONFIG_DIR = Path("Configurations")
+DATABASES_DIR = Path("Databases")
+
 SUPPORTED_INTERFACES = [
     ("kvaser", "Kvaser"),
     ("vector", "Vector"),
     ("ixxat", "IXXAT"),
 ]
+
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+
+def _channel_key(cfg: dict) -> tuple:
+    """Unique key for a channel (interface, channel, unique_hardware_id)."""
+    return (
+        cfg.get("interface", "kvaser"),
+        cfg.get("channel", 0),
+        cfg.get("unique_hardware_id", ""),
+    )
 
 
 def _channel_to_int(channel_str: str) -> int:
@@ -52,14 +77,9 @@ def create_can_bus(interface: str, channel, bitrate: int, **kwargs) -> can.Bus:
     return can.interface.Bus(**params)
 
 
-def _channel_key(cfg: dict) -> tuple:
-    """Unique key for a channel config for storing discovered DB ID."""
-    return (
-        cfg.get("interface", "kvaser"),
-        cfg.get("channel", 0),
-        cfg.get("unique_hardware_id", ""),
-    )
-
+# -----------------------------------------------------------------------------
+# Background workers
+# -----------------------------------------------------------------------------
 
 class UdsDiscoveryWorker(QThread):
     """Worker that connects to CAN, sends UDS request (DID from config), and parses database ID from response."""
@@ -130,6 +150,8 @@ class UdsDiscoveryWorker(QThread):
                     pass
         self.discovery_finished.emit()
 
+
+# -----------------------------------------------------------------------------
 
 class ChannelActivityScanner(QThread):
     """Scans CAN channels for activity by briefly opening each and listening."""
@@ -411,9 +433,8 @@ class ConfigurationDialog(QMainWindow):
             config["request_id"] = request_id
         if extended_id_byte is not None:
             config["extended_id_byte"] = extended_id_byte
-        config_dir = Path("Configurations")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_file = config_dir / f"config_{config['name']}.json"
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        config_file = CONFIG_DIR / f"config_{config['name']}.json"
         try:
             with open(config_file, "w") as f:
                 json.dump(config, f, indent=2)
@@ -446,9 +467,11 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.load_configurations()
-        
+
+    # --- UI setup ---
+
     def init_ui(self):
-        """Initialize the main UI"""
+        """Build the main window: config list, channels, connect, status, app DB area, logs."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout()
@@ -528,9 +551,8 @@ class MainWindow(QMainWindow):
         connect_layout.addStretch()
         right_layout.addLayout(connect_layout)
 
-        # Status
         self.status_label = QLabel("No active connections")
-        self.status_label.setStyleSheet("QLabel { color: gray; }")
+        self._set_status("No active connections", "gray")
         right_layout.addWidget(self.status_label)
 
         # Application database panel (dynamic - built when database loads)
@@ -569,9 +591,14 @@ class MainWindow(QMainWindow):
         # Create menu bar
         self.create_menu()
 
-        # Load Kvaser channels
         self.refresh_channel_list()
         self.log_verbose("Application started.")
+
+    def _set_status(self, text: str, color: str = "gray"):
+        """Update status label text and optional color (gray, green, red, orange)."""
+        self.status_label.setText(text)
+        colors = {"gray": "gray", "green": "green", "red": "red", "orange": "orange"}
+        self.status_label.setStyleSheet(f"QLabel {{ color: {colors.get(color, 'gray')}; }}")
 
     def _time_str(self) -> str:
         """Return current time as HH:MM:SS:mmm."""
@@ -593,6 +620,8 @@ class MainWindow(QMainWindow):
         hex_str = " ".join(f"{b:02X}" for b in data[:8])
         line = f"{self._time_str()}  {direction:>3}  ID: 0x{arbitration_id:X}  {hex_str}"
         self.can_log.appendPlainText(line)
+
+    # --- Channel list ---
 
     def refresh_channel_list(self):
         """Populate channel list from all supported interfaces (Kvaser, Vector, IXXAT)."""
@@ -733,13 +762,12 @@ class MainWindow(QMainWindow):
         self.disconnect_btn.setEnabled(True)
         app_db = load_application_database(db_id)
         if not app_db:
-            self.status_label.setText(f"Database {db_id} not found")
+            self._set_status(f"Database {db_id} not found", "orange")
             return
         self.app_database = app_db
         self.build_application_ui(app_db)
         self.log_verbose(f"Loaded database '{db_id}' (double-click).")
-        self.status_label.setText(f"Connected - Database: {db_id}")
-        self.status_label.setStyleSheet("QLabel { color: green; }")
+        self._set_status(f"Connected - Database: {db_id}", "green")
         self.message_count = 0
         self.refresh_channel_list()
         worker = CanWorker()
@@ -829,10 +857,8 @@ class MainWindow(QMainWindow):
         self.config_list.clear()
         self.configurations = []
         
-        # Look for configuration files in Configurations folder
-        config_dir = Path("Configurations")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        for filename in sorted(config_dir.iterdir()):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        for filename in sorted(CONFIG_DIR.iterdir()):
             if filename.name.startswith('config_') and filename.name.endswith('.json'):
                 try:
                     with open(filename, 'r') as f:
@@ -845,14 +871,13 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.log_verbose(f"Error loading config {filename.name}: {e}")
                     
-        # If no configs, add a default one
         if not self.configurations:
             default_config = {
                 "name": "Default Configuration",
-                "bitrate": 500000,
+                "bitrate": DEFAULT_BITRATE,
                 "identifier_11_bit": True,
-                "request_id": 2015,
-                "did": 0xF1F0,
+                "request_id": 0x7DF,
+                "did": DEFAULT_DID,
                 "timeout_ms": 5000,
                 "extended_id": False,
             }
@@ -883,10 +908,8 @@ class MainWindow(QMainWindow):
                 with open(file_path, 'r') as f:
                     config = json.load(f)
                     
-                # Save to Configurations folder
-                config_dir = Path("Configurations")
-                config_dir.mkdir(parents=True, exist_ok=True)
-                filename = config_dir / f"config_{config['name']}.json"
+                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                filename = CONFIG_DIR / f"config_{config['name']}.json"
                 with open(filename, 'w') as f:
                     json.dump(config, f, indent=2)
                     
@@ -913,8 +936,10 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to export configuration: {str(e)}")
                 
+    # --- Connect / Disconnect / UDS ---
+
     def on_connect_clicked(self):
-        """Connect: use selected channel + active config, send UDS (config DID), load app database on response."""
+        """Connect to selected channel, send UDS ReadDataByIdentifier, load app database when ID is received."""
         if not self.active_config:
             QMessageBox.warning(self, "Warning", "Select a configuration first")
             return
@@ -927,8 +952,7 @@ class MainWindow(QMainWindow):
         bitrate = int(self.active_config.get("bitrate", 500000))
         bus_kwargs = {k: cfg[k] for k in ("unique_hardware_id", "serial", "app_name") if k in cfg}
         self.connect_btn.setEnabled(False)
-        self.status_label.setText("Connecting and sending UDS request...")
-        self.status_label.setStyleSheet("QLabel { color: orange; }")
+        self._set_status("Connecting and sending UDS request...", "orange")
         self.log_verbose(f"Connecting to {iface} channel {channel} at {bitrate} bps…")
 
         try:
@@ -936,8 +960,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.connect_btn.setEnabled(True)
             QMessageBox.critical(self, "Error", f"Failed to connect to CAN: {e}")
-            self.status_label.setText("Connection failed")
-            self.status_label.setStyleSheet("QLabel { color: red; }")
+            self._set_status("Connection failed", "red")
             return
 
         self.connected_channel_config = dict(cfg)
@@ -961,17 +984,15 @@ class MainWindow(QMainWindow):
         if self.connected_channel_config:
             self.channel_discovered_db[_channel_key(self.connected_channel_config)] = db_id
         self.log_verbose(f"UDS response: database ID {db_id}.")
-        self.status_label.setText(f"Database ID: {db_id} - Loading...")
+        self._set_status(f"Database ID: {db_id} - Loading...", "orange")
         app_db = load_application_database(db_id)
         if not app_db:
-            self.status_label.setText(f"Database {db_id} not found (create Databases/{db_id}.xml)")
-            self.status_label.setStyleSheet("QLabel { color: orange; }")
+            self._set_status(f"Database {db_id} not found (create Databases/{db_id}.xml)", "orange")
             return
         self.app_database = app_db
         self.build_application_ui(app_db)
         self.log_verbose(f"Loaded database '{db_id}' successfully.")
-        self.status_label.setText(f"Connected - Database: {db_id}")
-        self.status_label.setStyleSheet("QLabel { color: green; }")
+        self._set_status(f"Connected - Database: {db_id}", "green")
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(True)
         self.message_count = 0
@@ -989,8 +1010,7 @@ class MainWindow(QMainWindow):
     def on_uds_failed(self, msg: str):
         """UDS discovery failed."""
         self.log_verbose(f"UDS discovery failed: {msg}")
-        self.status_label.setText(f"Discovery failed: {msg}")
-        self.status_label.setStyleSheet("QLabel { color: red; }")
+        self._set_status(f"Discovery failed: {msg}", "red")
         self.connect_btn.setEnabled(True)
         if self.can_bus:
             try:
@@ -1019,8 +1039,7 @@ class MainWindow(QMainWindow):
             self.can_bus = None
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
-        self.status_label.setText("Disconnected")
-        self.status_label.setStyleSheet("QLabel { color: gray; }")
+        self._set_status("Disconnected", "gray")
         self.clear_application_ui()
 
     def clear_application_ui(self):
@@ -1031,6 +1050,14 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
         self.value_widgets.clear()
         self.app_database = None
+
+    @staticmethod
+    def _get_can_id(w: dict) -> int:
+        """Return CAN ID from a widget dict, or 0 if not set."""
+        cid = w.get("can_id")
+        return int(cid) if cid else 0
+
+    # --- Application database UI ---
 
     def build_application_ui(self, app_db: dict):
         """Build dynamic UI from application database (supports pages and XY placement)."""
@@ -1055,10 +1082,9 @@ class MainWindow(QMainWindow):
             page_name = page.get("name", "Page")
             container = QWidget()
             container.setMinimumSize(600, 400)
-            # No layout: we place widgets at absolute (x, y)
             for b in page.get("buttons", []):
                 pb = QPushButton(b["label"])
-                can_id = b.get("can_id") if b.get("can_id") else 0
+                can_id = self._get_can_id(b)
                 if can_id:
                     data_bytes = b.get("data_bytes", [0] * 8)
                     pb.clicked.connect(lambda checked, cid=can_id, d=data_bytes: self.send_can_message(cid, d))
@@ -1072,14 +1098,14 @@ class MainWindow(QMainWindow):
                 lbl.setParent(container)
                 lbl.move(v.get("x", 0), v.get("y", 0))
                 lbl.show()
-                can_id = v.get("can_id") if v.get("can_id") else 0
+                can_id = self._get_can_id(v)
                 if can_id:
                     self.value_widgets[can_id] = self.value_widgets.get(can_id, [])
                     self.value_widgets[can_id].append((v, lbl))
                 # else: variable-only, script uses api.ui.set_value to update
             for c in page.get("checkboxes", []):
                 cb = QCheckBox(c["label"])
-                can_id = c.get("can_id") if c.get("can_id") else 0
+                can_id = self._get_can_id(c)
                 if can_id:
                     byte_idx = c.get("byte", 0)
                     bit_idx = c.get("bit", 0)
@@ -1094,7 +1120,7 @@ class MainWindow(QMainWindow):
                 sl.setRange(s.get("min", 0), s.get("max", 100))
                 sl.setValue(0)
                 sl.setFixedWidth(120)
-                can_id = s.get("can_id") if s.get("can_id") else 0
+                can_id = self._get_can_id(s)
                 if can_id:
                     byte_idx = s.get("byte", 0)
                     sl.valueChanged.connect(lambda val, cid=can_id, bid=byte_idx: self.send_slider_value(cid, bid, val))
@@ -1116,7 +1142,7 @@ class MainWindow(QMainWindow):
             btn_layout = QVBoxLayout()
             for b in app_db["buttons"]:
                 pb = QPushButton(b["label"])
-                can_id = b.get("can_id") if b.get("can_id") else 0
+                can_id = self._get_can_id(b)
                 if can_id:
                     data_bytes = b.get("data_bytes", [0] * 8)
                     pb.clicked.connect(lambda checked, cid=can_id, d=data_bytes: self.send_can_message(cid, d))
@@ -1131,7 +1157,7 @@ class MainWindow(QMainWindow):
                 lbl = QLabel("--")
                 lbl.setMinimumWidth(80)
                 val_layout.addRow(f"{v['label']} ({v.get('unit', '')}):", lbl)
-                can_id = v.get("can_id") if v.get("can_id") else 0
+                can_id = self._get_can_id(v)
                 if can_id:
                     self.value_widgets[can_id] = self.value_widgets.get(can_id, [])
                     self.value_widgets[can_id].append((v, lbl))
@@ -1143,7 +1169,7 @@ class MainWindow(QMainWindow):
             cb_layout = QVBoxLayout()
             for c in app_db["checkboxes"]:
                 cb = QCheckBox(c["label"])
-                can_id = c.get("can_id") if c.get("can_id") else 0
+                can_id = self._get_can_id(c)
                 if can_id:
                     byte_idx = c.get("byte", 0)
                     bit_idx = c.get("bit", 0)
@@ -1161,7 +1187,7 @@ class MainWindow(QMainWindow):
                 sl = QSlider(Qt.Horizontal)
                 sl.setRange(s.get("min", 0), s.get("max", 100))
                 sl.setValue(0)
-                can_id = s.get("can_id") if s.get("can_id") else 0
+                can_id = self._get_can_id(s)
                 if can_id:
                     byte_idx = s.get("byte", 0)
                     sl.valueChanged.connect(lambda val, cid=can_id, bid=byte_idx: self.send_slider_value(cid, bid, val))
@@ -1201,14 +1227,13 @@ class MainWindow(QMainWindow):
         self.can_bus.send(msg)
 
     def on_can_message(self, msg_dict: dict):
-        """Update value displays when CAN message received."""
+        """Update value displays when a CAN message is received."""
         self.message_count += 1
         if self.message_count % 50 == 1 and self.app_database:
             self.status_label.setText(f"Connected (DB: {self.app_database['name']}) - {self.message_count} msgs")
         can_id = msg_dict.get("arbitration_id")
         data = msg_dict.get("data", [])
         self.log_can("RX", can_id, data)
-        data = msg_dict.get("data", [])
         if can_id not in self.value_widgets:
             return
         for v, lbl in self.value_widgets[can_id]:
@@ -1218,8 +1243,10 @@ class MainWindow(QMainWindow):
             unit = v.get("unit", "")
             lbl.setText(f"{val} {unit}".strip())
 
+    # --- Configuration selection ---
+
     def on_config_selected(self, item):
-        """Handle configuration selection"""
+        """Set active configuration when user clicks one in the list."""
         config_name = item.text()
         
         # Find the selected configuration

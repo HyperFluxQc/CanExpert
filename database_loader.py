@@ -1,9 +1,16 @@
 """
-Application Database Loader - Parses XML databases and builds UI definitions.
+Application Database Loader
+
+Parses XML application databases (forms with buttons, values, checkboxes, etc.)
+and returns a dict used by the main window to build the UI.
 """
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
 
 
 def _parse_hex(hex_str: str) -> list[int]:
@@ -29,6 +36,11 @@ def _get_attr(elem: ET.Element, key: str, default: Any = None, converter=None):
         except (ValueError, TypeError):
             return default
     return val
+
+
+# -----------------------------------------------------------------------------
+# Public API
+# -----------------------------------------------------------------------------
 
 
 def load_application_database(db_id: str, databases_dir: str | Path = "Databases") -> dict | None:

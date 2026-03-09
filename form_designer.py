@@ -1,6 +1,9 @@
 """
-Form Designer - Visual editor for application database UIs.
-Supports multiple named pages and precise X,Y placement of widgets.
+Form Designer
+
+Visual editor for application database UIs: drag widgets onto pages,
+set properties, and save to XML (+ optional script). Used to create
+the databases loaded by the main application.
 """
 import xml.etree.ElementTree as ET
 from pathlib import Path
