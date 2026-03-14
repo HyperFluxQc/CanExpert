@@ -12,19 +12,47 @@ from datetime import datetime
 from pathlib import Path
 
 import can
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSettings
-from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSettings, QSize
+from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter, QPen, QBrush, QFont, QPainterPath
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QPushButton, QComboBox, QLabel, QLineEdit, QFormLayout,
-    QListWidget, QListWidgetItem, QSplitter, QScrollArea, QPlainTextEdit,
-    QFileDialog, QMessageBox, QTabWidget, QSlider, QFrame,
+    QAction,
+    QActionGroup,
+    QApplication,
+    QDialog,
+    QDockWidget,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenuBar,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSplitter,
+    QStyle,
+    QTabWidget,
+    QToolBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    QComboBox,
 )
 from PyQt5.QtWidgets import QSpinBox, QCheckBox  # noqa: F401 - used by config
 
 from database_loader import load_application_database, decode_value_from_can_data
 from form_designer import FormDesigner
 from uds_discovery import send_uds_and_wait_response
+from can_logger import CANLoggerWindow
+from diagnostic_window import DiagnosticWindow
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -442,6 +470,97 @@ class ConfigurationDialog(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save configuration: {e}")
 
+
+# Thin size for minimized docks (only icon strip visible)
+DOCK_MINIMIZED_SIZE = 28
+
+
+class DockTitleBar(QWidget):
+    """Title bar for a dock with title, minimize (collapse to thin strip), and close."""
+    def __init__(self, dock: QDockWidget, main_window: QMainWindow, area: Qt.DockWidgetArea, parent=None):
+        super().__init__(parent)
+        self.dock = dock
+        self.main_window = main_window
+        self.area = area
+        self.is_minimized = False
+        self.saved_size = 200  # fallback when restoring
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 2, 2)
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignTop)  # when dock is a thin column, keep icon at top
+        self.title_label = QLabel(dock.windowTitle())
+        self.title_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.title_label)
+
+        self.min_btn = QToolButton()
+        self.min_btn.setToolTip("Minimize panel to a thin strip")
+        self.min_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarMinButton))
+        self.min_btn.setIconSize(QSize(16, 16))
+        self.min_btn.clicked.connect(self._toggle_minimized)
+        layout.addWidget(self.min_btn)
+
+        self.close_btn = QToolButton()
+        self.close_btn.setToolTip("Close panel")
+        self.close_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarCloseButton))
+        self.close_btn.setIconSize(QSize(16, 16))
+        self.close_btn.clicked.connect(self.dock.close)
+        layout.addWidget(self.close_btn)
+
+        self.setLayout(layout)
+
+    def _toggle_minimized(self):
+        if self.is_minimized:
+            self._restore()
+        else:
+            self._minimize()
+
+    def _minimize(self):
+        self.is_minimized = True
+        # Save current size for restore
+        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.saved_size = max(80, self.dock.width())
+        else:
+            self.saved_size = max(80, self.dock.height())
+        # Constrain to thin strip
+        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.dock.setMinimumWidth(DOCK_MINIMIZED_SIZE)
+            self.dock.setMaximumWidth(DOCK_MINIMIZED_SIZE)
+        else:
+            self.dock.setMinimumHeight(DOCK_MINIMIZED_SIZE)
+            self.dock.setMaximumHeight(DOCK_MINIMIZED_SIZE)
+        self.dock.widget().hide()
+        self._update_title_bar_appearance()
+
+    def _restore(self):
+        self.is_minimized = False
+        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.dock.setMinimumWidth(80)
+            self.dock.setMaximumWidth(16777215)
+        else:
+            self.dock.setMinimumHeight(80)
+            self.dock.setMaximumHeight(16777215)
+        self.dock.widget().show()
+        try:
+            orientation = Qt.Horizontal if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea) else Qt.Vertical
+            self.main_window.resizeDocks([self.dock], [self.saved_size], orientation)
+        except Exception:
+            pass
+        self._update_title_bar_appearance()
+
+    def _update_title_bar_appearance(self):
+        if self.is_minimized:
+            self.min_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarNormalButton))
+            self.min_btn.setToolTip("Restore panel")
+            self.title_label.hide()
+            self.close_btn.hide()
+        else:
+            self.min_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarMinButton))
+            self.min_btn.setToolTip("Minimize panel to a thin strip")
+            self.title_label.show()
+            self.close_btn.show()
+
+
 class MainWindow(QMainWindow):
     """Main application window"""
     
@@ -471,50 +590,98 @@ class MainWindow(QMainWindow):
     # --- UI setup ---
 
     def init_ui(self):
-        """Build the main window: config list, channels, connect, status, app DB area, logs."""
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout()
-        central_widget.setLayout(main_layout)
-        
-        # Left panel - Title and Configuration list
-        left_container = QWidget()
-        left_container_layout = QVBoxLayout()
-        left_container_layout.setContentsMargins(0, 0, 0, 0)
-        title_label = QLabel("CAN Expert")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; padding: 8px 0;")
-        left_container_layout.addWidget(title_label)
-        left_panel = QGroupBox("Available Configurations")
-        left_layout = QVBoxLayout()
-        
-        # Configuration list
+        """Build CANoe-style main window: toolbar, status bar, dockable Configuration, CAN Channels, Database, Log."""
+        # Status bar (status message)
+        self.status_label = QLabel("No active connections")
+        self._set_status("No active connections", "gray")
+        self.statusBar().addPermanentWidget(self.status_label)
+
+        # Toolbar: Vector CANoe-style big square icon buttons (Play, Stop, custom icons)
+        style = self.style()
+        icon_size = QSize(36, 36)
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        toolbar.setIconSize(icon_size)
+        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        toolbar.setStyleSheet(
+            "QToolBar QToolButton { padding: 4px; min-width: 44px; min-height: 44px; }"
+        )
+
+        btn_size = QSize(44, 44)
+        self.connect_btn = QToolButton()
+        self.connect_btn.setDefaultAction(
+            QAction(style.standardIcon(QStyle.SP_MediaPlay), "Connect", self, triggered=self.on_connect_clicked)
+        )
+        self.connect_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.connect_btn.setFixedSize(btn_size)
+        self.connect_btn.setIconSize(icon_size)
+        toolbar.addWidget(self.connect_btn)
+
+        self.disconnect_btn = QToolButton()
+        self.disconnect_btn.setDefaultAction(
+            QAction(style.standardIcon(QStyle.SP_MediaStop), "Disconnect", self, triggered=self.on_disconnect_clicked)
+        )
+        self.disconnect_btn.setEnabled(False)
+        self.disconnect_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.disconnect_btn.setFixedSize(btn_size)
+        self.disconnect_btn.setIconSize(icon_size)
+        toolbar.addWidget(self.disconnect_btn)
+        toolbar.addSeparator()
+
+        form_btn = QToolButton()
+        form_btn.setDefaultAction(QAction(self._icon_form_designer(), "Form Designer", self, triggered=self.open_form_designer))
+        form_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        form_btn.setFixedSize(btn_size)
+        form_btn.setIconSize(icon_size)
+        toolbar.addWidget(form_btn)
+
+        logger_btn = QToolButton()
+        logger_btn.setDefaultAction(QAction(self._icon_can_logger(), "CAN Logger", self, triggered=self.open_can_logger))
+        logger_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        logger_btn.setFixedSize(btn_size)
+        logger_btn.setIconSize(icon_size)
+        toolbar.addWidget(logger_btn)
+
+        diag_btn = QToolButton()
+        diag_btn.setDefaultAction(QAction(self._icon_diagnostic(), "Diagnostic Window", self, triggered=self.open_diagnostic_window))
+        diag_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        diag_btn.setFixedSize(btn_size)
+        diag_btn.setIconSize(icon_size)
+        toolbar.addWidget(diag_btn)
+
+        self.addToolBar(toolbar)
+
+        # Central area: empty placeholder (docks sit around it)
+        central = QWidget()
+        central.setMinimumSize(400, 300)
+        self.setCentralWidget(central)
+
+        # Dock: Configuration (closable, collapsible)
+        config_widget = QWidget()
+        config_layout = QVBoxLayout()
         self.config_list = QListWidget()
         self.config_list.itemClicked.connect(self.on_config_selected)
-        left_layout.addWidget(self.config_list)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
+        config_layout.addWidget(self.config_list)
+        btn_row = QHBoxLayout()
         self.new_config_btn = QPushButton("New Configuration")
         self.new_config_btn.clicked.connect(self.create_new_config)
-        button_layout.addWidget(self.new_config_btn)
-        
-        self.import_config_btn = QPushButton("Import Configuration")
+        self.import_config_btn = QPushButton("Import")
         self.import_config_btn.clicked.connect(self.import_config)
-        button_layout.addWidget(self.import_config_btn)
-        
-        self.export_config_btn = QPushButton("Export Configuration")
+        self.export_config_btn = QPushButton("Export")
         self.export_config_btn.clicked.connect(self.export_config)
-        button_layout.addWidget(self.export_config_btn)
+        btn_row.addWidget(self.new_config_btn)
+        btn_row.addWidget(self.import_config_btn)
+        btn_row.addWidget(self.export_config_btn)
+        config_layout.addLayout(btn_row)
+        config_widget.setLayout(config_layout)
+        self.config_dock = QDockWidget("Configuration", self)
+        self.config_dock.setWidget(config_widget)
+        self.config_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.config_dock.setTitleBarWidget(DockTitleBar(self.config_dock, self, Qt.LeftDockWidgetArea))
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.config_dock)
 
-        self.design_form_btn = QPushButton("Design Form")
-        self.design_form_btn.clicked.connect(self.open_form_designer)
-        button_layout.addWidget(self.design_form_btn)
-        
-        left_layout.addLayout(button_layout)
-
-        # CAN channels list (Kvaser, Vector, IXXAT)
-        channels_group = QGroupBox("CAN Channels")
+        # Dock: CAN Channels (separate window, below Configuration on the left)
+        channels_widget = QWidget()
         channels_layout = QVBoxLayout()
         self.channel_list = QListWidget()
         self.channel_list.itemClicked.connect(self.on_channel_selected)
@@ -528,43 +695,29 @@ class MainWindow(QMainWindow):
         ch_btn_layout.addWidget(self.refresh_channels_btn)
         ch_btn_layout.addWidget(self.scan_activity_btn)
         channels_layout.addLayout(ch_btn_layout)
-        channels_group.setLayout(channels_layout)
-        left_layout.addWidget(channels_group)
+        channels_widget.setLayout(channels_layout)
+        self.channels_dock = QDockWidget("CAN Channels", self)
+        self.channels_dock.setWidget(channels_widget)
+        self.channels_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.channels_dock.setTitleBarWidget(DockTitleBar(self.channels_dock, self, Qt.LeftDockWidgetArea))
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.channels_dock)
+        self.splitDockWidget(self.config_dock, self.channels_dock, Qt.Vertical)
 
-        left_panel.setLayout(left_layout)
-        left_container_layout.addWidget(left_panel)
-        left_container.setLayout(left_container_layout)
-
-        # Right panel - Connect + Application Database
-        right_panel = QGroupBox("Connection & Application")
-        right_layout = QVBoxLayout()
-
-        # Connect controls
-        connect_layout = QHBoxLayout()
-        self.connect_btn = QPushButton("Connect")
-        self.connect_btn.clicked.connect(self.on_connect_clicked)
-        self.disconnect_btn = QPushButton("Disconnect")
-        self.disconnect_btn.clicked.connect(self.on_disconnect_clicked)
-        self.disconnect_btn.setEnabled(False)
-        connect_layout.addWidget(self.connect_btn)
-        connect_layout.addWidget(self.disconnect_btn)
-        connect_layout.addStretch()
-        right_layout.addLayout(connect_layout)
-
-        self.status_label = QLabel("No active connections")
-        self._set_status("No active connections", "gray")
-        right_layout.addWidget(self.status_label)
-
-        # Application database panel (dynamic - built when database loads)
+        # Dock: Database (shown when connected and DB loaded; contains application UI)
         self.app_db_scroll = QScrollArea()
         self.app_db_scroll.setWidgetResizable(True)
         self.app_db_container = QWidget()
         self.app_db_layout = QVBoxLayout()
         self.app_db_container.setLayout(self.app_db_layout)
         self.app_db_scroll.setWidget(self.app_db_container)
-        right_layout.addWidget(self.app_db_scroll)
+        self.database_dock = QDockWidget("Database", self)
+        self.database_dock.setWidget(self.app_db_scroll)
+        self.database_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.database_dock.setTitleBarWidget(DockTitleBar(self.database_dock, self, Qt.RightDockWidgetArea))
+        self.addDockWidget(Qt.RightDockWidgetArea, self.database_dock)
+        self.database_dock.hide()
 
-        # Log / monitor tabs
+        # Dock: Log (Debug + CAN Monitor)
         log_tabs = QTabWidget()
         self.debug_log = QPlainTextEdit()
         self.debug_log.setReadOnly(True)
@@ -576,23 +729,75 @@ class MainWindow(QMainWindow):
         self.can_log.setPlaceholderText("CAN traffic (TX/RX) for the connected channel…")
         self.can_log.setMaximumBlockCount(5000)
         log_tabs.addTab(self.can_log, "CAN Monitor")
-        right_layout.addWidget(log_tabs)
+        self.log_dock = QDockWidget("Log", self)
+        self.log_dock.setWidget(log_tabs)
+        self.log_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.log_dock.setTitleBarWidget(DockTitleBar(self.log_dock, self, Qt.BottomDockWidgetArea))
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
 
-        right_panel.setLayout(right_layout)
-        
-        # Splitter for panels
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_container)
-        splitter.addWidget(right_panel)
-        splitter.setSizes([300, 700])
-        
-        main_layout.addWidget(splitter)
-        
-        # Create menu bar
         self.create_menu()
-
         self.refresh_channel_list()
         self.log_verbose("Application started.")
+
+    def _icon_form_designer(self):
+        """Icon: sheet with text lines, buttons, and magnifying glass on top."""
+        pm = QPixmap(36, 36)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(60, 60, 60), 1))
+        p.setBrush(QBrush(QColor(255, 255, 240)))
+        p.drawRoundedRect(4, 8, 22, 26, 2, 2)
+        p.setPen(QPen(QColor(80, 80, 80), 1))
+        p.drawLine(8, 12, 20, 12)
+        p.drawLine(8, 15, 18, 15)
+        p.drawLine(8, 18, 22, 18)
+        p.setBrush(QBrush(QColor(220, 220, 220)))
+        p.setPen(QPen(QColor(100, 100, 100), 1))
+        p.drawRoundedRect(8, 21, 7, 5, 1, 1)
+        p.drawRoundedRect(17, 21, 7, 5, 1, 1)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(60, 60, 60), 1))
+        p.drawEllipse(14, 4, 12, 12)
+        p.drawLine(24, 12, 30, 18)
+        p.end()
+        return QIcon(pm)
+
+    def _icon_can_logger(self):
+        """Icon: simple graph (axes + rising line)."""
+        pm = QPixmap(36, 36)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(60, 60, 60), 2))
+        p.drawLine(6, 28, 6, 8)
+        p.drawLine(6, 28, 30, 28)
+        p.setPen(QPen(QColor(0, 100, 200), 2))
+        path = QPainterPath()
+        path.moveTo(8, 26)
+        path.lineTo(12, 20)
+        path.lineTo(16, 22)
+        path.lineTo(22, 12)
+        path.lineTo(28, 16)
+        p.drawPath(path)
+        p.end()
+        return QIcon(pm)
+
+    def _icon_diagnostic(self):
+        """Icon: bold text 'DIAG'."""
+        pm = QPixmap(36, 36)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        p.setPen(QColor(40, 40, 40))
+        f = QFont()
+        f.setBold(True)
+        f.setPixelSize(12)
+        p.setFont(f)
+        p.drawText(pm.rect(), Qt.AlignCenter, "DIAG")
+        p.end()
+        return QIcon(pm)
 
     def _set_status(self, text: str, color: str = "gray"):
         """Update status label text and optional color (gray, green, red, orange)."""
@@ -768,6 +973,8 @@ class MainWindow(QMainWindow):
         self.build_application_ui(app_db)
         self.log_verbose(f"Loaded database '{db_id}' (double-click).")
         self._set_status(f"Connected - Database: {db_id}", "green")
+        self.channels_dock.hide()
+        self.database_dock.show()
         self.message_count = 0
         self.refresh_channel_list()
         worker = CanWorker()
@@ -776,6 +983,21 @@ class MainWindow(QMainWindow):
         worker.error_occurred.connect(lambda msg: self.status_label.setText(msg))
         worker.start()
         self.workers["main"] = worker
+
+    def _show_can_channels_dock(self):
+        """Show CAN Channels dock (e.g. after user closed it or after disconnect)."""
+        self.channels_dock.setVisible(True)
+        self.channels_dock.raise_()
+
+    def _show_config_dock(self):
+        """Show Configuration dock."""
+        self.config_dock.setVisible(True)
+        self.config_dock.raise_()
+
+    def _show_log_dock(self):
+        """Show Log (CAN Monitor / Debug) dock."""
+        self.log_dock.setVisible(True)
+        self.log_dock.raise_()
 
     def create_menu(self):
         """Create the menu bar"""
@@ -794,11 +1016,19 @@ class MainWindow(QMainWindow):
         export_config_action.triggered.connect(self.export_config)
 
         file_menu.addSeparator()
-        design_action = file_menu.addAction('Open Form Designer')
-        design_action.triggered.connect(self.open_form_designer)
-        
+        file_menu.addAction('Show Configuration').triggered.connect(self._show_config_dock)
+        file_menu.addAction('Show CAN Channels').triggered.connect(self._show_can_channels_dock)
+        file_menu.addAction('Show CAN Monitor').triggered.connect(self._show_log_dock)
+
+        file_menu.addSeparator()
         exit_action = file_menu.addAction('Exit')
         exit_action.triggered.connect(self.close)
+
+        # Tools menu
+        tools_menu = menubar.addMenu('Tools')
+        tools_menu.addAction('Form Designer').triggered.connect(self.open_form_designer)
+        tools_menu.addAction('CAN Logger...').triggered.connect(self.open_can_logger)
+        tools_menu.addAction('Diagnostic Window...').triggered.connect(self.open_diagnostic_window)
         
         # View menu
         view_menu = menubar.addMenu('View')
@@ -824,6 +1054,25 @@ class MainWindow(QMainWindow):
         settings = QSettings("EZCan2", "KvaserCAN")
         saved_theme = settings.value("theme", "light", type=str)
         self.apply_theme(saved_theme, restore=True)
+
+        # Help menu (far right via corner widget)
+        help_menubar = QMenuBar(self)
+        help_menu = help_menubar.addMenu('Help')
+        help_menu.addAction('About').triggered.connect(self.show_about)
+        menubar.setCornerWidget(help_menubar, Qt.TopRightCorner)
+
+    def show_about(self):
+        """Show About dialog with app info."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About CAN Expert")
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(12)
+        layout.addWidget(QLabel("CAN Expert"))
+        layout.addWidget(QLabel("Connect to CAN, run UDS discovery, load application databases."))
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(dlg.accept)
+        layout.addWidget(ok_btn, 0, Qt.AlignCenter)
+        dlg.exec_()
 
     def apply_theme(self, theme: str, restore: bool = False):
         """Apply light or dark theme to the application."""
@@ -891,6 +1140,22 @@ class MainWindow(QMainWindow):
         designer = FormDesigner(self)
         designer.saved.connect(lambda p: self.load_configurations())
         designer.exec_()
+
+    def open_can_logger(self):
+        """Open the CAN Logger window."""
+        if not getattr(self, "_can_logger_window", None) or not self._can_logger_window.isVisible():
+            self._can_logger_window = CANLoggerWindow(self)
+        self._can_logger_window.show()
+        self._can_logger_window.raise_()
+        self._can_logger_window.activateWindow()
+
+    def open_diagnostic_window(self):
+        """Open the Diagnostic Window."""
+        if not getattr(self, "_diagnostic_window", None) or not self._diagnostic_window.isVisible():
+            self._diagnostic_window = DiagnosticWindow(self)
+        self._diagnostic_window.show()
+        self._diagnostic_window.raise_()
+        self._diagnostic_window.activateWindow()
 
     def create_new_config(self):
         """Create a new configuration"""
@@ -995,6 +1260,8 @@ class MainWindow(QMainWindow):
         self._set_status(f"Connected - Database: {db_id}", "green")
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(True)
+        self.channels_dock.hide()
+        self.database_dock.show()
         self.message_count = 0
         self.refresh_channel_list()
 
@@ -1039,6 +1306,8 @@ class MainWindow(QMainWindow):
             self.can_bus = None
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
+        self.database_dock.hide()
+        self.channels_dock.show()
         self._set_status("Disconnected", "gray")
         self.clear_application_ui()
 
@@ -1132,6 +1401,45 @@ class MainWindow(QMainWindow):
                 lbl.setParent(container)
                 lbl.move(lbl_def.get("x", 0), lbl_def.get("y", 0))
                 lbl.show()
+            for g in page.get("gauges", []):
+                gl = QLabel(f"{g.get('label', '')} --")
+                gl.setMinimumWidth(g.get("width", 100))
+                gl.setParent(container)
+                gl.move(g.get("x", 0), g.get("y", 0))
+                gl.show()
+                can_id = self._get_can_id(g)
+                if can_id:
+                    self.value_widgets[can_id] = self.value_widgets.get(can_id, [])
+                    self.value_widgets[can_id].append((dict(g, byte_start=0, byte_length=4, scale=1, offset=0, type=g.get("value_type", "float")), gl))
+            for p in page.get("progress_bars", []):
+                prog = QSlider(Qt.Horizontal)
+                prog.setRange(p.get("min", 0), p.get("max", 100))
+                prog.setValue(0)
+                prog.setFixedSize(p.get("width", 120), p.get("height", 24))
+                prog.setParent(container)
+                prog.move(p.get("x", 0), p.get("y", 0))
+                prog.show()
+            for led_def in page.get("leds", []):
+                led_lbl = QLabel(led_def.get("off_text", "OFF"))
+                led_lbl.setStyleSheet("background: #444; color: #fff; padding: 4px; border-radius: 4px;")
+                led_lbl.setParent(container)
+                led_lbl.move(led_def.get("x", 0), led_def.get("y", 0))
+                led_lbl.show()
+            for c in page.get("combos", []):
+                combo = QComboBox()
+                items = [s.strip() for s in (c.get("items") or "").split(",") if s.strip()]
+                combo.addItems(items)
+                combo.setFixedSize(c.get("width", 100), c.get("height", 28))
+                combo.setParent(container)
+                combo.move(c.get("x", 0), c.get("y", 0))
+                combo.show()
+            for io in page.get("io_boxes", []):
+                io_edit = QLineEdit()
+                io_edit.setPlaceholderText(io.get("label", ""))
+                io_edit.setFixedSize(io.get("width", 80), io.get("height", 28))
+                io_edit.setParent(container)
+                io_edit.move(io.get("x", 0), io.get("y", 0))
+                io_edit.show()
             tabs.addTab(container, page_name)
         self.app_db_layout.addWidget(tabs)
 
@@ -1234,6 +1542,10 @@ class MainWindow(QMainWindow):
         can_id = msg_dict.get("arbitration_id")
         data = msg_dict.get("data", [])
         self.log_can("RX", can_id, data)
+        if getattr(self, "_can_logger_window", None) and self._can_logger_window.isVisible():
+            self._can_logger_window.on_can_message(can_id, data)
+        if getattr(self, "_diagnostic_window", None) and self._diagnostic_window.isVisible():
+            self._diagnostic_window.on_can_message(can_id, data, "RX")
         if can_id not in self.value_widgets:
             return
         for v, lbl in self.value_widgets[can_id]:

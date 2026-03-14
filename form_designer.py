@@ -6,6 +6,7 @@ set properties, and save to XML (+ optional script). Used to create
 the databases loaded by the main application.
 """
 import xml.etree.ElementTree as ET
+from datetime import date
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton,
@@ -13,7 +14,7 @@ from PyQt5.QtWidgets import (
     QSplitter, QMessageBox, QFileDialog, QCheckBox, QSlider, QComboBox,
     QDoubleSpinBox, QGraphicsScene, QGraphicsView, QGraphicsProxyWidget,
     QPlainTextEdit, QTabWidget, QMenu, QAction, QInputDialog, QApplication,
-    QGraphicsItem,
+    QGraphicsItem, QTreeWidget, QTreeWidgetItem, QProgressBar,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QMimeData, QTimer
 from PyQt5.QtGui import QFont, QColor, QDrag, QCursor
@@ -23,8 +24,18 @@ try:
 except ImportError:
     SCRIPT_TEMPLATE = '"""Database script - define DatabaseMainFunction(api)."""\n\ndef DatabaseMainFunction(api):\n    pass\n'
 
+from splitter_panel import SplitterPanel
+
+try:
+    import cantools
+    HAS_CANTOOLS = True
+except ImportError:
+    HAS_CANTOOLS = False
+
 # MIME type for drag-and-drop widget type
 WIDGET_TYPE_MIME = "application/x-ezcan-widget-type"
+BINDING_TYPE_SCRIPT = "script"
+BINDING_TYPE_DBC = "dbc"
 
 
 class DraggablePaletteItem(QLabel):
@@ -74,11 +85,112 @@ class WidgetPalette(QGroupBox):
             ("checkbox", "Checkbox"),
             ("slider", "Slider"),
             ("label", "Label"),
+            ("gauge", "Gauge"),
+            ("progress_bar", "Progress Bar"),
+            ("led", "LED"),
+            ("combo", "Combo Box"),
+            ("io_box", "I/O Box"),
         ]:
             item = DraggablePaletteItem(wtype, label)
             layout.addWidget(item)
         layout.addStretch()
         self.setLayout(layout)
+
+
+class SymbolListPanel(QGroupBox):
+    """Left panel: DBC signals and script variables (Vector-style symbol list)."""
+    symbol_selected = pyqtSignal(str)  # "Message.Signal" or variable name
+    dbc_loaded = pyqtSignal(str)  # path when DBC is loaded
+
+    def __init__(self):
+        super().__init__("Symbols")
+        self.setToolTip("DBC signals and script variables. Select and bind in Properties.")
+        layout = QVBoxLayout()
+        self.dbc_path_label = QLabel("No DBC loaded")
+        self.dbc_path_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.dbc_path_label.setWordWrap(True)
+        layout.addWidget(self.dbc_path_label)
+        load_dbc_btn = QPushButton("Load DBC...")
+        load_dbc_btn.clicked.connect(self._load_dbc)
+        layout.addWidget(load_dbc_btn)
+        if not HAS_CANTOOLS:
+            load_dbc_btn.setEnabled(False)
+            layout.addWidget(QLabel("Install cantools for DBC"))
+        self.symbol_tree = QTreeWidget()
+        self.symbol_tree.setHeaderLabels(["Symbol"])
+        self.symbol_tree.setColumnWidth(0, 180)
+        self.symbol_tree.header().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.symbol_tree.header().customContextMenuRequested.connect(self._show_symbol_tree_column_menu)
+        self.symbol_tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        layout.addWidget(self.symbol_tree)
+        layout.addWidget(QLabel("Script variables: set in Properties\n(Binding type = Script, value = name)"))
+        self.setLayout(layout)
+        self._dbc_db = None
+        self._dbc_path = None
+
+    def _load_dbc(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load DBC", "", "DBC (*.dbc);;All (*.*)"
+        )
+        if path:
+            self.load_dbc_path(path)
+
+    def load_dbc_path(self, path: str):
+        if not HAS_CANTOOLS:
+            return
+        from pathlib import Path
+        try:
+            self._dbc_db = cantools.database.load_file(path)
+            self._dbc_path = path
+            self.dbc_path_label.setText(Path(path).name)
+            self.dbc_path_label.setStyleSheet("font-size: 11px;")
+            self._fill_tree()
+            self.dbc_loaded.emit(path)
+        except Exception as e:
+            self.dbc_path_label.setText(f"Error: {e}")
+            self.dbc_path_label.setStyleSheet("color: red; font-size: 11px;")
+            self._dbc_db = None
+            self.symbol_tree.clear()
+
+    def _fill_tree(self):
+        self.symbol_tree.clear()
+        if not self._dbc_db:
+            return
+        for msg in self._dbc_db.messages:
+            parent = QTreeWidgetItem(self.symbol_tree, [msg.name])
+            for sig in msg.signals:
+                display_name = f"{msg.name}.{sig.name}"
+                child = QTreeWidgetItem(parent, [display_name])
+                child.setData(0, Qt.UserRole, display_name)
+            parent.setData(0, Qt.UserRole, msg.name)
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
+        symbol = item.data(0, Qt.UserRole)
+        if symbol and "." in symbol:
+            self.symbol_selected.emit(symbol)
+
+    def _show_symbol_tree_column_menu(self, pos):
+        """Context menu on Symbol tree header: toggle column visibility."""
+        menu = QMenu(self)
+        for col in range(self.symbol_tree.columnCount()):
+            act = menu.addAction("Show 'Symbol'")
+            act.setCheckable(True)
+            act.setChecked(not self.symbol_tree.isColumnHidden(col))
+            act.triggered.connect(lambda checked, c=col: self.symbol_tree.setColumnHidden(c, not checked))
+        menu.exec_(self.symbol_tree.header().mapToGlobal(pos))
+
+    def get_dbc_path(self) -> str:
+        return self._dbc_path or ""
+
+    def get_dbc_signals(self) -> list:
+        """Return list of 'Message.Signal' strings for property panel combo."""
+        if not self._dbc_db:
+            return []
+        out = []
+        for msg in self._dbc_db.messages:
+            for sig in msg.signals:
+                out.append(f"{msg.name}.{sig.name}")
+        return out
 
 
 class MovableProxyWidget(QGraphicsProxyWidget):
@@ -169,11 +281,12 @@ class DroppableGraphicsView(QGraphicsView):
 
 
 class PropertyEditor(QGroupBox):
-    """Editor for selected widget properties."""
+    """Editor for selected widget properties (Vector-style: binding + common + type-specific)."""
     properties_changed = pyqtSignal(dict)
 
-    def __init__(self):
+    def __init__(self, symbol_panel=None):
         super().__init__("Properties")
+        self.symbol_panel = symbol_panel
         self.layout = QFormLayout()
         self.widget_data = None
         self.controls = {}
@@ -187,6 +300,9 @@ class PropertyEditor(QGroupBox):
         self.controls.clear()
         self.widget_data = None
 
+    def set_symbol_panel(self, panel):
+        self.symbol_panel = panel
+
     def load_widget(self, data: dict):
         self.clear()
         self.widget_data = data
@@ -195,7 +311,28 @@ class PropertyEditor(QGroupBox):
 
         wtype = data.get("type", "button")
 
-        # Common: id, label, position, size, variable (only variable links widget to database code)
+        # Binding (Vector-style: type + value)
+        binding_type = data.get("binding_type", BINDING_TYPE_SCRIPT)
+        if data.get("binding_value") is not None:
+            binding_val = str(data.get("binding_value", ""))
+        else:
+            binding_val = str(data.get("variable", ""))
+        self._add_combo("binding_type", "Binding type", [BINDING_TYPE_SCRIPT, BINDING_TYPE_DBC], binding_type)
+        dbc_signals = []
+        if self.symbol_panel:
+            dbc_signals = self.symbol_panel.get_dbc_signals()
+        if dbc_signals:
+            ctrl = QComboBox()
+            ctrl.setEditable(True)
+            ctrl.addItems([""] + dbc_signals)
+            ctrl.setCurrentText(binding_val)
+            ctrl.currentTextChanged.connect(lambda v, k="binding_value": self._on_change(k, v))
+            self.controls["binding_value"] = ("str", ctrl)
+            self.layout.addRow("Binding (DBC or variable)", ctrl)
+        else:
+            self._add_line("binding_value", "Binding (variable or Message.Signal)", binding_val)
+
+        # Common: id, label, position, size
         self._add_line("id", "ID", str(data.get("id", "1")))
         if wtype != "label":
             self._add_line("label", "Label", str(data.get("label", "New Widget")))
@@ -203,7 +340,6 @@ class PropertyEditor(QGroupBox):
         self._add_spin("y", "Y", data.get("y", 0), 0, 10000)
         self._add_spin("width", "Width", data.get("width", 100), 20, 2000)
         self._add_spin("height", "Height", data.get("height", 30), 10, 500)
-        self._add_line("variable", "Variable", str(data.get("variable", "")))
 
         if wtype == "value":
             self._add_line("unit", "Unit", str(data.get("unit", "")))
@@ -215,6 +351,26 @@ class PropertyEditor(QGroupBox):
 
         elif wtype == "label":
             self._add_line("text", "Text", str(data.get("text", "Label")))
+
+        elif wtype == "gauge":
+            self._add_spin("min", "Min", data.get("min", 0), -10000, 10000)
+            self._add_spin("max", "Max", data.get("max", 100), -10000, 10000)
+            self._add_line("unit", "Unit", str(data.get("unit", "")))
+
+        elif wtype == "progress_bar":
+            self._add_spin("min", "Min", data.get("min", 0), -32768, 32767)
+            self._add_spin("max", "Max", data.get("max", 100), -32768, 32767)
+
+        elif wtype == "led":
+            self._add_line("on_text", "On text", str(data.get("on_text", "ON")))
+            self._add_line("off_text", "Off text", str(data.get("off_text", "OFF")))
+
+        elif wtype == "combo":
+            self._add_line("items", "Items (comma-separated)", str(data.get("items", "")))
+
+        elif wtype == "io_box":
+            self._add_line("unit", "Unit", str(data.get("unit", "")))
+            self._add_combo("value_type", "Value type", ["float", "integer", "string"], data.get("value_type", "float"))
 
     def _add_line(self, key: str, label: str, value: str):
         ctrl = QLineEdit(value)
@@ -251,8 +407,16 @@ class PropertyEditor(QGroupBox):
             return
         if key == "value_type":
             self.widget_data["type"] = str(value)
+            if self.widget_data.get("type") == "value":
+                self.widget_data["value_type"] = str(value)
         elif key == "text":
             self.widget_data["text"] = str(value)
+        elif key == "binding_type":
+            self.widget_data["binding_type"] = str(value)
+        elif key == "binding_value":
+            self.widget_data["binding_value"] = str(value) if value else ""
+            if self.widget_data.get("binding_type", BINDING_TYPE_SCRIPT) == BINDING_TYPE_SCRIPT:
+                self.widget_data["variable"] = self.widget_data["binding_value"]
         else:
             self.widget_data[key] = value
         self.properties_changed.emit(self.widget_data)
@@ -321,6 +485,8 @@ class FormCanvas(QGroupBox):
             btn.setCheckable(True)
             btn.setChecked(i == self.current_page_index)
             btn.clicked.connect(lambda checked, idx=i: self._switch_page(idx))
+            btn.setContextMenuPolicy(Qt.CustomContextMenu)
+            btn.customContextMenuRequested.connect(lambda pos, idx=i, b=btn: self._show_page_context_menu(idx, b, pos))
             self.page_buttons.append(btn)
             bar.insertWidget(i, btn)
 
@@ -328,6 +494,26 @@ class FormCanvas(QGroupBox):
         n = len(self.pages) + 1
         self.pages.append({"name": f"Page {n}", "widgets": []})
         self.current_page_index = len(self.pages) - 1
+        self.selected_index = -1
+        self._rebuild_page_bar()
+        self._rebuild()
+
+    def _show_page_context_menu(self, page_index: int, button: QPushButton, pos):
+        menu = QMenu(self)
+        remove_act = menu.addAction("Remove page")
+        remove_act.setEnabled(len(self.pages) > 1)
+        action = menu.exec_(button.mapToGlobal(pos))
+        if action is remove_act and len(self.pages) > 1:
+            self._remove_page(page_index)
+
+    def _remove_page(self, index: int):
+        if index < 0 or index >= len(self.pages) or len(self.pages) <= 1:
+            return
+        del self.pages[index]
+        if self.current_page_index == index:
+            self.current_page_index = max(0, index - 1)
+        elif self.current_page_index > index:
+            self.current_page_index -= 1
         self.selected_index = -1
         self._rebuild_page_bar()
         self._rebuild()
@@ -353,7 +539,7 @@ class FormCanvas(QGroupBox):
 
     def _default_data(self, wtype: str) -> dict:
         n = len(self._current_widgets()) + 1
-        base = {"x": 0, "y": 0, "width": 100, "height": 30, "variable": ""}
+        base = {"x": 0, "y": 0, "width": 100, "height": 30, "variable": "", "binding_type": BINDING_TYPE_SCRIPT, "binding_value": ""}
         if wtype == "button":
             return {**base, "type": "button", "id": str(n), "label": f"Button {n}"}
         elif wtype == "value":
@@ -364,6 +550,16 @@ class FormCanvas(QGroupBox):
             return {**base, "type": "slider", "id": str(n), "label": f"Slider {n}", "min": 0, "max": 100}
         elif wtype == "label":
             return {**base, "type": "label", "id": str(n), "text": f"Label {n}"}
+        elif wtype == "gauge":
+            return {**base, "type": "gauge", "id": str(n), "label": f"Gauge {n}", "min": 0, "max": 100, "unit": ""}
+        elif wtype == "progress_bar":
+            return {**base, "type": "progress_bar", "id": str(n), "label": f"Progress {n}", "min": 0, "max": 100}
+        elif wtype == "led":
+            return {**base, "type": "led", "id": str(n), "label": f"LED {n}", "on_text": "ON", "off_text": "OFF"}
+        elif wtype == "combo":
+            return {**base, "type": "combo", "id": str(n), "label": f"Combo {n}", "items": ""}
+        elif wtype == "io_box":
+            return {**base, "type": "io_box", "id": str(n), "label": f"I/O {n}", "unit": "", "value_type": "float"}
         return {**base, "type": wtype, "id": str(n), "label": f"Widget {n}"}
 
     def update_widget(self, index: int, data: dict):
@@ -398,29 +594,92 @@ class FormCanvas(QGroupBox):
         widgets = self._current_widgets()
         for i, data in enumerate(widgets):
             px, py = data.get("x", 0), data.get("y", 0)
-            placeholder = QFrame()
-            placeholder.setFrameStyle(QFrame.Box | QFrame.Raised)
-            if i == self.selected_index:
-                placeholder.setStyleSheet("QFrame { background-color: #e0e8ff; border: 2px solid #0066cc; color: #222; }")
-            else:
-                placeholder.setStyleSheet("QFrame { background-color: #fff; border: 1px solid #ccc; color: #222; }")
-            plbl = QLabel(self._preview_label(data))
-            plbl.setStyleSheet("color: #222;")
-            pl_layout = QVBoxLayout()
-            pl_layout.addWidget(plbl)
-            placeholder.setLayout(pl_layout)
-            placeholder.setMinimumSize(data.get("width", 100), data.get("height", 30))
-            # Let the proxy receive mouse events so ItemIsMovable works (drag to move)
-            placeholder.setAttribute(Qt.WA_TransparentForMouseEvents)
+            w = self._make_preview_widget(data, selected=(i == self.selected_index))
+            w.setAttribute(Qt.WA_TransparentForMouseEvents)
             proxy = MovableProxyWidget(i)
-            proxy.setWidget(placeholder)
-            proxy.setCursor(Qt.SizeAllCursor)  # show move cursor over widget
+            proxy.setWidget(w)
+            proxy.setCursor(Qt.SizeAllCursor)
             proxy.clicked.connect(self._on_select)
             proxy.right_clicked.connect(lambda idx: self._show_widget_context_menu(idx, QCursor.pos()))
             proxy.position_changed.connect(self._on_widget_moved)
             proxy.setPos(px, py)
             proxy.setZValue(i)
             self.scene.addItem(proxy)
+
+    def _make_preview_widget(self, data: dict, selected: bool = False):
+        """Build the actual widget type for the canvas preview (button looks like button, etc.)."""
+        t = data.get("type", "button")
+        w_ = data.get("width", 100)
+        h_ = data.get("height", 30)
+        sel_style = "border: 2px solid #0066cc;"
+        norm_style = "border: 1px solid #ccc;"
+        base_style = (sel_style if selected else norm_style) + " color: #222; min-width: 0;"
+
+        if t == "button":
+            btn = QPushButton(data.get("label", "Button"))
+            btn.setFixedSize(w_, h_)
+            btn.setStyleSheet(base_style)
+            return btn
+        if t == "value":
+            lbl = QLabel("--")
+            lbl.setFixedSize(w_, h_)
+            lbl.setStyleSheet(base_style + " background: #f8f8f8;")
+            lbl.setAlignment(Qt.AlignCenter)
+            return lbl
+        if t == "checkbox":
+            cb = QCheckBox(data.get("label", "Checkbox"))
+            cb.setFixedSize(w_, h_)
+            cb.setStyleSheet(base_style)
+            return cb
+        if t == "slider":
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(data.get("min", 0), data.get("max", 100))
+            sl.setValue(0)
+            sl.setFixedSize(w_, h_)
+            sl.setStyleSheet(base_style)
+            return sl
+        if t == "label":
+            lbl = QLabel(data.get("text", "Label"))
+            lbl.setFixedSize(w_, h_)
+            lbl.setStyleSheet(base_style)
+            return lbl
+        if t == "gauge":
+            lbl = QLabel("--")
+            lbl.setFixedSize(w_, h_)
+            lbl.setStyleSheet(base_style + " background: #f0f0f0; font-weight: bold;")
+            lbl.setAlignment(Qt.AlignCenter)
+            return lbl
+        if t == "progress_bar":
+            prog = QProgressBar()
+            prog.setRange(data.get("min", 0), data.get("max", 100))
+            prog.setValue(0)
+            prog.setFixedSize(w_, h_)
+            prog.setStyleSheet(base_style)
+            return prog
+        if t == "led":
+            lbl = QLabel(data.get("off_text", "OFF"))
+            lbl.setFixedSize(w_, h_)
+            lbl.setStyleSheet(base_style + " background: #444; color: #fff;")
+            lbl.setAlignment(Qt.AlignCenter)
+            return lbl
+        if t == "combo":
+            combo = QComboBox()
+            items = [s.strip() for s in (data.get("items") or "").split(",") if s.strip()]
+            if items:
+                combo.addItems(items)
+            combo.setFixedSize(w_, h_)
+            combo.setStyleSheet(base_style)
+            return combo
+        if t == "io_box":
+            le = QLineEdit()
+            le.setPlaceholderText(data.get("label", ""))
+            le.setFixedSize(w_, h_)
+            le.setStyleSheet(base_style)
+            return le
+        lbl = QLabel(data.get("label", "?"))
+        lbl.setFixedSize(w_, h_)
+        lbl.setStyleSheet(base_style)
+        return lbl
 
     def _preview_label(self, data: dict) -> str:
         t = data.get("type", "")
@@ -434,6 +693,16 @@ class FormCanvas(QGroupBox):
             return f"[Slider] {data.get('label', '')}"
         if t == "label":
             return f"[Label] {data.get('text', '')}"
+        if t == "gauge":
+            return f"[Gauge] {data.get('label', '')}"
+        if t == "progress_bar":
+            return f"[Progress] {data.get('label', '')}"
+        if t == "led":
+            return f"[LED] {data.get('label', '')}"
+        if t == "combo":
+            return f"[Combo] {data.get('label', '')}"
+        if t == "io_box":
+            return f"[I/O] {data.get('label', '')}"
         return str(data.get("label", ""))
 
     def _on_select(self, index: int):
@@ -481,7 +750,7 @@ class FormCanvas(QGroupBox):
         del_act = menu.addAction("Delete")
         menu.addSeparator()
         size_act = menu.addAction("Change size...")
-        var_act = menu.addAction("Variable...")
+        var_act = menu.addAction("Binding...")
         choice = menu.exec_(global_pos)
         if choice == copy_act:
             self._widget_clipboard = {k: v for k, v in data.items() if k not in ("data_bytes", "can_id", "data")}
@@ -522,13 +791,16 @@ class FormCanvas(QGroupBox):
         if index < 0 or index >= len(w):
             return
         name, ok = QInputDialog.getText(
-            self, "Variable",
-            "Variable name (linked in script; e.g. Start for a button):",
+            self, "Binding",
+            "Variable or DBC signal (e.g. Start or Message.Signal):",
             QLineEdit.Normal,
-            data.get("variable", "")
+            data.get("binding_value", data.get("variable", ""))
         )
         if ok:
-            w[index]["variable"] = name.strip()
+            val = name.strip()
+            w[index]["binding_value"] = val
+            w[index]["variable"] = val
+            w[index]["binding_type"] = BINDING_TYPE_SCRIPT if "." not in val or " " in val else BINDING_TYPE_DBC
             self._rebuild()
             if self.selected_index == index:
                 self.widget_selected.emit(index, w[index])
@@ -624,6 +896,8 @@ class FormCanvas(QGroupBox):
         d.setdefault("width", 100)
         d.setdefault("height", 30)
         d.setdefault("variable", "")
+        d.setdefault("binding_type", BINDING_TYPE_SCRIPT)
+        d.setdefault("binding_value", d.get("variable", ""))
         if d.get("type") in ("value", "value_display"):
             d["value_type"] = d.get("type", d.get("value_type", "float"))
         if d.get("type") == "label":
@@ -631,18 +905,19 @@ class FormCanvas(QGroupBox):
         return d
 
     def get_data(self) -> dict:
-        # Only variable links widget to code; no CAN message data
         out_pages = []
         for page in self.pages:
             widgets = []
             for w in page["widgets"]:
                 t = w.get("type", "")
                 d = {k: v for k, v in w.items() if k not in ("data_bytes", "can_id", "data", "byte_start", "byte_length", "byte", "bit", "scale", "offset")}
-                if "value_type" in d:
+                if "value_type" in d and d.get("type") == "value":
                     d["type"] = d["value_type"]
                     del d["value_type"]
                 if t == "label":
                     d["text"] = d.get("text", d.get("label", ""))
+                if d.get("binding_type") == BINDING_TYPE_SCRIPT:
+                    d["variable"] = d.get("binding_value", d.get("variable", ""))
                 widgets.append(d)
             out_pages.append({"name": page["name"], "widgets": widgets})
         return {"pages": out_pages}
@@ -658,30 +933,53 @@ class FormDesigner(QDialog):
         self.setMinimumSize(900, 600)
         self.resize(1000, 700)
         self.db_id = db_id or "new"
-        self.db_name = db_name or db_id or "New Database"
+        _default_name = f"{self.db_id}_{date.today().isoformat()}"
+        self.db_name = db_name or (db_id and f"{db_id}_{date.today().isoformat()}") or _default_name
         self.description = description
 
+        self.symbol_list = SymbolListPanel()
         self.palette = WidgetPalette()
         self.canvas = FormCanvas()
-        self.properties = PropertyEditor()
+        self.properties = PropertyEditor(self.symbol_list)
         self.code_editor = QPlainTextEdit()
         self.code_editor.setPlaceholderText("Database script (DatabaseMainFunction(api)). Load from file or start from template.")
         self.code_editor.setFont(QFont("Consolas", 10))
 
         self.canvas.widget_selected.connect(self.on_widget_selected)
         self.properties.properties_changed.connect(self.on_properties_changed)
+        self.symbol_list.symbol_selected.connect(self._on_symbol_selected)
 
-        # Middle: tabs "Form" and "Code"
+        # Left: Symbols (Vector-style) + Widget palette
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(self.symbol_list)
+        left_layout.addWidget(self.palette)
+        left_widget.setLayout(left_layout)
+
+        # Middle: tabs "Form", "Database code", "Outline"
+        self.outline_tree = QTreeWidget()
+        self.outline_tree.setHeaderLabels(["Control", "Binding"])
+        self.outline_tree.setColumnWidth(0, 180)
+        self.outline_tree.header().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.outline_tree.header().customContextMenuRequested.connect(self._show_outline_column_menu)
         self.design_tabs = QTabWidget()
         self.design_tabs.addTab(self.canvas, "Form")
         self.design_tabs.addTab(self.code_editor, "Database code")
+        self.design_tabs.addTab(self.outline_tree, "Outline")
         self.design_tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.palette)
-        splitter.addWidget(self.design_tabs)
-        splitter.addWidget(self.properties)
-        splitter.setSizes([150, 500, 250])
+        splitter.setChildrenCollapsible(True)
+        left_widget.setMinimumWidth(0)
+        self.design_tabs.setMinimumWidth(0)
+        self.properties.setMinimumWidth(0)
+        left_panel = SplitterPanel("Symbols & palette", left_widget, Qt.Horizontal)
+        form_panel = SplitterPanel("Form / Code / Outline", self.design_tabs, Qt.Horizontal)
+        props_panel = SplitterPanel("Properties", self.properties, Qt.Horizontal)
+        splitter.addWidget(left_panel)
+        splitter.addWidget(form_panel)
+        splitter.addWidget(props_panel)
+        splitter.setSizes([200, 480, 260])
 
         top_layout = QHBoxLayout()
         self.db_id_edit = QLineEdit(self.db_id)
@@ -696,6 +994,12 @@ class FormDesigner(QDialog):
         self.desc_edit.setPlaceholderText("Description")
         top_layout.addWidget(QLabel("Description:"))
         top_layout.addWidget(self.desc_edit)
+        top_layout.addWidget(QLabel("DBC path:"))
+        self.dbc_path_edit = QLineEdit()
+        self.dbc_path_edit.setPlaceholderText("Optional DBC for symbols")
+        self.dbc_path_edit.setMinimumWidth(120)
+        top_layout.addWidget(self.dbc_path_edit)
+        self.symbol_list.dbc_loaded.connect(self.dbc_path_edit.setText)
 
         btn_layout = QHBoxLayout()
         save_btn = QPushButton("Save")
@@ -718,6 +1022,8 @@ class FormDesigner(QDialog):
     def _on_tab_changed(self, index: int):
         if index == 1:
             self._load_script()
+        elif index == 2:
+            self._refresh_outline()
 
     def _script_path(self) -> Path:
         """Path to the database script file for current db_id."""
@@ -748,17 +1054,57 @@ class FormDesigner(QDialog):
     def on_widget_selected(self, index: int, data: dict):
         self.properties.load_widget(data)
 
+    def _on_symbol_selected(self, symbol: str):
+        """Set current widget binding to the double-clicked DBC symbol."""
+        w = self.canvas._current_widgets()
+        idx = self.canvas.selected_index
+        if 0 <= idx < len(w) and symbol:
+            w[idx]["binding_type"] = BINDING_TYPE_DBC
+            w[idx]["binding_value"] = symbol
+            w[idx]["variable"] = symbol
+            self.properties.load_widget(w[idx])
+            self.canvas._rebuild()
+
+    def _show_outline_column_menu(self, pos):
+        """Context menu on Outline header: toggle column visibility."""
+        menu = QMenu(self)
+        labels = ["Control", "Binding"]
+        for col in range(min(self.outline_tree.columnCount(), len(labels))):
+            name = labels[col]
+            act = menu.addAction(f"Show '{name}'")
+            act.setCheckable(True)
+            act.setChecked(not self.outline_tree.isColumnHidden(col))
+            act.triggered.connect(lambda checked, c=col: self.outline_tree.setColumnHidden(c, not checked))
+        menu.exec_(self.outline_tree.header().mapToGlobal(pos))
+
+    def _refresh_outline(self):
+        """Fill Outline tab with pages and widgets and their bindings."""
+        self.outline_tree.clear()
+        for page in self.canvas.pages:
+            page_name = page.get("name", "Page")
+            page_item = QTreeWidgetItem(self.outline_tree, [page_name, ""])
+            for w in page.get("widgets", []):
+                label = w.get("label", w.get("text", w.get("type", "?")))
+                binding = w.get("binding_value", w.get("variable", "")) or ""
+                btype = w.get("binding_type", BINDING_TYPE_SCRIPT)
+                if binding:
+                    binding = f"[{btype}] {binding}"
+                QTreeWidgetItem(page_item, [f"{w.get('type', '?')}: {label}", binding])
+        self.outline_tree.expandAll()
+
     def on_properties_changed(self, data: dict):
         for i, w in enumerate(self.canvas._current_widgets()):
             if w is data:
                 self.canvas.update_widget(i, data)
                 break
+        if self.design_tabs.currentIndex() == 2:
+            self._refresh_outline()
 
     def new_form(self):
         self.canvas.load_from_data({})
         self.properties.clear()
         self.db_id_edit.clear()
-        self.db_name_edit.clear()
+        self.db_name_edit.setText(f"new_{date.today().isoformat()}")
         self.desc_edit.clear()
         self.code_editor.setPlainText(SCRIPT_TEMPLATE)
 
@@ -776,6 +1122,13 @@ class FormDesigner(QDialog):
             desc = root.find("description")
             self.description = desc.text.strip() if desc is not None and desc.text else ""
             self.desc_edit.setText(self.description)
+            dbc_el = root.find("dbc_path")
+            dbc_path = root.get("dbc_path", "") or (dbc_el.text.strip() if dbc_el is not None and dbc_el.text else "")
+            if dbc_path and Path(dbc_path).exists():
+                self.dbc_path_edit.setText(dbc_path)
+                self.symbol_list.load_dbc_path(dbc_path)
+            else:
+                self.dbc_path_edit.clear()
 
             pages_el = root.find("pages")
             if pages_el is not None:
@@ -783,7 +1136,7 @@ class FormDesigner(QDialog):
                 for page_el in pages_el.findall("page"):
                     name = page_el.get("name", "Page")
                     widgets = []
-                    for tag, elem_tag in [("button", "button"), ("value", "value"), ("checkbox", "checkbox"), ("slider", "slider"), ("label", "label")]:
+                    for tag, elem_tag in [("button", "button"), ("value", "value"), ("checkbox", "checkbox"), ("slider", "slider"), ("label", "label"), ("gauge", "gauge"), ("progress_bar", "progress_bar"), ("led", "led"), ("combo", "combo"), ("io_box", "io_box")]:
                         for elem in page_el.findall(elem_tag):
                             d = self._elem_to_widget_dict(elem, tag)
                             widgets.append(d)
@@ -839,7 +1192,10 @@ class FormDesigner(QDialog):
         filepath = path / f"{db_id}.xml"
 
         data = self.canvas.get_data()
+        dbc_path = self.symbol_list.get_dbc_path() or self.dbc_path_edit.text().strip()
         root = ET.Element("application_database", name=db_name)
+        if dbc_path:
+            root.set("dbc_path", dbc_path)
         if description:
             ET.SubElement(root, "description").text = description
 
@@ -848,11 +1204,13 @@ class FormDesigner(QDialog):
             page_el = ET.SubElement(pages_el, "page", name=page.get("name", "Page"))
             for item in page.get("widgets", []):
                 t = item.get("type", "")
-                key = {"button": "button", "value": "value", "checkbox": "checkbox", "slider": "slider", "label": "label"}.get(t)
+                key = {"button": "button", "value": "value", "checkbox": "checkbox", "slider": "slider", "label": "label", "gauge": "gauge", "progress_bar": "progress_bar", "led": "led", "combo": "combo", "io_box": "io_box"}.get(t)
                 if not key:
                     continue
                 exclude = {"data_bytes", "value_type", "can_id", "data", "byte_start", "byte_length", "byte", "bit", "scale", "offset"}
                 attrs = {k: str(v) for k, v in item.items() if k not in exclude}
+                if "binding_value" in item and item.get("binding_type") == BINDING_TYPE_SCRIPT:
+                    attrs["variable"] = str(item.get("binding_value", item.get("variable", "")))
                 if "value_type" in item:
                     attrs["type"] = item["value_type"]
                 if key == "label" and "text" in item:

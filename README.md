@@ -24,6 +24,8 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 pip install -r requirements.txt
 ```
 
+*(A standalone installer/executable build may be added in a future release.)*
+
 ## Usage
 
 1. Select a configuration from the list (or create one)

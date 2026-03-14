@@ -81,7 +81,13 @@ def parse_application_database(path: str | Path) -> dict | None:
         "sliders": [],
         "labels": [],
         "text_inputs": [],
+        "gauges": [],
+        "progress_bars": [],
+        "leds": [],
+        "combos": [],
+        "io_boxes": [],
     }
+    result["dbc_path"] = root.get("dbc_path", "") or ""
 
     desc = root.find("description")
     if desc is not None and desc.text:
@@ -206,6 +212,91 @@ def _parse_label(elem: ET.Element) -> dict:
     }
 
 
+def _parse_gauge(elem: ET.Element) -> dict:
+    g = {
+        "id": _get_attr(elem, "id", "0"),
+        "label": _get_attr(elem, "label", "Gauge"),
+        "unit": _get_attr(elem, "unit", ""),
+        "min": _get_attr(elem, "min", 0, int),
+        "max": _get_attr(elem, "max", 100, int),
+        "variable": _get_attr(elem, "variable", ""),
+        "binding_type": _get_attr(elem, "binding_type", "script"),
+        "binding_value": _get_attr(elem, "binding_value", ""),
+    }
+    g["x"] = _get_attr(elem, "x", 0, int)
+    g["y"] = _get_attr(elem, "y", 0, int)
+    g["width"] = _get_attr(elem, "width", 100, int)
+    g["height"] = _get_attr(elem, "height", 60, int)
+    return g
+
+
+def _parse_progress_bar(elem: ET.Element) -> dict:
+    p = {
+        "id": _get_attr(elem, "id", "0"),
+        "label": _get_attr(elem, "label", "Progress"),
+        "min": _get_attr(elem, "min", 0, int),
+        "max": _get_attr(elem, "max", 100, int),
+        "variable": _get_attr(elem, "variable", ""),
+        "binding_type": _get_attr(elem, "binding_type", "script"),
+        "binding_value": _get_attr(elem, "binding_value", ""),
+    }
+    p["x"] = _get_attr(elem, "x", 0, int)
+    p["y"] = _get_attr(elem, "y", 0, int)
+    p["width"] = _get_attr(elem, "width", 120, int)
+    p["height"] = _get_attr(elem, "height", 24, int)
+    return p
+
+
+def _parse_led(elem: ET.Element) -> dict:
+    l = {
+        "id": _get_attr(elem, "id", "0"),
+        "label": _get_attr(elem, "label", "LED"),
+        "on_text": _get_attr(elem, "on_text", "ON"),
+        "off_text": _get_attr(elem, "off_text", "OFF"),
+        "variable": _get_attr(elem, "variable", ""),
+        "binding_type": _get_attr(elem, "binding_type", "script"),
+        "binding_value": _get_attr(elem, "binding_value", ""),
+    }
+    l["x"] = _get_attr(elem, "x", 0, int)
+    l["y"] = _get_attr(elem, "y", 0, int)
+    l["width"] = _get_attr(elem, "width", 60, int)
+    l["height"] = _get_attr(elem, "height", 24, int)
+    return l
+
+
+def _parse_combo(elem: ET.Element) -> dict:
+    c = {
+        "id": _get_attr(elem, "id", "0"),
+        "label": _get_attr(elem, "label", "Combo"),
+        "items": _get_attr(elem, "items", ""),
+        "variable": _get_attr(elem, "variable", ""),
+        "binding_type": _get_attr(elem, "binding_type", "script"),
+        "binding_value": _get_attr(elem, "binding_value", ""),
+    }
+    c["x"] = _get_attr(elem, "x", 0, int)
+    c["y"] = _get_attr(elem, "y", 0, int)
+    c["width"] = _get_attr(elem, "width", 100, int)
+    c["height"] = _get_attr(elem, "height", 28, int)
+    return c
+
+
+def _parse_io_box(elem: ET.Element) -> dict:
+    i = {
+        "id": _get_attr(elem, "id", "0"),
+        "label": _get_attr(elem, "label", "I/O"),
+        "unit": _get_attr(elem, "unit", ""),
+        "value_type": _get_attr(elem, "value_type", "float"),
+        "variable": _get_attr(elem, "variable", ""),
+        "binding_type": _get_attr(elem, "binding_type", "script"),
+        "binding_value": _get_attr(elem, "binding_value", ""),
+    }
+    i["x"] = _get_attr(elem, "x", 0, int)
+    i["y"] = _get_attr(elem, "y", 0, int)
+    i["width"] = _get_attr(elem, "width", 80, int)
+    i["height"] = _get_attr(elem, "height", 28, int)
+    return i
+
+
 def _parse_page(page_el: ET.Element) -> dict:
     """Parse one page element into dict with buttons, values, ..., each with x,y."""
     page = {
@@ -215,6 +306,11 @@ def _parse_page(page_el: ET.Element) -> dict:
         "checkboxes": [],
         "sliders": [],
         "labels": [],
+        "gauges": [],
+        "progress_bars": [],
+        "leds": [],
+        "combos": [],
+        "io_boxes": [],
     }
     for btn in page_el.findall("button"):
         page["buttons"].append(_parse_button(btn))
@@ -226,6 +322,16 @@ def _parse_page(page_el: ET.Element) -> dict:
         page["sliders"].append(_parse_slider(sl))
     for lbl in page_el.findall("label"):
         page["labels"].append(_parse_label(lbl))
+    for g in page_el.findall("gauge"):
+        page["gauges"].append(_parse_gauge(g))
+    for p in page_el.findall("progress_bar"):
+        page["progress_bars"].append(_parse_progress_bar(p))
+    for led in page_el.findall("led"):
+        page["leds"].append(_parse_led(led))
+    for c in page_el.findall("combo"):
+        page["combos"].append(_parse_combo(c))
+    for io in page_el.findall("io_box"):
+        page["io_boxes"].append(_parse_io_box(io))
     return page
 
 
