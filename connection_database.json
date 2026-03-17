@@ -1,0 +1,13 @@
+{
+  "uds_request": {
+    "request_id": 2015,
+    "response_id": 2024,
+    "payload_hex": "03 22 F1 80",
+    "timeout_seconds": 2.0
+  },
+  "response_parsing": {
+    "database_id_bytes": [4, 5],
+    "format": "decimal",
+    "byte_order": "big"
+  }
+}

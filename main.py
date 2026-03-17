@@ -152,6 +152,7 @@ class UdsDiscoveryWorker(QThread):
         extended_id = self.connection_config.get("extended_id", False)
 
         request_id = self.connection_config.get("request_id")
+        response_id = self.connection_config.get("response_id")
         extended_id_byte = self.connection_config.get("extended_id_byte") if extended_id else None
         try:
             db_id = send_uds_and_wait_response(
@@ -163,6 +164,7 @@ class UdsDiscoveryWorker(QThread):
                 extended_id_uds=extended_id,
                 extended_id_byte=extended_id_byte,
                 request_id=request_id,
+                response_id=response_id,
             )
             if db_id:
                 self.database_id_ready.emit(db_id)
@@ -320,10 +322,15 @@ class ConfigurationDialog(QMainWindow):
         self.id_size_combo.addItem("29 bits (Extended)", 29)
         config_layout.addRow("Identifier size:", self.id_size_combo)
 
-        self.id_edit = QLineEdit()
-        self.id_edit.setPlaceholderText("e.g. 711 (11-bit) or 1DDAEDE9 (29-bit)")
-        self.id_edit.setText("7DF")
-        config_layout.addRow("ID (hex):", self.id_edit)
+        self.server_id_edit = QLineEdit()
+        self.server_id_edit.setPlaceholderText("e.g. 7DF (11-bit) or 1DDAEDE9 (29-bit) – request sent to this ID")
+        self.server_id_edit.setText("7DF")
+        config_layout.addRow("SERVER ID (hex):", self.server_id_edit)
+
+        self.ecu_id_edit = QLineEdit()
+        self.ecu_id_edit.setPlaceholderText("e.g. 7E8 (11-bit) – ECU response ID")
+        self.ecu_id_edit.setText("7E8")
+        config_layout.addRow("ECU ID (hex):", self.ecu_id_edit)
 
         self.did_edit = QLineEdit()
         self.did_edit.setPlaceholderText("e.g. F1F0 or 0xF1F0 (UDS ReadDataByIdentifier DID)")
@@ -405,9 +412,15 @@ class ConfigurationDialog(QMainWindow):
         if self.config.get("request_id") is not None:
             rid = self.config["request_id"]
             if isinstance(rid, int):
-                self.id_edit.setText(f"{rid:X}")
+                self.server_id_edit.setText(f"{rid:X}")
             else:
-                self.id_edit.setText(str(rid).strip())
+                self.server_id_edit.setText(str(rid).strip())
+        if self.config.get("response_id") is not None:
+            rid = self.config["response_id"]
+            if isinstance(rid, int):
+                self.ecu_id_edit.setText(f"{rid:X}")
+            else:
+                self.ecu_id_edit.setText(str(rid).strip())
         if self.config.get("did") is not None:
             did = self.config["did"]
             if isinstance(did, int):
@@ -425,18 +438,30 @@ class ConfigurationDialog(QMainWindow):
                 self.extended_id_byte_edit.setText(f"{b:02X}")
 
     def save_config(self):
-        request_id = self._parse_id(self.id_edit.text())
+        request_id = self._parse_id(self.server_id_edit.text())
+        response_id = self._parse_id(self.ecu_id_edit.text())
         identifier_11_bit = self.id_size_combo.currentData() == 11
         if request_id is not None and identifier_11_bit and request_id > 0x7FF:
             QMessageBox.warning(
                 self,
                 "Invalid ID",
-                "Identifier size is set to 11 bits, but the ID value is greater than 0x7FF (2047).\n"
-                "Either choose 29 bits (Extended) or use an 11-bit ID (e.g. 0x711)."
+                "Identifier size is set to 11 bits, but SERVER ID is greater than 0x7FF (2047).\n"
+                "Either choose 29 bits (Extended) or use an 11-bit ID (e.g. 0x7DF)."
             )
             return
-        if request_id is None and self.id_edit.text().strip():
-            QMessageBox.warning(self, "Invalid ID", "ID must be a valid hex value (e.g. 711 or 1DDAEDE9).")
+        if request_id is None and self.server_id_edit.text().strip():
+            QMessageBox.warning(self, "Invalid SERVER ID", "SERVER ID must be a valid hex value (e.g. 7DF or 1DDAEDE9).")
+            return
+        if response_id is None and self.ecu_id_edit.text().strip():
+            QMessageBox.warning(self, "Invalid ECU ID", "ECU ID must be a valid hex value (e.g. 7E8).")
+            return
+        if response_id is not None and identifier_11_bit and response_id > 0x7FF:
+            QMessageBox.warning(
+                self,
+                "Invalid ID",
+                "Identifier size is set to 11 bits, but ECU ID is greater than 0x7FF (2047).\n"
+                "Either choose 29 bits (Extended) or use an 11-bit ECU ID (e.g. 0x7E8)."
+            )
             return
         extended_id = self.extended_id_cb.isChecked()
         extended_id_byte = None
@@ -459,6 +484,8 @@ class ConfigurationDialog(QMainWindow):
         }
         if request_id is not None:
             config["request_id"] = request_id
+        if response_id is not None:
+            config["response_id"] = response_id
         if extended_id_byte is not None:
             config["extended_id_byte"] = extended_id_byte
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

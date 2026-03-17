@@ -70,6 +70,7 @@ def send_uds_and_wait_response(
     extended_id_uds: bool = False,
     extended_id_byte: int | None = None,
     request_id: int | None = None,
+    response_id: int | None = None,
 ) -> str | None:
     """
     Send UDS ReadDataByIdentifier and wait for response. Returns database ID string or None.
@@ -78,11 +79,13 @@ def send_uds_and_wait_response(
     extended_id_uds: when True, first data byte is the extended identifier (prepended to payload).
     extended_id_byte: when extended_id_uds is True, this byte is prepended to every UDS request payload (0-255).
     request_id: if provided (e.g. from configuration), use as CAN arbitration ID for the request; else use connection_db.
+    response_id: if provided (e.g. from configuration), use as CAN ID to listen for ECU response; else use connection_db.
     """
     req = connection_db.get("uds_request", {})
     if request_id is None:
         request_id = req.get("request_id", 0x7DF)
-    response_id = req.get("response_id", 0x7E8)
+    if response_id is None:
+        response_id = req.get("response_id", 0x7E8)
     timeout = timeout_seconds if timeout_seconds is not None else req.get("timeout_seconds", 2.0)
     if timeout >= 1000:
         timeout = timeout / 1000.0
