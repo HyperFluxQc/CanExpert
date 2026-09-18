@@ -42,11 +42,42 @@ class DatabaseAPI:
         self._latest_messages = []
         self._max_latest = 100
         self._dll_handles = {}
+        self._runtime = None
+        self._extended = False
+        self._stop_event = None
 
         self.can = _CANApi(self)
         self.uds = _UDSApi(self)
         self.dll = _DLLApi(self)
         self.ui = _UIApi(self)
+
+    def on(self, name, callback):
+        """Register callback(value) for a named button/input event."""
+        if self._runtime is None:
+            raise RuntimeError("No script runtime")
+        self._runtime.callbacks.setdefault(name, []).append(callback)
+
+    def on_can(self, callback):
+        """Register callback(arbitration_id, bytes) for incoming frames."""
+        self._runtime.can_callbacks.append(callback)
+
+    def every(self, seconds, callback):
+        """Call callback() periodically while connected."""
+        import math
+        import time
+        seconds = float(seconds)
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("Timer interval must be positive")
+        self._runtime.timers.append([time.monotonic() + seconds, seconds, callback])
+
+    def sleep(self, seconds):
+        """Cancellable sleep for legacy scripts; callbacks are preferred."""
+        if self._stop_event:
+            self._stop_event.wait(seconds)
+
+    @property
+    def running(self):
+        return self._stop_event is None or not self._stop_event.is_set()
 
     def set_bus(self, bus):
         self._bus = bus
@@ -74,9 +105,11 @@ class _CANApi:
         """Send a CAN message."""
         if self._api._bus is None:
             return
-        data = list(data)[:8]
+        data = list(data)
+        if len(data) > 8:
+            raise ValueError("Classic CAN payload exceeds eight bytes")
         data.extend([0] * (8 - len(data)))
-        msg = can.Message(arbitration_id=can_id, data=data, is_extended_id=False)
+        msg = can.Message(arbitration_id=can_id, data=data, is_extended_id=self._api._extended)
         self._api._bus.send(msg)
 
     def get_latest_messages(self) -> list[dict]:
@@ -188,46 +221,45 @@ class _UIApi:
     def __init__(self, parent: DatabaseAPI):
         self._api = parent
 
-    def get_value(self, name: str) -> str | None:
-        """Get current displayed value of a value widget by name/label."""
-        for w in self._api._widget_map.values():
-            if getattr(w, "text", None) is not None:
-                return w.text()
+    def get_value(self, name: str):
+        if self._api._runtime:
+            return self._api._runtime.get_value(name)
+        w = self._api._widget_map.get(name)
+        if w is None:
+            return None
+        for method in ("isChecked", "value", "currentText", "text"):
+            if hasattr(w, method):
+                return getattr(w, method)()
         return None
 
-    def set_value(self, name: str, value: str | int | float):
-        """Set the displayed value of a value widget by name/label."""
+    def set_value(self, name: str, value):
+        if self._api._runtime:
+            self._api._runtime.set_value(name, value)
+            return
         w = self._api._widget_map.get(name)
-        if w is not None and hasattr(w, "setText"):
-            w.setText(str(value))
+        if w is not None:
+            if hasattr(w, "setText"):
+                w.setText(str(value))
+            elif hasattr(w, "setValue"):
+                w.setValue(value)
 
-    def get_widget(self, name: str) -> Any:
-        """Get widget reference by name (id or label)."""
+    def get_widget(self, name: str):
+        if self._api._runtime:
+            raise RuntimeError("Use ui.get_value/set_value; Qt widgets belong to the GUI thread")
         return self._api._widget_map.get(name)
 
 
 # Template for user script
-SCRIPT_TEMPLATE = '''"""
-Database script - runs when this database is loaded.
-Define DatabaseMainFunction(api) - it will be called with the API object.
-You can define your own functions and call them from DatabaseMainFunction.
+SCRIPT_TEMPLATE = '''"""Python panel script. Register callbacks and return from startup.
+Name controls with their script binding (e.g. start, status).
+Callbacks execute serially on a background thread and stop on disconnect.
 """
-# API: api.can.send(id, data), api.can.get_latest_messages()
-#       api.uds.tester_present(), api.uds.rdbi(did)
-#       api.uds.request_download(format, address, size)
-#       api.uds.transfer_data_from_file(s19_path, packet_size)
-#       api.dll.load(path), api.dll.call(path, "FunctionName", ...)
-#       api.ui.get_value(name), api.ui.set_value(name, value)
-#       api.log("message")
 
 
 def DatabaseMainFunction(api):
-    """Called when the database is loaded. Use api to send CAN, UDS, call DLLs, etc."""
-    api.log("Database script started")
-    # Example: send CAN
-    # api.can.send(0x200, [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-    # Example: UDS RDBI
-    # data = api.uds.rdbi(0xF190)
-    # Example: UDS RequestDownload + TransferData from file
-    # ok, err = api.uds.transfer_data_from_file("firmware.s19", packet_size=4)
+    api.log("Panel loaded")
+    # api.on("start", lambda value: api.can.send(0x200, [1]))
+    # api.on("setpoint", lambda value: api.log(f"Setpoint: {value}"))
+    # api.on_can(lambda can_id, data: api.ui.set_value("status", data.hex()))
+    # api.every(1.0, lambda: api.ui.set_value("status", "Running"))
 '''

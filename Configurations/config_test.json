@@ -1,0 +1,10 @@
+{
+  "name": "test",
+  "bitrate": 500000,
+  "identifier_11_bit": true,
+  "did": 61936,
+  "timeout_ms": 5000,
+  "extended_id": false,
+  "request_id": 2015,
+  "response_id": 2024
+}

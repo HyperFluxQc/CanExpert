@@ -25,6 +25,7 @@ except ImportError:
     SCRIPT_TEMPLATE = '"""Database script - define DatabaseMainFunction(api)."""\n\ndef DatabaseMainFunction(api):\n    pass\n'
 
 from splitter_panel import SplitterPanel
+from database_loader import DATABASES_DIR, parse_widget, WIDGET_GROUPS
 
 try:
     import cantools
@@ -343,7 +344,7 @@ class PropertyEditor(QGroupBox):
 
         if wtype == "value":
             self._add_line("unit", "Unit", str(data.get("unit", "")))
-            self._add_combo("value_type", "Display type", ["float", "integer"], data.get("type", data.get("value_type", "float")))
+            self._add_combo("value_type", "Display type", ["float", "integer"], data.get("value_type", "float"))
 
         elif wtype == "slider":
             self._add_spin("min", "Min", data.get("min", 0), -32768, 32767)
@@ -406,9 +407,7 @@ class PropertyEditor(QGroupBox):
         if not self.widget_data:
             return
         if key == "value_type":
-            self.widget_data["type"] = str(value)
-            if self.widget_data.get("type") == "value":
-                self.widget_data["value_type"] = str(value)
+            self.widget_data["value_type"] = str(value)
         elif key == "text":
             self.widget_data["text"] = str(value)
         elif key == "binding_type":
@@ -538,7 +537,7 @@ class FormCanvas(QGroupBox):
         return data
 
     def _default_data(self, wtype: str) -> dict:
-        n = len(self._current_widgets()) + 1
+        n = 1 + max((int(w.get("id", 0)) for p in self.pages for w in p["widgets"] if str(w.get("id", "")).isdigit()), default=0)
         base = {"x": 0, "y": 0, "width": 100, "height": 30, "variable": "", "binding_type": BINDING_TYPE_SCRIPT, "binding_value": ""}
         if wtype == "button":
             return {**base, "type": "button", "id": str(n), "label": f"Button {n}"}
@@ -823,12 +822,15 @@ class FormCanvas(QGroupBox):
         data = dict(self._widget_clipboard)
         data["x"] = max(0, x)
         data["y"] = max(0, y)
-        n = len(self._current_widgets()) + 1
+        n = 1 + max((int(w.get("id", 0)) for p in self.pages for w in p["widgets"] if str(w.get("id", "")).isdigit()), default=0)
         data["id"] = str(n)
         if data.get("type") != "label":
             data["label"] = data.get("label", "Widget") + " (copy)"
         else:
             data["text"] = data.get("text", "Label") + " (copy)"
+        if data.get("binding_type", "script") == "script" and data.get("binding_value"):
+            data["binding_value"] = f"{data['binding_value']}_copy{n}"
+            data["variable"] = data["binding_value"]
         self._current_widgets().append(data)
         self._rebuild()
 
@@ -850,14 +852,14 @@ class FormCanvas(QGroupBox):
                 d = b.copy()
                 d["type"] = "button"
                 d["data_bytes"] = d.get("data_bytes", self._parse_hex(d.get("data", "00 00 00 00 00 00 00 00")))
-                d["value_type"] = d.get("type", "float")
+                d.setdefault("value_type", "float")
                 d.setdefault("x", 0)
                 d.setdefault("y", 0)
                 widgets.append(d)
             for v in data.get("values", []):
                 d = v.copy()
                 d["type"] = "value"
-                d["value_type"] = d.get("type", "float")
+                d.setdefault("value_type", "float")
                 d.setdefault("x", 0)
                 d.setdefault("y", 0)
                 widgets.append(d)
@@ -899,28 +901,22 @@ class FormCanvas(QGroupBox):
         d.setdefault("binding_type", BINDING_TYPE_SCRIPT)
         d.setdefault("binding_value", d.get("variable", ""))
         if d.get("type") in ("value", "value_display"):
-            d["value_type"] = d.get("type", d.get("value_type", "float"))
+            d.setdefault("value_type", "float")
         if d.get("type") == "label":
             d["label"] = d.get("text", d.get("label", ""))
         return d
 
     def get_data(self) -> dict:
-        out_pages = []
+        pages = []
         for page in self.pages:
             widgets = []
-            for w in page["widgets"]:
-                t = w.get("type", "")
-                d = {k: v for k, v in w.items() if k not in ("data_bytes", "can_id", "data", "byte_start", "byte_length", "byte", "bit", "scale", "offset")}
-                if "value_type" in d and d.get("type") == "value":
-                    d["type"] = d["value_type"]
-                    del d["value_type"]
-                if t == "label":
-                    d["text"] = d.get("text", d.get("label", ""))
-                if d.get("binding_type") == BINDING_TYPE_SCRIPT:
-                    d["variable"] = d.get("binding_value", d.get("variable", ""))
-                widgets.append(d)
-            out_pages.append({"name": page["name"], "widgets": widgets})
-        return {"pages": out_pages}
+            for item in page["widgets"]:
+                data = {k: v for k, v in item.items() if k not in ("data_bytes", "kind")}
+                if "data_bytes" in item:
+                    data["data"] = " ".join(f"{v:02X}" for v in item["data_bytes"])
+                widgets.append(data)
+            pages.append({"name": page["name"], "widgets": widgets})
+        return {"pages": pages}
 
 
 class FormDesigner(QDialog):
@@ -932,9 +928,10 @@ class FormDesigner(QDialog):
         self.setWindowTitle("Form Designer")
         self.setMinimumSize(900, 600)
         self.resize(1000, 700)
-        self.db_id = db_id or "new"
-        _default_name = f"{self.db_id}_{date.today().isoformat()}"
-        self.db_name = db_name or (db_id and f"{db_id}_{date.today().isoformat()}") or _default_name
+        self.database_dir = DATABASES_DIR
+        self.db_id = db_id or f"new_{date.today().isoformat()}"
+        _default_name = self.db_id
+        self.db_name = db_name or _default_name
         self.description = description
 
         self.symbol_list = SymbolListPanel()
@@ -956,17 +953,10 @@ class FormDesigner(QDialog):
         left_layout.addWidget(self.palette)
         left_widget.setLayout(left_layout)
 
-        # Middle: tabs "Form", "Database code", "Outline"
-        self.outline_tree = QTreeWidget()
-        self.outline_tree.setHeaderLabels(["Control", "Binding"])
-        self.outline_tree.setColumnWidth(0, 180)
-        self.outline_tree.header().setContextMenuPolicy(Qt.CustomContextMenu)
-        self.outline_tree.header().customContextMenuRequested.connect(self._show_outline_column_menu)
+        # Middle: form and Python code editors
         self.design_tabs = QTabWidget()
         self.design_tabs.addTab(self.canvas, "Form")
         self.design_tabs.addTab(self.code_editor, "Database code")
-        self.design_tabs.addTab(self.outline_tree, "Outline")
-        self.design_tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(True)
@@ -974,7 +964,7 @@ class FormDesigner(QDialog):
         self.design_tabs.setMinimumWidth(0)
         self.properties.setMinimumWidth(0)
         left_panel = SplitterPanel("Symbols & palette", left_widget, Qt.Horizontal)
-        form_panel = SplitterPanel("Form / Code / Outline", self.design_tabs, Qt.Horizontal)
+        form_panel = SplitterPanel("Form / Code", self.design_tabs, Qt.Horizontal)
         props_panel = SplitterPanel("Properties", self.properties, Qt.Horizontal)
         splitter.addWidget(left_panel)
         splitter.addWidget(form_panel)
@@ -1018,17 +1008,12 @@ class FormDesigner(QDialog):
         layout.addLayout(btn_layout)
         layout.addWidget(splitter)
         self.setLayout(layout)
-
-    def _on_tab_changed(self, index: int):
-        if index == 1:
-            self._load_script()
-        elif index == 2:
-            self._refresh_outline()
+        self._load_script()
 
     def _script_path(self) -> Path:
         """Path to the database script file for current db_id."""
         db_id = self.db_id_edit.text().strip() or "new"
-        return Path("Databases") / f"{db_id}_script.py"
+        return self.database_dir / f"{db_id}_script.py"
 
     def _load_script(self):
         path = self._script_path()
@@ -1065,56 +1050,31 @@ class FormDesigner(QDialog):
             self.properties.load_widget(w[idx])
             self.canvas._rebuild()
 
-    def _show_outline_column_menu(self, pos):
-        """Context menu on Outline header: toggle column visibility."""
-        menu = QMenu(self)
-        labels = ["Control", "Binding"]
-        for col in range(min(self.outline_tree.columnCount(), len(labels))):
-            name = labels[col]
-            act = menu.addAction(f"Show '{name}'")
-            act.setCheckable(True)
-            act.setChecked(not self.outline_tree.isColumnHidden(col))
-            act.triggered.connect(lambda checked, c=col: self.outline_tree.setColumnHidden(c, not checked))
-        menu.exec_(self.outline_tree.header().mapToGlobal(pos))
-
-    def _refresh_outline(self):
-        """Fill Outline tab with pages and widgets and their bindings."""
-        self.outline_tree.clear()
-        for page in self.canvas.pages:
-            page_name = page.get("name", "Page")
-            page_item = QTreeWidgetItem(self.outline_tree, [page_name, ""])
-            for w in page.get("widgets", []):
-                label = w.get("label", w.get("text", w.get("type", "?")))
-                binding = w.get("binding_value", w.get("variable", "")) or ""
-                btype = w.get("binding_type", BINDING_TYPE_SCRIPT)
-                if binding:
-                    binding = f"[{btype}] {binding}"
-                QTreeWidgetItem(page_item, [f"{w.get('type', '?')}: {label}", binding])
-        self.outline_tree.expandAll()
-
     def on_properties_changed(self, data: dict):
         for i, w in enumerate(self.canvas._current_widgets()):
             if w is data:
                 self.canvas.update_widget(i, data)
                 break
-        if self.design_tabs.currentIndex() == 2:
-            self._refresh_outline()
 
     def new_form(self):
         self.canvas.load_from_data({})
         self.properties.clear()
-        self.db_id_edit.clear()
+        self.db_id_edit.setText(f"new_{date.today().isoformat()}")
         self.db_name_edit.setText(f"new_{date.today().isoformat()}")
         self.desc_edit.clear()
+        self.dbc_path_edit.clear()
+        self.symbol_list._dbc_path = None
+        self.symbol_list.db = None
         self.code_editor.setPlainText(SCRIPT_TEMPLATE)
 
     def load(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Database", "Databases", "XML (*.xml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Load Database", str(self.database_dir), "XML (*.xml)")
         if not path:
             return
         try:
             tree = ET.parse(path)
             root = tree.getroot()
+            self.database_dir = Path(path).resolve().parent
             self.db_id = Path(path).stem
             self.db_name = root.get("name", self.db_id)
             self.db_id_edit.setText(self.db_id)
@@ -1124,6 +1084,10 @@ class FormDesigner(QDialog):
             self.desc_edit.setText(self.description)
             dbc_el = root.find("dbc_path")
             dbc_path = root.get("dbc_path", "") or (dbc_el.text.strip() if dbc_el is not None and dbc_el.text else "")
+            self.symbol_list._dbc_path = None
+            self.symbol_list.db = None
+            if dbc_path and not Path(dbc_path).is_absolute():
+                dbc_path = str(self.database_dir / dbc_path)
             if dbc_path and Path(dbc_path).exists():
                 self.dbc_path_edit.setText(dbc_path)
                 self.symbol_list.load_dbc_path(dbc_path)
@@ -1136,7 +1100,7 @@ class FormDesigner(QDialog):
                 for page_el in pages_el.findall("page"):
                     name = page_el.get("name", "Page")
                     widgets = []
-                    for tag, elem_tag in [("button", "button"), ("value", "value"), ("checkbox", "checkbox"), ("slider", "slider"), ("label", "label"), ("gauge", "gauge"), ("progress_bar", "progress_bar"), ("led", "led"), ("combo", "combo"), ("io_box", "io_box")]:
+                    for tag, elem_tag in ((kind, kind) for kind in WIDGET_GROUPS):
                         for elem in page_el.findall(elem_tag):
                             d = self._elem_to_widget_dict(elem, tag)
                             widgets.append(d)
@@ -1145,8 +1109,8 @@ class FormDesigner(QDialog):
             else:
                 data = {tag: [] for tag in ["buttons", "values", "checkboxes", "sliders", "labels"]}
                 for tag in data:
-                    for elem in root.findall(f".//{tag[:-1]}"):
-                        d = self._elem_to_widget_dict(elem, tag[:-1])
+                    for elem in root.findall(".//" + {"checkboxes": "checkbox"}.get(tag, tag[:-1])):
+                        d = self._elem_to_widget_dict(elem, elem.tag)
                         data[tag].append(d)
                 self.canvas.load_from_data(data)
             self.properties.clear()
@@ -1155,44 +1119,22 @@ class FormDesigner(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to load: {e}")
 
     def _elem_to_widget_dict(self, elem, tag: str) -> dict:
-        d = dict(elem.attrib)
-        for k in ["x", "y", "width", "height", "byte_start", "byte_length", "byte", "bit", "min", "max"]:
-            if k in d:
-                try:
-                    d[k] = int(d[k])
-                except ValueError:
-                    pass
-        for k in ["scale", "offset"]:
-            if k in d:
-                try:
-                    d[k] = float(d[k])
-                except ValueError:
-                    pass
-        if "can_id" in d:
-            try:
-                d["can_id"] = int(d["can_id"], 16) if str(d["can_id"]).startswith("0x") else int(d["can_id"])
-            except ValueError:
-                d["can_id"] = 0
-        if "data" in d:
-            d["data_bytes"] = [int(x, 16) for x in d["data"].replace(",", " ").split() if x.strip()]
-        if tag == "value":
-            d["value_type"] = d.get("type", "float")
-        if tag == "label":
-            d["text"] = d.get("text", d.get("label", ""))
-        d["type"] = tag
-        return d
+        return parse_widget(elem)
 
     def save(self):
         db_id = self.db_id_edit.text().strip() or "new"
         db_name = self.db_name_edit.text().strip() or db_id
         description = self.desc_edit.text().strip()
 
-        path = Path("Databases")
-        path.mkdir(exist_ok=True)
+        if Path(db_id).name != db_id or any(c in db_id for c in '/\\:*?"<>|'):
+            QMessageBox.warning(self, "Invalid database ID", "Use a filename stem such as engine_2026-09-18.")
+            return
+        path = self.database_dir
+        path.mkdir(parents=True, exist_ok=True)
         filepath = path / f"{db_id}.xml"
 
         data = self.canvas.get_data()
-        dbc_path = self.symbol_list.get_dbc_path() or self.dbc_path_edit.text().strip()
+        dbc_path = self.dbc_path_edit.text().strip()
         root = ET.Element("application_database", name=db_name)
         if dbc_path:
             root.set("dbc_path", dbc_path)
@@ -1204,15 +1146,13 @@ class FormDesigner(QDialog):
             page_el = ET.SubElement(pages_el, "page", name=page.get("name", "Page"))
             for item in page.get("widgets", []):
                 t = item.get("type", "")
-                key = {"button": "button", "value": "value", "checkbox": "checkbox", "slider": "slider", "label": "label", "gauge": "gauge", "progress_bar": "progress_bar", "led": "led", "combo": "combo", "io_box": "io_box"}.get(t)
+                key = t if t in WIDGET_GROUPS else None
                 if not key:
                     continue
-                exclude = {"data_bytes", "value_type", "can_id", "data", "byte_start", "byte_length", "byte", "bit", "scale", "offset"}
+                exclude = {"data_bytes", "kind"}
                 attrs = {k: str(v) for k, v in item.items() if k not in exclude}
                 if "binding_value" in item and item.get("binding_type") == BINDING_TYPE_SCRIPT:
                     attrs["variable"] = str(item.get("binding_value", item.get("variable", "")))
-                if "value_type" in item:
-                    attrs["type"] = item["value_type"]
                 if key == "label" and "text" in item:
                     attrs["text"] = item["text"]
                 ET.SubElement(page_el, key, attrs)
@@ -1220,6 +1160,10 @@ class FormDesigner(QDialog):
         tree = ET.ElementTree(root)
         ET.indent(tree, space="    ")
         try:
+            for elem in root.iter():
+                if elem.tag in WIDGET_GROUPS:
+                    parse_widget(elem)
+            compile(self.code_editor.toPlainText(), str(self._script_path()), "exec")
             tree.write(filepath, encoding="utf-8", xml_declaration=True, default_namespace=None)
             if self._save_script():
                 QMessageBox.information(self, "Saved", f"Saved to {filepath}\nScript: {self._script_path()}")

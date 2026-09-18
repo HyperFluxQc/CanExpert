@@ -15,7 +15,7 @@ except ImportError:
 
 
 def _bytes_to_hex(data: list | bytes) -> str:
-    data = list(data) if not isinstance(data, (list, bytearray)) else list(data)
+    data = list(data) if isinstance(data, (bytes, str)) else list(data)
     return " ".join(f"{b:02X}" for b in data[:8])
 
 

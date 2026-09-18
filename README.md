@@ -1,11 +1,11 @@
 # CAN Expert
 
-A Python-based CAN interface application using Qt for GUI and python-can. Supports **Kvaser**, **Vector**, and **IXXAT** USB CAN interfaces. Includes UDS discovery and dynamic application databases loaded from XML.
+A Python-based CAN interface application using Qt for GUI and python-can. Supports **Kvaser**, **Vector**, and **IXXAT** USB CAN interfaces. Includes periodic TesterPresent, node monitoring, and dated XML panels linked to Python scripts.
 
 ## Features
 
 - **Multiple interfaces**: Kvaser, Vector, IXXAT (via python-can)
-- **Connection Database**: Sends UDS ReadDataByIdentifier (e.g. `03 22 F1 80`) on connect and parses the response to get the application database ID
+- **Node monitoring**: Sends configured periodic TesterPresent requests, lists responding nodes, and marks lost nodes with a red cross
 - **Application Database**: XML files define the UI (buttons, values, checkboxes, sliders) with CAN mappings
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
@@ -13,7 +13,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - PyQt5
 - python-can
 - One of: Kvaser CAN driver, Vector driver (Windows), or IXXAT VCI (Windows) as needed for your hardware
@@ -28,23 +28,28 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. Select a configuration from the list (or create one)
-2. Click **Connect**
-3. The app sends the UDS command from `connection_database.json`
-4. When the response returns (e.g. database ID `1001`), it loads `Databases/1001.xml`
-5. The UI is built from the XML: buttons, values, checkboxes, sliders
-6. Values update automatically from incoming CAN messages
-7. Buttons and controls send CAN messages when used
+1. The application lists configurations and restores the last selected one.
+2. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
+3. Select a CAN receiver and click **Connect**. The newest matching database is loaded before communication starts.
+4. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again.
+5. Use the panel's controls; their named Python callbacks handle CAN sends and UI updates.
+6. Click **Disconnect** to stop reception, periodic requests and the panel script.
 
-## Connection Database (`connection_database.json`)
+Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
+
+See [Requirements implementation](REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+
+## Legacy connection database (`connection_database.json`)
+
+This file is used by the legacy RDBI discovery helper. The required connection workflow selects a dated database directly and does not require discovery.
 
 Defines the UDS request and how to parse the response:
 
 ```json
 {
   "uds_request": {
-    "request_id": 0x7DF,
-    "response_id": 0x7E8,
+    "request_id": 2015,
+    "response_id": 2024,
     "payload_hex": "03 22 F1 80",
     "timeout_seconds": 2.0
   },

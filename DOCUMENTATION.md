@@ -1,5 +1,7 @@
 # CAN Expert – Developer Documentation
 
+**Current implementation:** see [Requirements implementation](REQUIREMENTS_STATUS.md) for the current connection flow, shared panel schema, script runtime and acceptance coverage. The RDBI-driven connection diagrams below describe the earlier architecture.
+
 This document describes the architecture, file interactions, and data flows of **CAN Expert** for developers who need to understand or extend the codebase.
 
 ---

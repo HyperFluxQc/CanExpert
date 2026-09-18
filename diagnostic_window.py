@@ -239,17 +239,17 @@ class DiagnosticWindow(QDialog):
             pname = getattr(param, "short_name", None) or getattr(param, "long_name", None) or "?"
             if pname in free_names:
                 # Simple widget by type
-                dop = getattr(param, "dop_ref", None) or getattr(param, "dop", None)
+                dop = getattr(param, "dop", None)
                 base_type = ""
                 if dop:
-                    base_type = (getattr(dop, "base_data_type", None) or getattr(dop, "physical_type", None) or "").upper()
+                    physical = getattr(dop, "physical_type", None)
+                    base_type = str(getattr(getattr(physical, "base_data_type", None), "value", "")).upper()
                 if "FLOAT" in base_type or "DOUBLE" in base_type:
                     w = QDoubleSpinBox()
                     w.setRange(-1e9, 1e9)
                     w.setDecimals(6)
                 elif "UINT" in base_type or "A_UINT" in base_type:
-                    w = QSpinBox()
-                    w.setRange(0, 2**32 - 1)
+                    w = QLineEdit("0")
                 elif "SINT" in base_type or "A_INT" in base_type:
                     w = QSpinBox()
                     w.setRange(-2**31, 2**31 - 1)
@@ -283,14 +283,17 @@ class DiagnosticWindow(QDialog):
         except Exception as e:
             self.monitor_log.appendPlainText(f"[Encode error] {e}")
             return
-        cfg = getattr(main, "active_config", None)
+        cfg = getattr(main, "session_config", None) or getattr(main, "active_config", None)
         req_id = self._request_id
         if cfg:
             req_id = cfg.get("request_id") or cfg.get("server_id") or self._request_id
-        msg = can.Message(arbitration_id=req_id, data=payload, is_extended_id=False)
         try:
-            import can
-            bus.send(msg)
+            if len(payload) > 7 - int(bool((cfg or {}).get("extended_id"))):
+                raise ValueError("This diagnostic window supports single-frame requests only")
+            frame = bytes([len(payload)]) + bytes(payload)
+            if (cfg or {}).get("extended_id"):
+                frame = bytes([cfg["extended_id_byte"]]) + frame
+            main.send_can_message(req_id, frame)
             ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             self.monitor_log.appendPlainText(f"{ts}  TX  ID=0x{req_id:X}  {payload.hex()}")
         except Exception as e:
@@ -301,7 +304,9 @@ class DiagnosticWindow(QDialog):
         main = self.parent()
         if not main or not getattr(main, "active_config", None):
             return
-        cfg = main.active_config
+        if not hasattr(self, "monitor_log"):
+            return
+        cfg = getattr(main, "session_config", None) or main.active_config
         req_id = cfg.get("request_id") or cfg.get("server_id") or 0x7E0
         resp_id = cfg.get("response_id") or cfg.get("ecu_id") or 0x7E8
         if arb_id != req_id and arb_id != resp_id:

@@ -8,10 +8,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
 
 def _parse_hex(hex_str: str) -> list[int]:
     """Parse hex string '01 02 03' into list of ints."""
@@ -38,306 +34,110 @@ def _get_attr(elem: ET.Element, key: str, default: Any = None, converter=None):
     return val
 
 
-# -----------------------------------------------------------------------------
-# Public API
-# -----------------------------------------------------------------------------
+WIDGET_GROUPS = {
+    "button": "buttons", "value": "values", "checkbox": "checkboxes",
+    "slider": "sliders", "label": "labels", "text_input": "text_inputs",
+    "gauge": "gauges", "progress_bar": "progress_bars", "led": "leds",
+    "combo": "combos", "io_box": "io_boxes",
+}
+DATABASES_DIR = Path(__file__).resolve().parent / "Databases"
 
 
-def load_application_database(db_id: str, databases_dir: str | Path = "Databases") -> dict | None:
-    """
-    Load application database by ID. Searches for {db_id}.xml in databases_dir.
-    Returns parsed structure or None if not found.
-    """
+def select_database(databases_dir=DATABASES_DIR, family=""):
+    """Newest YYYY-MM-DD or YYYYMMDD filename; undated legacy files rank last."""
+    import re
+    from datetime import date
     base = Path(databases_dir)
-    candidates = [
-        base / f"{db_id}.xml",
-        Path(f"{db_id}.xml"),
-        Path(f"Databases/{db_id}.xml"),
-    ]
-    for path in candidates:
-        if path.exists():
-            return parse_application_database(path)
-    return None
+    if family and (Path(family).name != family or any(c in family for c in '/\\:')):
+        raise ValueError("Database family must be a filename stem, not a path")
+    candidates = []
+    for path in base.glob("*.xml"):
+        stem = path.stem
+        match = re.search(r"(?:^|_)(\d{4})-?(\d{2})-?(\d{2})$", stem)
+        stamp = date.min
+        prefix = stem
+        if match:
+            try:
+                stamp = date(*map(int, match.groups()))
+            except ValueError:
+                continue
+            prefix = stem[:match.start()].rstrip("_")
+        if family and family not in (stem, prefix):
+            continue
+        candidates.append((stamp, path.name, path))
+    return max(candidates)[2] if candidates else None
 
 
-def parse_application_database(path: str | Path) -> dict | None:
-    """Parse application database XML file."""
-    path = Path(path)
-    if not path.exists():
-        return None
-    try:
-        tree = ET.parse(path)
-        root = tree.getroot()
-    except ET.ParseError:
-        return None
-
-    db_name = root.get("name", path.stem)
-    result = {
-        "name": db_name,
-        "description": "",
-        "buttons": [],
-        "values": [],
-        "checkboxes": [],
-        "sliders": [],
-        "labels": [],
-        "text_inputs": [],
-        "gauges": [],
-        "progress_bars": [],
-        "leds": [],
-        "combos": [],
-        "io_boxes": [],
-    }
-    result["dbc_path"] = root.get("dbc_path", "") or ""
-
-    desc = root.find("description")
-    if desc is not None and desc.text:
-        result["description"] = desc.text.strip()
-
-    pages_el = root.find("pages")
-    if pages_el is not None:
-        result["pages"] = []
-        for page_el in pages_el.findall("page"):
-            page = _parse_page(page_el)
-            result["pages"].append(page)
-        return result
-
-    # Legacy flat structure (no pages)
-    def _xy(elem):
-        return _get_attr(elem, "x", 0, int), _get_attr(elem, "y", 0, int)
-
-    for btn in root.findall(".//button"):
-        b = _parse_button(btn)
-        b["x"], b["y"] = _xy(btn)
-        result["buttons"].append(b)
-
-    for val in root.findall(".//value"):
-        v = _parse_value(val)
-        v["x"], v["y"] = _xy(val)
-        result["values"].append(v)
-
-    for cb in root.findall(".//checkbox"):
-        c = _parse_checkbox(cb)
-        c["x"], c["y"] = _xy(cb)
-        result["checkboxes"].append(c)
-
-    for sl in root.findall(".//slider"):
-        s = _parse_slider(sl)
-        s["x"], s["y"] = _xy(sl)
-        result["sliders"].append(s)
-
-    for lbl in root.findall(".//label"):
-        l = _parse_label(lbl)
-        l["x"], l["y"] = _xy(lbl)
-        result["labels"].append(l)
-
-    for ti in root.findall(".//text_input"):
-        result["text_inputs"].append({
-            "id": _get_attr(ti, "id", "0"),
-            "label": _get_attr(ti, "label", ""),
-            "type": _get_attr(ti, "type", "string"),
-        })
-
-    return result
+def load_application_database(db_id="", databases_dir=DATABASES_DIR):
+    path = select_database(databases_dir, str(db_id))
+    return parse_application_database(path) if path else None
 
 
-def _parse_button(elem: ET.Element) -> dict:
-    b = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "Button"),
-        "type": _get_attr(elem, "type", "push_button"),
-        "can_id": _get_attr(elem, "can_id", 0, _parse_can_id),
-        "data": _get_attr(elem, "data", "00 00 00 00 00 00 00 00"),
-    }
-    if isinstance(b["data"], str):
-        b["data_bytes"] = _parse_hex(b["data"])
+def parse_widget(elem):
+    """One lossless schema shared by the designer and runtime."""
+    data = dict(elem.attrib)
+    kind = elem.tag
+    value_type = data.get("value_type", data.get("type", "string" if kind == "text_input" else "float"))
+    if value_type in WIDGET_GROUPS:
+        value_type = "string" if kind == "text_input" else "float"
+    data.update(kind=kind, type=kind, value_type=value_type)
+    for key, default in (("x", 0), ("y", 0), ("width", 100), ("height", 30),
+                         ("byte_start", 0), ("byte_length", 1), ("byte", 0),
+                         ("bit", 0), ("min", 0), ("max", 100)):
+        data[key] = int(data.get(key, default))
+    for key, default in (("scale", 1.0), ("offset", 0.0)):
+        data[key] = float(data.get(key, default))
+    if "can_id" in data and str(data["can_id"]).strip():
+        data["can_id"] = _parse_can_id(data["can_id"])
+        if not 0 <= data["can_id"] <= 0x1FFFFFFF:
+            raise ValueError("CAN ID must be between 0 and 0x1FFFFFFF")
     else:
-        b["data_bytes"] = b["data"] if isinstance(b["data"], list) else [0] * 8
-    b["x"] = _get_attr(elem, "x", 0, int)
-    b["y"] = _get_attr(elem, "y", 0, int)
-    return b
+        data.pop("can_id", None)
+    if not 0 <= data["byte"] < 8 or not 0 <= data["bit"] < 8:
+        raise ValueError("CAN byte and bit positions must be between 0 and 7")
+    if data["byte_start"] < 0 or not 1 <= data["byte_length"] <= 8 or data["byte_start"] + data["byte_length"] > 8:
+        raise ValueError("CAN value must fit within eight bytes")
+    if data["min"] > data["max"] or data["width"] <= 0 or data["height"] <= 0:
+        raise ValueError("Invalid widget range or dimensions")
+    data.setdefault("id", "")
+    data.setdefault("label", data.get("text", kind.title()))
+    data.setdefault("unit", "")
+    data.setdefault("binding_type", "script")
+    data.setdefault("binding_value", data.get("variable", ""))
+    if kind == "button":
+        data["data_bytes"] = _parse_hex(data.get("data", "00"))
+        if len(data["data_bytes"]) > 8 or any(not 0 <= b <= 255 for b in data["data_bytes"]):
+            raise ValueError("Button data must contain at most eight bytes")
+    return data
 
 
-def _parse_value(elem: ET.Element) -> dict:
-    v = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "Value"),
-        "unit": _get_attr(elem, "unit", ""),
-        "type": _get_attr(elem, "type", "float"),
-        "can_id": _get_attr(elem, "can_id", 0, _parse_can_id),
-        "byte_start": _get_attr(elem, "byte_start", 0, int),
-        "byte_length": _get_attr(elem, "byte_length", 1, int),
-        "scale": _get_attr(elem, "scale", 1.0, float),
-        "offset": _get_attr(elem, "offset", 0.0, float),
-    }
-    v["x"] = _get_attr(elem, "x", 0, int)
-    v["y"] = _get_attr(elem, "y", 0, int)
-    return v
-
-
-def _parse_checkbox(elem: ET.Element) -> dict:
-    c = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "Checkbox"),
-        "can_id": _get_attr(elem, "can_id", 0, _parse_can_id),
-        "byte": _get_attr(elem, "byte", 0, int),
-        "bit": _get_attr(elem, "bit", 0, int),
-    }
-    c["x"] = _get_attr(elem, "x", 0, int)
-    c["y"] = _get_attr(elem, "y", 0, int)
-    return c
-
-
-def _parse_slider(elem: ET.Element) -> dict:
-    s = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "Slider"),
-        "min": _get_attr(elem, "min", 0, int),
-        "max": _get_attr(elem, "max", 100, int),
-        "type": _get_attr(elem, "type", "integer"),
-        "can_id": _get_attr(elem, "can_id", 0, _parse_can_id),
-        "byte": _get_attr(elem, "byte", 0, int),
-    }
-    s["x"] = _get_attr(elem, "x", 0, int)
-    s["y"] = _get_attr(elem, "y", 0, int)
-    return s
-
-
-def _parse_label(elem: ET.Element) -> dict:
-    return {
-        "id": _get_attr(elem, "id", "0"),
-        "text": _get_attr(elem, "text", ""),
-        "type": _get_attr(elem, "type", "static"),
-        "x": _get_attr(elem, "x", 0, int),
-        "y": _get_attr(elem, "y", 0, int),
-    }
-
-
-def _parse_gauge(elem: ET.Element) -> dict:
-    g = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "Gauge"),
-        "unit": _get_attr(elem, "unit", ""),
-        "min": _get_attr(elem, "min", 0, int),
-        "max": _get_attr(elem, "max", 100, int),
-        "variable": _get_attr(elem, "variable", ""),
-        "binding_type": _get_attr(elem, "binding_type", "script"),
-        "binding_value": _get_attr(elem, "binding_value", ""),
-    }
-    g["x"] = _get_attr(elem, "x", 0, int)
-    g["y"] = _get_attr(elem, "y", 0, int)
-    g["width"] = _get_attr(elem, "width", 100, int)
-    g["height"] = _get_attr(elem, "height", 60, int)
-    return g
-
-
-def _parse_progress_bar(elem: ET.Element) -> dict:
-    p = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "Progress"),
-        "min": _get_attr(elem, "min", 0, int),
-        "max": _get_attr(elem, "max", 100, int),
-        "variable": _get_attr(elem, "variable", ""),
-        "binding_type": _get_attr(elem, "binding_type", "script"),
-        "binding_value": _get_attr(elem, "binding_value", ""),
-    }
-    p["x"] = _get_attr(elem, "x", 0, int)
-    p["y"] = _get_attr(elem, "y", 0, int)
-    p["width"] = _get_attr(elem, "width", 120, int)
-    p["height"] = _get_attr(elem, "height", 24, int)
-    return p
-
-
-def _parse_led(elem: ET.Element) -> dict:
-    l = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "LED"),
-        "on_text": _get_attr(elem, "on_text", "ON"),
-        "off_text": _get_attr(elem, "off_text", "OFF"),
-        "variable": _get_attr(elem, "variable", ""),
-        "binding_type": _get_attr(elem, "binding_type", "script"),
-        "binding_value": _get_attr(elem, "binding_value", ""),
-    }
-    l["x"] = _get_attr(elem, "x", 0, int)
-    l["y"] = _get_attr(elem, "y", 0, int)
-    l["width"] = _get_attr(elem, "width", 60, int)
-    l["height"] = _get_attr(elem, "height", 24, int)
-    return l
-
-
-def _parse_combo(elem: ET.Element) -> dict:
-    c = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "Combo"),
-        "items": _get_attr(elem, "items", ""),
-        "variable": _get_attr(elem, "variable", ""),
-        "binding_type": _get_attr(elem, "binding_type", "script"),
-        "binding_value": _get_attr(elem, "binding_value", ""),
-    }
-    c["x"] = _get_attr(elem, "x", 0, int)
-    c["y"] = _get_attr(elem, "y", 0, int)
-    c["width"] = _get_attr(elem, "width", 100, int)
-    c["height"] = _get_attr(elem, "height", 28, int)
-    return c
-
-
-def _parse_io_box(elem: ET.Element) -> dict:
-    i = {
-        "id": _get_attr(elem, "id", "0"),
-        "label": _get_attr(elem, "label", "I/O"),
-        "unit": _get_attr(elem, "unit", ""),
-        "value_type": _get_attr(elem, "value_type", "float"),
-        "variable": _get_attr(elem, "variable", ""),
-        "binding_type": _get_attr(elem, "binding_type", "script"),
-        "binding_value": _get_attr(elem, "binding_value", ""),
-    }
-    i["x"] = _get_attr(elem, "x", 0, int)
-    i["y"] = _get_attr(elem, "y", 0, int)
-    i["width"] = _get_attr(elem, "width", 80, int)
-    i["height"] = _get_attr(elem, "height", 28, int)
-    return i
-
-
-def _parse_page(page_el: ET.Element) -> dict:
-    """Parse one page element into dict with buttons, values, ..., each with x,y."""
-    page = {
-        "name": page_el.get("name", "Page"),
-        "buttons": [],
-        "values": [],
-        "checkboxes": [],
-        "sliders": [],
-        "labels": [],
-        "gauges": [],
-        "progress_bars": [],
-        "leds": [],
-        "combos": [],
-        "io_boxes": [],
-    }
-    for btn in page_el.findall("button"):
-        page["buttons"].append(_parse_button(btn))
-    for val in page_el.findall("value"):
-        page["values"].append(_parse_value(val))
-    for cb in page_el.findall("checkbox"):
-        page["checkboxes"].append(_parse_checkbox(cb))
-    for sl in page_el.findall("slider"):
-        page["sliders"].append(_parse_slider(sl))
-    for lbl in page_el.findall("label"):
-        page["labels"].append(_parse_label(lbl))
-    for g in page_el.findall("gauge"):
-        page["gauges"].append(_parse_gauge(g))
-    for p in page_el.findall("progress_bar"):
-        page["progress_bars"].append(_parse_progress_bar(p))
-    for led in page_el.findall("led"):
-        page["leds"].append(_parse_led(led))
-    for c in page_el.findall("combo"):
-        page["combos"].append(_parse_combo(c))
-    for io in page_el.findall("io_box"):
-        page["io_boxes"].append(_parse_io_box(io))
-    return page
+def parse_application_database(path):
+    path = Path(path)
+    root = ET.parse(path).getroot()
+    if root.tag != "application_database":
+        raise ValueError("Expected an application_database XML root")
+    result = {"name": root.get("name", path.stem), "description": root.findtext("description", "").strip(),
+              "source_path": str(path.resolve()), "dbc_path": root.get("dbc_path", ""), "pages": []}
+    pages = root.find("pages")
+    for source in list(pages) if pages is not None else [root]:
+        page = {"name": source.get("name", "Main")}
+        page.update({group: [] for group in WIDGET_GROUPS.values()})
+        widget_index = 0
+        for elem in source.iter():
+            if elem.tag in WIDGET_GROUPS:
+                widget = parse_widget(elem)
+                if pages is None and "x" not in elem.attrib and "y" not in elem.attrib:
+                    widget.update(x=20, y=20 + widget_index * 40)
+                page[WIDGET_GROUPS[elem.tag]].append(widget)
+                widget_index += 1
+        result["pages"].append(page)
+    return result
 
 
 def decode_value_from_can_data(data: list | bytes, byte_start: int, byte_length: int, scale: float, offset: float, value_type: str) -> str | int | float:
     """Decode a value from CAN message data."""
-    data = list(data) if hasattr(data, "__iter__") and not isinstance(data, str) else []
+    if not isinstance(data, (list, bytes, bytearray)):
+        return 0
     if byte_start + byte_length > len(data):
         return 0
     raw = 0

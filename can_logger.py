@@ -242,6 +242,7 @@ class CANLoggerWindow(QDialog):
             self.path_status.setText(path.name)
             self.path_status.setStyleSheet("QLineEdit { border: none; background: transparent; }")
             self._data.clear()
+            self._time_ref = None
             self._curves.clear()
             self._checkboxes.clear()
             # Clear plot
@@ -342,7 +343,7 @@ class CANLoggerWindow(QDialog):
         if not self.db or not HAS_CANTOOLS:
             return
         try:
-            decoded = self.db.decode_message(arb_id, bytes(data[:8]))
+            decoded = self.db.decode_message(arb_id, bytes(data[:8]), decode_choices=False)
         except Exception:
             return
         t = getattr(self, "_time_ref", None)
