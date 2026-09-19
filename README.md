@@ -137,7 +137,7 @@ See [Requirements implementation](docs/REQUIREMENTS_STATUS.md#panel-scripts) for
 
 ## File structure
 
-
+```
 CanExpert/
 ├── main.py                     # Start CAN Expert
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)

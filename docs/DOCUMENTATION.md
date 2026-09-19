@@ -79,7 +79,7 @@ flowchart LR
 
 ## 3. Files and Folders
 
-
+```
 CanExpert/
 ├── main.py                     # Start CAN Expert
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
