@@ -205,3 +205,9 @@ python -B -m unittest discover -s tests -v
 ```
 
 The tests use python-can's virtual interface; no hardware is required.
+
+With the Kvaser driver installed, one more script drives the real main window against `dummy_ecu.py` over the two virtual channels — opening the adapter, node status, a panel, flashing, the CAN Logger, the activity scan, the ECU check and reconnecting. It uses a temporary configuration and temporary settings, so nothing of yours changes:
+
+```bash
+python tests/kvaser_end_to_end.py
+```

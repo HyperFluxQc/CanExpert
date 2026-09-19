@@ -75,18 +75,24 @@ class RequirementsTest(unittest.TestCase):
         (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT)
         self.settings.setValue("last_configuration", "Second")
         self.channel = "acceptance-" + str(uuid.uuid4())
+        self.bus_calls = []
         self.ecu = can.Bus(interface="virtual", channel=self.channel)
         self.patches = [
             patch.object(main, "CONFIG_DIR", self.configs),
             patch.object(main, "DATABASES_DIR", self.databases),
             patch.object(main, "app_settings", lambda: self.settings),
             patch.object(main.can, "detect_available_configs", return_value=[]),
-            patch.object(can_bus, "create_can_bus", lambda *a, **k: can.Bus(interface="virtual", channel=self.channel)),
+            patch.object(can_bus, "create_can_bus", self.fake_can_bus),
         ]
         for item in self.patches:
             item.start()
         self.window = main.MainWindow()
         self.window.selected_channel_config = {"interface":"virtual", "channel":0}
+
+    def fake_can_bus(self, interface, channel, bitrate, **options):
+        """Stands in for the adapter with create_can_bus()'s real signature, so a bad call fails here too."""
+        self.bus_calls.append({"interface": interface, "channel": channel, "bitrate": bitrate, **options})
+        return can.Bus(interface="virtual", channel=self.channel)
 
     def tearDown(self):
         self.window.close()
@@ -102,6 +108,8 @@ class RequirementsTest(unittest.TestCase):
         self.assertEqual(self.window.active_config["name"], "Second")
         self.window.on_connect_clicked()
         self.assertIsNotNone(self.window.can_bus, self.window.status_label.text())
+        # The adapter is opened with the selected channel and the configuration's bit rate.
+        self.assertEqual(self.bus_calls, [{"interface": "virtual", "channel": 0, "bitrate": 500000}])
         # 2.4, 2.5: database loaded before communication, newest filename date.
         self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-09-18.xml"))
         self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
@@ -215,6 +223,25 @@ class RequirementsTest(unittest.TestCase):
         self.assertEqual(saved['response_ids'], [0x7e8, 0x7e9])
         self.assertEqual(saved['database_family'], 'new_family')
         self.assertEqual(self.window.config_list.count(), 3)
+
+    def test_configuration_import_and_export(self):
+        source = self.root / "external.json"
+        source.write_text(json.dumps(dict(self.cfg, name="Imported")))
+        with patch.object(main.QFileDialog, "getOpenFileName", return_value=(str(source), "")):
+            self.window.import_config()
+        self.assertTrue((self.configs / "config_Imported.json").exists())
+        self.assertIn("Imported", [cfg["name"] for cfg in self.window.configurations])
+        target = self.root / "exported.json"
+        with patch.object(main.QFileDialog, "getSaveFileName", return_value=(str(target), "")):
+            self.window.export_config()
+        self.assertEqual(json.loads(target.read_text())["name"], self.window.active_config["name"])
+        broken = self.root / "broken.json"
+        broken.write_text("{ not json")
+        with patch.object(main.QFileDialog, "getOpenFileName", return_value=(str(broken), "")), \
+                patch.object(QMessageBox, "critical") as error:
+            self.window.import_config()
+            error.assert_called()
+        self.assertEqual(len(self.window.configurations), 3)                 # unchanged by the bad file
 
     def test_extended_identifier_and_address_heartbeat(self):
         self.window.active_config.update(identifier_11_bit=False, request_id=0x18DA10F1,

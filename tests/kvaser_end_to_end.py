@@ -1,0 +1,151 @@
+"""
+Hardware check: the real main window against dummy_ecu.py over the Kvaser Virtual CAN Driver.
+
+The automated suite never touches an adapter, so this script covers what only a driver can show:
+opening a channel, TesterPresent and node status, a panel database, flashing, the CAN Logger with live
+traffic, the activity scan, the ECU check after Disconnect and reconnecting.
+
+    python tests/kvaser_end_to_end.py
+
+It needs the Kvaser driver with its two virtual channels, and no other dummy ECU running on channel 1.
+Nothing of yours is changed: it uses a temporary Configurations folder and temporary settings.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+
+from PyQt5.QtCore import QSettings                                          # noqa: E402
+from PyQt5.QtWidgets import QApplication                                    # noqa: E402
+
+from canexpert import main_window as main                                   # noqa: E402
+from canexpert.can_logger import CANLoggerWindow                            # noqa: E402
+from canexpert.diagnostic_window import DiagnosticWindow                    # noqa: E402
+from canexpert.flashing import load_firmware                                # noqa: E402
+
+APP = QApplication.instance() or QApplication([])
+CONFIGURATION = {"name": "Kvaser check", "bitrate": 500000, "identifier_11_bit": True, "request_id": 0x7E0,
+                 "response_id": 0x7E8, "timeout_ms": 5000, "extended_id": False,
+                 "tester_present_interval_seconds": 0.5, "node_timeout_seconds": 2.0,
+                 "database_family": "showcase"}
+checks = []
+
+
+def check(name, ok, detail=""):
+    checks.append((name, bool(ok)))
+    print(f"{'PASS' if ok else 'FAIL'}  {name}{('  -> ' + str(detail)) if detail else ''}", flush=True)
+
+
+def spin(predicate, timeout=10.0):
+    """Run the GUI event loop until predicate() is true."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        APP.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def main_check():
+    temp = Path(tempfile.mkdtemp())
+    configurations = temp / "Configurations"
+    configurations.mkdir()
+    (configurations / "config_Kvaser check.json").write_text(json.dumps(CONFIGURATION), encoding="utf-8")
+    dump = temp / "flashed.s19"
+    settings = QSettings(str(temp / "settings.ini"), QSettings.IniFormat)
+
+    ecu = subprocess.Popen([sys.executable, str(REPO / "dummy_ecu.py"), "--console", "--channel", "1",
+                            "--dump", str(dump)], cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True)
+    time.sleep(2.0)
+    check("dummy ECU running on Kvaser channel 1", ecu.poll() is None)
+
+    patches = [patch.object(main, "CONFIG_DIR", configurations), patch.object(main, "app_settings", lambda: settings)]
+    for item in patches:
+        item.start()
+    window = main.MainWindow()
+    node_text = lambda: next(iter(window.node_items.values())).text(0) if window.node_items else ""  # noqa: E731
+    try:
+        window.refresh_channel_list()
+        channel0 = next((c for c in window.can_channels if c["interface"] == "kvaser" and c.get("channel") == 0), None)
+        check("Kvaser channel 0 detected", channel0 is not None, channel0)
+        window.selected_channel_config = channel0
+        window.config_list.setCurrentRow(0)
+        window.on_config_selected(window.config_list.item(0))
+
+        window.on_connect_clicked()
+        check("Connect opened the adapter", window.can_bus is not None, window.status_label.text())
+        check("panel database loaded", window.panel is not None and window.app_database is not None,
+              Path(window.app_database["source_path"]).name if window.app_database else None)
+        check("ECU answers TesterPresent (node Responding)", spin(lambda: "Responding" in node_text()), node_text())
+        check("periodic frames received", spin(lambda: window.can_log.toPlainText().count("RX") > 5))
+
+        window.open_can_logger()
+        window.open_diagnostic_window()
+        logger, diagnostics = window._can_logger_window, window._diagnostic_window
+        check("CAN Logger and Diagnostic Window open while connected",
+              isinstance(logger, CANLoggerWindow) and isinstance(diagnostics, DiagnosticWindow))
+        logger.load_dbc_from_path(REPO / "DBC" / "dummy_ecu.dbc")
+        logger.set_signal_plotted("EngineData.Temperature")
+        samples = lambda: getattr(logger._series.get("EngineData.Temperature"), "n", 0)  # noqa: E731
+        check("CAN Logger records a live DBC signal", spin(lambda: samples() > 3, 8), f"{samples()} samples")
+
+        check("Flashing enabled by the panel script", spin(lambda: window._toolbar_actions["flashing"].isEnabled()))
+        firmware = load_firmware(REPO / "examples" / "firmware" / "demo_app.hex")
+        results = []
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+            window.start_flashing(firmware)
+            finished = spin(lambda: results, 90)
+        check("flashing finished", finished and results and results[0][0], results)
+        check("ECU received the image byte for byte",
+              spin(lambda: dump.exists(), 10) and load_firmware(dump).segments == firmware.segments)
+
+        window.disconnect_database()
+        check("ECU check runs after Disconnect", window.ecu_monitor is not None)
+        check("ECU still Responding while checked", spin(lambda: "Responding" in node_text(), 5), node_text())
+        window.stop_ecu_monitor()
+        check("nodes show Not checked once stopped", spin(lambda: "Not checked" in node_text(), 3), node_text())
+
+        window.scan_channel_activity()
+        check("activity scan finished", spin(lambda: window.activity_scanner is None, 30))
+        labels = [item.text(0) for item in window.channel_items.values()]
+        check("the scan marks the channel carrying the ECU traffic", any("traffic" in text for text in labels), labels)
+
+        window.on_connect_clicked()
+        check("reconnect works", window.can_bus is not None, window.status_label.text())
+        check("ECU Responding again", spin(lambda: "Responding" in node_text()), node_text())
+        logger.close()
+        diagnostics.close()
+    finally:
+        window.close()
+        APP.processEvents()
+        ecu.terminate()
+        try:
+            output = ecu.communicate(timeout=5)[0]
+        except subprocess.TimeoutExpired:
+            ecu.kill()
+            output = ecu.communicate()[0]
+        for item in patches:
+            item.stop()
+
+    print("\n--- dummy ECU log (last 10 lines) ---")
+    print("\n".join((output or "").strip().splitlines()[-10:]))
+    failed = [name for name, ok in checks if not ok]
+    print(f"\n{len(checks) - len(failed)}/{len(checks)} checks passed")
+    if failed:
+        print("FAILED:", "; ".join(failed))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main_check())
