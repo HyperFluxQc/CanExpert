@@ -601,6 +601,8 @@ class MainWindow(QMainWindow):
         self.channel_items = {}
         self.node_items = {}
         self.session_generation = 0
+        # Checks the ECUs with TesterPresent while no database is connected (after Disconnect, or on request).
+        self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
 
         self.init_ui()
         self.load_configurations()
@@ -631,7 +633,8 @@ class MainWindow(QMainWindow):
         self._toolbar_actions = {}
         entries = [
             ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
-            ("disconnect", "Disconnect", "Stop communication and disconnect", self.on_disconnect_clicked),
+            ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
+             self.disconnect_database),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
             ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
@@ -701,6 +704,8 @@ class MainWindow(QMainWindow):
         self.channel_list.setHeaderLabels(["CAN receivers and nodes"])
         self.channel_list.itemClicked.connect(self.on_channel_selected)
         self.channel_list.itemDoubleClicked.connect(self.on_channel_double_clicked)
+        self.channel_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.channel_list.customContextMenuRequested.connect(self._channel_menu)
         channels_layout.addWidget(self.channel_list)
         ch_btn_layout = QHBoxLayout()
         self.refresh_channels_btn = QPushButton("Refresh")
@@ -795,22 +800,39 @@ class MainWindow(QMainWindow):
                     self.can_channels.append(cfg)
             except Exception as exc:
                 self.log_verbose(f"{label} detection: {exc}")
-        if self.connected_channel_config and not any(_channel_key(c) == _channel_key(self.connected_channel_config) for c in self.can_channels):
-            self.can_channels.append(self.connected_channel_config)
+        for in_use in (self.connected_channel_config, self.monitor_channel if self.ecu_monitor else None):
+            if in_use and not any(_channel_key(c) == _channel_key(in_use) for c in self.can_channels):
+                self.can_channels.append(in_use)
         for cfg in self.can_channels:
-            label = f"[{cfg['interface']}] Ch {cfg.get('channel', 0)}: {cfg.get('device_name', cfg.get('description', 'CAN receiver'))}"
-            serial = cfg.get("serial") or cfg.get("unique_hardware_id")
-            if serial:
-                label += f" ({serial})"
-            if self.connected_channel_config and _channel_key(cfg) == _channel_key(self.connected_channel_config):
-                label += " [Connected]"
-            item = QTreeWidgetItem([label])
+            item = QTreeWidgetItem([self._channel_label(cfg)])
             item.setData(0, Qt.UserRole, cfg)
             self.channel_list.addTopLevelItem(item)
             self.channel_items[_channel_key(cfg)] = item
         if not self.can_channels:
             self.channel_list.addTopLevelItem(QTreeWidgetItem(["No CAN receivers found"]))
         self._update_nodes()
+
+    def _channel_label(self, cfg):
+        label = f"[{cfg['interface']}] Ch {cfg.get('channel', 0)}: {cfg.get('device_name', cfg.get('description', 'CAN receiver'))}"
+        serial = cfg.get("serial") or cfg.get("unique_hardware_id")
+        if serial:
+            label += f" ({serial})"
+        if self.connected_channel_config and _channel_key(cfg) == _channel_key(self.connected_channel_config):
+            label += " [Connected]"
+        elif self.ecu_monitor and _channel_key(cfg) == _channel_key(self.monitor_channel):
+            label += " [Checking ECUs]"
+        return label
+
+    def _label_channels(self):
+        for item in self.channel_items.values():
+            item.setText(0, self._channel_label(item.data(0, Qt.UserRole)))
+
+    def _channel_checked(self, channel_key):
+        """True while ECU replies on this channel are being watched: a database session or the ECU check."""
+        if self.can_bus is not None and self.connected_channel_config is not None:
+            if channel_key == _channel_key(self.connected_channel_config):
+                return True
+        return self.ecu_monitor is not None and channel_key == _channel_key(self.monitor_channel)
 
     def _update_nodes(self):
         now = time.monotonic()
@@ -824,10 +846,14 @@ class MainWindow(QMainWindow):
                 item = QTreeWidgetItem(parent)
                 self.node_items[key] = item
                 parent.setExpanded(True)
-            active = self.can_bus is not None and self.connected_channel_config is not None and channel_key == _channel_key(self.connected_channel_config)
-            lost = state.get("disconnected", False) or not active or now - state["last_seen"] > state["timeout"]
-            item.setText(0, f"{'✗' if lost else '●'} ECU 0x{can_id:X} — {'Lost connection' if lost else 'Responding'}")
-            item.setForeground(0, QColor("red" if lost else "green"))
+            if not self._channel_checked(channel_key):
+                symbol, status, colour = "○", "Not checked", "gray"
+            elif now - state["last_seen"] > state["timeout"]:
+                symbol, status, colour = "✗", "Lost connection", "red"
+            else:
+                symbol, status, colour = "●", "Responding", "green"
+            item.setText(0, f"{symbol} ECU 0x{can_id:X} — {status}")
+            item.setForeground(0, QColor(colour))
             item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))
 
     def scan_channel_activity(self):
@@ -1130,6 +1156,7 @@ class MainWindow(QMainWindow):
         if not self.active_config or not self.selected_channel_config:
             QMessageBox.warning(self, "Connection", "Select a configuration and a CAN receiver first.")
             return
+        self.stop_ecu_monitor()  # the session sends TesterPresent itself
         try:
             config = validate_config(self.active_config)
             database = load_application_database(config["database_family"], DATABASES_DIR)
@@ -1205,10 +1232,7 @@ class MainWindow(QMainWindow):
         self.can_bus = None
         self.session_config = None
         self.connected_channel_config = None
-        for state in self.node_states.values():
-            state["disconnected"] = True
-        for item in self.channel_items.values():
-            item.setText(0, item.text(0).replace(" [Connected]", ""))
+        self._label_channels()
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.config_list.setEnabled(True)
@@ -1218,6 +1242,94 @@ class MainWindow(QMainWindow):
         self._set_status("Disconnected", "gray")
         self.clear_application_ui()
         self._update_nodes()
+
+    # --- ECU check while no database is connected ---
+
+    def disconnect_database(self):
+        """Toolbar Disconnect: close the database session, then keep checking its ECUs so the CAN Channels
+        tree still shows which ones respond."""
+        channel, config = self.connected_channel_config, self.session_config
+        self.on_disconnect_clicked()
+        if channel and config:
+            self.start_ecu_monitor(channel, config)
+
+    def start_ecu_monitor(self, channel_config, config):
+        """Send TesterPresent on the channel at the configuration's interval and watch the ECU replies:
+        each ECU shows Responding, or Lost connection after the node loss timeout."""
+        self.stop_ecu_monitor()
+        kwargs = {key: channel_config[key] for key in ("unique_hardware_id", "serial", "app_name") if key in channel_config}
+        channel = channel_config.get("channel", 0)
+        try:
+            bus = create_can_bus(channel_config["interface"], channel, int(config["bitrate"]), **kwargs)
+        except Exception as exc:
+            self.log_verbose(f"ECU check not started: {exc}")
+            return
+        worker = CanWorker()
+        worker.setup_connection(channel, bus=bus, config=config)
+        worker.message_received.connect(lambda msg, w=worker: self._on_monitor_message(w, msg))
+        worker.message_sent.connect(lambda can_id, data, w=worker: self.log_can("TX", can_id, data)
+                                    if w is self.ecu_monitor else None)
+        worker.error_occurred.connect(lambda error, w=worker: self._monitor_failed(w, error))
+        self.ecu_monitor, self.monitor_bus = worker, bus
+        self.monitor_channel, self.monitor_config = dict(channel_config), config
+        worker.start()
+        self._label_channels()
+        self._update_nodes()
+        self.log_verbose(f"Checking ECUs on {channel_config['interface']} channel {channel}: TesterPresent to "
+                         f"0x{config['request_id']:X} every {config['tester_present_interval_seconds']:g} s "
+                         f"(right-click the channel to stop)")
+
+    def stop_ecu_monitor(self):
+        worker, bus = self.ecu_monitor, self.monitor_bus
+        if worker is None:
+            return
+        self.ecu_monitor = self.monitor_bus = None
+        worker.stop()
+        try:
+            bus.shutdown()
+        except Exception as exc:
+            self.log_verbose(str(exc))
+        self._label_channels()
+        self._update_nodes()
+        self.log_verbose("Stopped checking ECUs")
+
+    def _on_monitor_message(self, worker, msg):
+        config = self.monitor_config
+        if worker is not self.ecu_monitor or msg["arbitration_id"] not in config["response_ids"]:
+            return
+        if msg.get("is_extended_frame", False) != (not config["identifier_11_bit"]):
+            return
+        self.node_states[(_channel_key(self.monitor_channel), msg["arbitration_id"])] = {
+            "last_seen": time.monotonic(), "timeout": config["node_timeout_seconds"]}
+        self.log_can("RX", msg["arbitration_id"], msg["data"])
+        self._update_nodes()
+
+    def _monitor_failed(self, worker, error):
+        if worker is self.ecu_monitor:
+            self.log_verbose(f"ECU check stopped: {error}")
+            self.stop_ecu_monitor()
+
+    def _channel_menu(self, position):
+        item = self.channel_list.itemAt(position)
+        cfg = item.data(0, Qt.UserRole) if item else None
+        if not cfg:
+            return
+        menu = QMenu(self)
+        if self.ecu_monitor and _channel_key(cfg) == _channel_key(self.monitor_channel):
+            menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
+        elif self.can_bus is None and self.active_config:
+            menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
+        if menu.actions():
+            menu.exec_(self.channel_list.viewport().mapToGlobal(position))
+
+    def check_ecus(self, channel_config):
+        """Start the ECU check on a channel with the selected configuration, without loading its database."""
+        try:
+            config = validate_config(self.active_config)
+        except ValueError as exc:
+            self._set_status(f"Invalid configuration: {exc}", "red")
+            return
+        self.start_ecu_monitor(channel_config, config)
 
     def _minimize_side_panels(self):
         """Give the loaded database the room: collapse Configuration, CAN Channels and Log to strips."""
@@ -1282,6 +1394,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.node_timer.stop()
+        self.stop_ecu_monitor()
         self.on_disconnect_clicked()
         if self.activity_scanner:
             self.activity_scanner.requestInterruption()

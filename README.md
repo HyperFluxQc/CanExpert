@@ -34,7 +34,7 @@ pip install -r requirements.txt
 1. The application lists configurations and restores the last selected one.
 2. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
 3. Select a CAN receiver and click **Connect**. The newest matching database is loaded before communication starts.
-4. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again.
+4. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again. After **Disconnect** the ECUs are still checked: CAN Expert keeps sending TesterPresent at the configuration's interval (the channel shows **[Checking ECUs]**), so each ECU stays **Responding** while it answers and shows **Lost connection** when it stops. Right-click the channel to stop, or to **Check ECUs** with the selected configuration without connecting; unchecked ECUs show **Not checked**. Connecting again hands the channel back to the session.
 5. Use the panel's controls; their named Python callbacks handle CAN sends and UI updates.
 6. Click **Disconnect** to stop reception, periodic requests and the panel script.
 
@@ -151,6 +151,7 @@ CanExpert/
 ├── diagnostic_window.py    # ODX Diagnostic Window
 ├── ui_common.py            # Settings, toolbar icons, collapsible panels
 ├── dummy_ecu.py            # Simulated UDS ECU for testing without a vehicle
+├── dummy_ecu_window.py     # Dummy ECU window: connection, settings, status and log
 ├── Databases/              # family_YYYY-MM-DD.xml + _script.py
 ├── DBC/                    # Sample DBC files
 ├── Configurations/         # config_*.json
@@ -162,21 +163,39 @@ CanExpert/
 
 ## Dummy ECU (no vehicle needed)
 
-`dummy_ecu.py` simulates a UDS ECU on any python-can interface. With the Kvaser Virtual CAN Driver, channels 0 and 1 are connected to each other, so run the ECU on one channel and CAN Expert on the other:
+`dummy_ecu.py` simulates a UDS ECU on any python-can interface. With the Kvaser Virtual CAN Driver, channels 0 and 1 are connected to each other, so run the ECU on one channel and CAN Expert on the other. Double-click `dummy_ecu.py` (or run it without options) to open the **Dummy ECU** window:
 
 ```bash
-python dummy_ecu.py --interface kvaser --channel 1
+python dummy_ecu.py
 ```
 
-In CAN Expert, choose the **Dummy ECU** configuration (SERVER ID `7E0`, ECU ID `7E8`, database family `showcase`, the showcase panel with every control and `Flashing()`), select the receiver `[kvaser] Ch 0` and click **Connect**. Run only one dummy ECU per channel: it refuses to start when another ECU already answers there (two answering ECUs break security access and flashing). ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
+Pick the interface and channel (**Detect** lists them; `kvaser` channel `1` by default) and click **Connect**; **Disconnect** releases the channel. Only one dummy ECU runs per channel: a second one is refused (two answering ECUs break security access and flashing). The right side shows the ECU's session, security, transfer progress, downloaded memory and software version, with **Reset ECU** (back to the factory state) and a log of every request; tick **Show CAN frames** to see each frame, flow control included.
 
-The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime), WriteDataByIdentifier for `F190`, SecurityAccess level 1 (key = seed XOR `A5`, the same as the example `compute_key()`), ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: copy the example panel to `Databases/`, set the configuration's database family to `example`, connect, click **Flashing** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`, and `--dump flashed.s19` writes the received image back to a file.
+Every setting applies at once, even while connected, and is remembered for the next start. **Save profile...** / **Load profile...** keep sets of settings as JSON files.
+
+| Tab | Settings |
+|---|---|
+| Addressing | Physical request ID (tester → ECU), functional request ID, response ID (ECU → tester), 29-bit identifiers, extended addressing byte, padding byte |
+| Flow control | Block size (BS), STmin (ms or 100-900 µs), WAIT frames before each ContinueToSend and their interval, receive buffer (longer requests get flow control overflow) |
+| UDS | P2 and P2* announced by DiagnosticSessionControl, response delay (NRC 0x78 beyond P2) and pending interval, S3 timeout, programming session only from extended, SecurityAccess level, seed length, key XOR mask, wrong keys allowed and lockout delay |
+| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, RequestUpload, file for the flashed image |
+| Periodic frames | `0x300`/`0x301` on or off, and their period |
+
+**How big are the TransferData blocks?** The ECU decides: it announces maxNumberOfBlockLength (data + the `0x36` SID + the block counter) in its RequestDownload response, and the tester sends blocks of that size minus 2. Set **Data per TransferData** to 256 or 512 to get `74 20 01 02` or `74 20 02 02`; CAN Expert's `Flashing()` follows it.
+
+In CAN Expert, choose the **Dummy ECU** configuration (SERVER ID `7E0`, ECU ID `7E8`, database family `showcase`, the showcase panel with every control and `Flashing()`), select the receiver `[kvaser] Ch 0` and click **Connect**. ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
+
+The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime), WriteDataByIdentifier for `F190`, SecurityAccess (by default level 1, key = seed XOR `A5`, the same as the example `compute_key()`), ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: connect, click **Flashing** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`; **Save memory as S-record...** (or **Save image to** on the Flashing tab) writes the received image to a file, and RequestUpload (`0x35`) reads it back over UDS.
 
 To see live graphs, open **CAN Logger**, load `DBC/dummy_ecu.dbc` and tick `EngineData.Temperature`, `EngineData.Pressure` or the `EcuStatus` signals.
 
-Segmented requests (TransferData blocks, VIN writes) get real ISO-TP flow control: by default the ECU asks for 8 consecutive frames per block with STmin 1 ms, so the CAN log shows a `30 08 01` flow control frame after every 8 frames. Change it with `--block-size` (0 = no limit) and `--stmin` (milliseconds, or `0xF1`-`0xF9` for 100-900 µs), and add `--fc-wait N` to send N flow control WAIT frames (`31 00 00`) before each ContinueToSend. A request longer than `--max-block` gets flow control overflow (`32 00 00`).
+Without a window, add `--console`, optionally with a profile saved from the window:
 
-Other options: `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--erase-seconds`, `--no-broadcast`. Run `python dummy_ecu.py --help` for details.
+```bash
+python dummy_ecu.py --console --channel 1 --config my_ecu.json
+```
+
+Console options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--block-size`, `--stmin`, `--fc-wait`, `--erase-seconds`, `--no-broadcast`, `--dump FILE`, `--force`. Given without `--console`, they preset the window. Run `python dummy_ecu.py --help` for details.
 
 ## Tests
 

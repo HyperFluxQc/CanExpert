@@ -391,6 +391,49 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.window.on_disconnect_clicked()
         self.assertFalse(item.isVisible())
 
+    def test_ecus_are_still_checked_after_disconnect(self):
+        import threading
+        from dummy_ecu import DummyEcu, EcuConfig
+        ecu = DummyEcu(self.ecu, EcuConfig(broadcast_interval=0), log=lambda text: None)
+
+        def run_ecu():
+            stop = threading.Event()
+            thread = threading.Thread(target=ecu.serve, args=(stop,), daemon=True)
+            thread.start()
+            return stop, thread
+
+        stop, thread = run_ecu()
+        try:
+            self.window.on_connect_clicked()
+            node = lambda: next(iter(self.window.node_items.values()), None)  # noqa: E731
+            self.assertTrue(spin_until(lambda: node() is not None and "Responding" in node().text(0)))
+            self.window.disconnect_database()
+            self.assertIsNone(self.window.can_bus)
+            self.assertIsNotNone(self.window.ecu_monitor)
+            channel = node().parent()
+            self.assertIn("[Checking ECUs]", channel.text(0))
+            for _ in range(8):                                          # 0.4 s: twice the node loss timeout
+                time.sleep(0.05)
+                APP.processEvents()
+                self.assertIn("Responding", node().text(0))
+            self.assertIn("TX  ID: 0x7E0  02 3E 00", self.window.can_log.toPlainText())
+            stop.set()                                                  # the ECU goes silent
+            thread.join(1)
+            self.assertTrue(spin_until(lambda: "Lost connection" in node().text(0)))
+            stop, thread = run_ecu()                                    # and comes back
+            self.assertTrue(spin_until(lambda: "Responding" in node().text(0)))
+            self.window.stop_ecu_monitor()
+            self.assertIn("Not checked", node().text(0))
+            self.assertNotIn("[Checking ECUs]", channel.text(0))
+            self.window.check_ecus(self.window.selected_channel_config)  # right-click: Check ECUs
+            self.assertTrue(spin_until(lambda: "Responding" in node().text(0)))
+            self.window.on_connect_clicked()                            # the session takes over
+            self.assertIsNone(self.window.ecu_monitor)
+            self.assertIn("[Connected]", node().parent().text(0))             # the tree was rebuilt
+        finally:
+            stop.set()
+            thread.join(1)
+
     def test_flashing_the_dummy_ecu_with_a_functional_request_id(self):
         import threading
         from dummy_ecu import DummyEcu, EcuConfig

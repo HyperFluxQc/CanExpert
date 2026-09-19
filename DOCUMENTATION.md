@@ -41,11 +41,13 @@ flowchart LR
     form_designer --> ui_common
     diagnostic_window --> ui_common
     dummy_ecu["dummy_ecu.py"] --> uds_services
+    dummy_ecu_window["dummy_ecu_window.py"] --> dummy_ecu
+    dummy_ecu_window --> ui_common
 ```
 
 | Module | Role |
 |--------|------|
-| **main.py** | Main window, configuration list and dialog, receiver/node tree, Connect/Disconnect, Flashing button and progress dialog, `CanWorker` (hardware reader + TesterPresent), `ChannelActivityScanner`, CAN and debug logs, theme. |
+| **main.py** | Main window, configuration list and dialog, receiver/node tree, Connect/Disconnect, Flashing button and progress dialog, `CanWorker` (hardware reader + TesterPresent, also used for the ECU check that keeps node status live after Disconnect), `ChannelActivityScanner`, CAN and debug logs, theme. |
 | **panel.py** | Panel databases: `select_database()` (newest dated file per family), XML → dict parsing (`parse_widget()`), `decode_value_from_can_data()`, and `PanelView`, which renders pages and controls, decodes raw/DBC-bound values and emits `control_changed(name, value)`. |
 | **panel_controls.py** | Control registry shared by the designer preview and running panels: per control its palette entry, properties, construction, value display and input events; painted controls (gauge, LED, multi-state indicator, toggle switch, knob, 7-segment display, trend); `format_value()` and appearance handling. |
 | **panel_runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.signal/set_signal/send_message`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators, timers, flashing, cancellation), `ReceiveMailbox` (bus facade fed by `CanWorker`), `validate_config()`. |
@@ -56,7 +58,8 @@ flowchart LR
 | **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, follow/pause/fit, Lock X / Lock Y for mouse zoom and pan, two measurement cursors with per-signal values and Δ, a dotted hover crosshair with a time/value readout, CSV export of all decoded data. |
 | **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors request/response IDs. |
 | **flashing_ui.py** | Flashing dialogs shared by the main window and the designer's Test panel: choose and load a firmware file, confirm with its address ranges, progress dialog with Cancel, result message. |
-| **dummy_ecu.py** | Stand-alone simulated UDS ECU (sessions, security, DIDs, DTCs, flashing, periodic frames) for Kvaser virtual channels or any python-can interface. |
+| **dummy_ecu.py** | Stand-alone simulated UDS ECU (sessions, security, DIDs, DTCs, flashing with RequestDownload/RequestUpload, ISO-TP flow control, periodic frames) for Kvaser virtual channels or any python-can interface. `EcuConfig` holds every setting and is read for each frame, so changes apply while running; `load_profile()`/`save_profile()` store it as JSON; `main()` opens the window, or runs headless with `--console`. |
+| **dummy_ecu_window.py** | Dummy ECU window: connection (interface, channel detection, bit rate, Connect/Disconnect with the one-ECU-per-channel lock), settings tabs (addressing, flow control, UDS timing and security, flashing, periodic frames) applied live and remembered in QSettings, ECU status, log with an optional frame trace, JSON profiles. |
 | **ui_common.py** | Shared Qt helpers: `app_settings()` (persistent QSettings, migrating the legacy `EZCan2/KvaserCAN` store once), `toolbar_icon()`, and `SplitterPanel` (collapsible titled panel). |
 
 ---
@@ -216,9 +219,10 @@ Control types (see `panel_controls.CONTROLS`): `button`, `switch`, `checkbox`, `
 python -B -m unittest discover -s tests -v
 ```
 
-- `tests/test_requirements.py`: end-to-end sessions over python-can's virtual interface (configuration restore, heartbeat, node loss/recovery, database selection, scripts, designer round-trip, multi-frame Diagnostic Window exchange, Flashing button).
+- `tests/test_requirements.py`: end-to-end sessions over python-can's virtual interface (configuration restore, heartbeat, node loss/recovery, the ECU check after Disconnect, database selection, scripts, designer round-trip, multi-frame Diagnostic Window exchange, Flashing button).
 - `tests/test_uds_services.py`: ISO-TP flow control frame by frame (block size and STmin, WAIT, overflow, invalid flow status, N_Bs timeout, flow control after every received block, unexpected and invalid frames, the escape sequence), ISO-TP and UDS against a simulated ECU (stale-frame flush, multi-frame requests/replies, response pending, 29-bit IDs with address byte, RequestDownload encoding, heartbeat deferral flag), S-record/Intel HEX parsing, and the example `Flashing()` against a simulated bootloader.
 
-- `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC, flow control (WAIT, block size, STmin, overflow) and flashing behaviour.
+- `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC, flow control (WAIT, block size, STmin, overflow) and flashing behaviour, and its settings: RequestDownload formats, memory ranges, block length and full blocks, RequestUpload read-back, security level/seed/mask, P2/P2* and response pending on a slow response.
+- `tests/test_dummy_ecu_window.py`: the Dummy ECU window connecting and disconnecting on a virtual bus (channel lock included), settings applied while connected, invalid text fields not applied, the log and frame trace, profiles and remembered settings.
 
-No hardware is contacted. For a manual end-to-end check, run `python dummy_ecu.py --interface kvaser --channel 1` and connect CAN Expert to Kvaser virtual channel 0. Adapter drivers, bus electrical conditions and ECU timing still need a hardware acceptance run.
+No hardware is contacted. For a manual end-to-end check, run `python dummy_ecu.py`, connect it to Kvaser virtual channel 1, and connect CAN Expert to Kvaser virtual channel 0. Adapter drivers, bus electrical conditions and ECU timing still need a hardware acceptance run.

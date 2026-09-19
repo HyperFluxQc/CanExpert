@@ -131,6 +131,77 @@ class DummyEcuTest(unittest.TestCase):
         with self.assertRaisesRegex(IsoTpError, "overflow"):                    # longer than maxNumberOfBlockLength
             self.request(bytes([0x36, 0x01]) + bytes(0x402))
 
+    def unlock(self, key_mask=0xA5, level=0x01):
+        self.assertEqual(self.request([0x10, 0x03])[:2], b"\x50\x03")
+        self.assertEqual(self.request([0x10, 0x02])[:2], b"\x50\x02")
+        seed = self.request([0x27, level])[2:]
+        self.assertEqual(self.request([0x27, level + 1, *(b ^ key_mask for b in seed)]), bytes([0x67, level + 1]))
+        return seed
+
+    def erase(self, address, size):
+        reply = self.request([0x31, 0x01, 0xFF, 0x00, 0x44, *address.to_bytes(4, "big"), *size.to_bytes(4, "big")])
+        self.assertEqual(reply, b"\x71\x01\xFF\x00\x00")
+
+    def test_request_download_settings(self):
+        config = self.ecu.config
+        config.max_block_length, config.block_length_bytes, config.full_blocks = 0x102, 4, True
+        config.address_format, config.data_formats = 0x44, (0x00, 0x11)
+        config.memory_ranges = ((0x10000, 0x1FFFF),)
+        self.unlock()
+        rd = lambda fmt, address, size, data_format=0x00: self.request(                  # noqa: E731
+            [0x34, data_format, fmt, *address.to_bytes(fmt & 0x0F, "big"), *size.to_bytes(fmt >> 4, "big")])
+        self.assertEqual(rd(0x44, 0x10000, 0x300), b"\x7F\x34\x70")                     # not erased yet
+        self.erase(0x10000, 0x300)
+        self.assertEqual(rd(0x24, 0x10000, 0x300), b"\x7F\x34\x31")                     # 0x44 required
+        self.assertEqual(rd(0x44, 0x10000, 0x300, data_format=0x22), b"\x7F\x34\x31")   # 00 and 11 accepted
+        self.assertEqual(rd(0x44, 0x1FF00, 0x300), b"\x7F\x34\x31")                     # past the memory range
+        self.assertEqual(rd(0x44, 0x10000, 0x300, data_format=0x11), b"\x74\x40\x00\x00\x01\x02")
+        self.assertEqual(self.request([0x36, 0x01, *bytes(100)]), b"\x7F\x36\x13")     # full 256-byte blocks
+        for counter in (1, 2, 3):
+            self.assertEqual(self.request([0x36, counter, *bytes([counter]) * 256]), bytes([0x76, counter]))
+        self.assertEqual(self.request([0x36, 0x04, 0xFF]), b"\x7F\x36\x71")            # beyond the announced size
+        self.assertEqual(self.request([0x37]), b"\x77")
+        self.assertEqual(bytes(self.ecu.read_memory(0x10000, 0x301)), b"".join(bytes([n]) * 256 for n in (1, 2, 3))
+                         + b"\xFF")                                                      # erased flash after it
+
+    def test_upload_reads_the_memory_back(self):
+        self.ecu.config.max_block_length = 0x42                                          # 64 data bytes per block
+        self.unlock()
+        self.erase(0x20000, 100)
+        self.assertEqual(self.request([0x34, 0x00, 0x44, 0, 2, 0, 0, 0, 0, 0, 100]), b"\x74\x20\x00\x42")
+        self.assertEqual(self.request([0x36, 0x01, *range(64)]), b"\x76\x01")
+        self.assertEqual(self.request([0x36, 0x02, *range(64, 100)]), b"\x76\x02")
+        self.assertEqual(self.request([0x37]), b"\x77")
+        self.assertEqual(self.request([0x35, 0x00, 0x44, 0, 2, 0, 0, 0, 0, 0, 104]), b"\x75\x20\x00\x42")
+        first = self.request([0x36, 0x01])
+        self.assertEqual(first, b"\x76\x01" + bytes(range(64)))
+        self.assertEqual(self.request([0x36, 0x01]), first)                             # repeated: same block
+        self.assertEqual(self.request([0x36, 0x02]), b"\x76\x02" + bytes(range(64, 100)) + b"\xFF" * 4)
+        self.assertEqual(self.request([0x36, 0x03]), b"\x7F\x36\x24")                   # all sent
+        self.assertEqual(self.request([0x37]), b"\x77")
+        self.ecu.config.allow_upload = False
+        self.assertEqual(self.request([0x35, 0x00, 0x44, 0, 2, 0, 0, 0, 0, 0, 4]), b"\x7F\x35\x11")
+
+    def test_security_and_timing_settings(self):
+        config = self.ecu.config
+        config.security_level, config.seed_length, config.key_mask = 0x11, 2, 0x3C
+        config.p2_ms, config.p2_star_ms, config.programming_needs_extended = 100, 2000, False
+        config.broadcast_interval = 0                                                    # a quiet bus for the sniffer
+        self.assertEqual(self.request([0x10, 0x02]), b"\x50\x02\x00\x64\x00\xC8")      # P2 100 ms, P2* 2000 ms
+        self.assertEqual(self.request([0x27, 0x01]), b"\x7F\x27\x12")                   # only level 0x11
+        seed = self.request([0x27, 0x11])[2:]
+        self.assertEqual(len(seed), 2)
+        self.assertEqual(self.request([0x27, 0x12, *(b ^ 0x3C for b in seed)]), b"\x67\x12")
+        config.response_delay_ms, config.pending_interval = 250, 0.1                    # beyond P2: NRC 0x78
+        with can.Bus(interface="virtual", channel=self.channel) as sniffer:
+            start = time.monotonic()
+            self.assertEqual(self.request([0x3E, 0x00]), b"\x7E\x00")
+            self.assertGreaterEqual(time.monotonic() - start, 0.25)
+            replies = [bytes(message.data[1:4]) for message in iter(lambda: sniffer.recv(0.05), None)
+                       if message.arbitration_id == RESPONSE]
+        self.assertGreaterEqual(replies.count(b"\x7F\x3E\x78"), 2)
+        self.assertEqual(replies[-1], b"\x7E\x00\xAA")
+
     def test_dtc_services(self):
         self.assertEqual(self.request([0x19, 0x02, 0xFF]), b"\x59\x02\xFF\x01\x01\x00\x09\xC1\x00\x00\x08")
         self.assertEqual(self.request([0x14, 0xFF, 0xFF, 0xFF]), b"\x54")
