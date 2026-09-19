@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
 )
 
-from ui_common import SplitterPanel, app_settings
+from ui_common import SplitterPanel, app_settings, enable_maximize
 
 # Optional: pyqtgraph for plotting
 try:
@@ -77,6 +77,7 @@ class CANLoggerWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("CAN Logger")
+        enable_maximize(self)
         self.setMinimumSize(900, 550)
         self.db = None
         self.dbc_path = None

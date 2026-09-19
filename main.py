@@ -69,7 +69,8 @@ from panel import PanelView, load_application_database
 from form_designer import FormDesigner
 from can_logger import CANLoggerWindow
 from diagnostic_window import DiagnosticWindow
-from panel_runtime import ScriptRuntime, ReceiveMailbox, validate_config
+from panel_runtime import (DEFAULT_NODE_TIMEOUT, DEFAULT_TESTER_PRESENT_INTERVAL, ReceiveMailbox,
+                           ScriptRuntime, validate_config)
 from ui_common import app_settings, toolbar_icon
 from uds_services import FIRMWARE_FILE_FILTER, load_firmware
 
@@ -307,11 +308,11 @@ class ConfigurationDialog(QMainWindow):
         self.heartbeat_spin.setRange(0.05, 3600)
         self.heartbeat_spin.setDecimals(2)
         self.heartbeat_spin.setSuffix(" s")
-        self.heartbeat_spin.setValue(2.0)
+        self.heartbeat_spin.setValue(DEFAULT_TESTER_PRESENT_INTERVAL)
         config_layout.addRow("TesterPresent interval:", self.heartbeat_spin)
         self.node_timeout_spin = QDoubleSpinBox()
         self.node_timeout_spin.setRange(0.1, 86400)
-        self.node_timeout_spin.setValue(6.0)
+        self.node_timeout_spin.setValue(DEFAULT_NODE_TIMEOUT)
         self.node_timeout_spin.setSuffix(" s")
         config_layout.addRow("Node loss timeout:", self.node_timeout_spin)
         self.database_family_edit = QLineEdit()
@@ -371,8 +372,8 @@ class ConfigurationDialog(QMainWindow):
         self.extended_id_byte_edit.setEnabled(checked)
 
     def load_config(self):
-        self.heartbeat_spin.setValue(float(self.config.get("tester_present_interval_seconds", 2)))
-        self.node_timeout_spin.setValue(float(self.config.get("node_timeout_seconds", 6)))
+        self.heartbeat_spin.setValue(float(self.config.get("tester_present_interval_seconds", DEFAULT_TESTER_PRESENT_INTERVAL)))
+        self.node_timeout_spin.setValue(float(self.config.get("node_timeout_seconds", DEFAULT_NODE_TIMEOUT)))
         self.database_family_edit.setText(self.config.get("database_family", ""))
         self.response_ids_edit.setText(", ".join(f"{v:X}" for v in self.config.get("response_ids", [])))
         if self.config.get("name"):

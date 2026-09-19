@@ -37,6 +37,13 @@ def app_settings() -> QSettings:
     return settings
 
 
+def enable_maximize(dialog):
+    """Show the title-bar maximize button on a dialog (Windows gives dialogs only close and '?').
+    Minimize stays off: an owned dialog has no taskbar entry to restore it from."""
+    flags = dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint
+    dialog.setWindowFlags(flags | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+
+
 # -----------------------------------------------------------------------------
 # Toolbar icons: small scalable symbols with light/dark and disabled colors
 # -----------------------------------------------------------------------------

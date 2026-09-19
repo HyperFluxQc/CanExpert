@@ -19,8 +19,8 @@ This document describes the workflow implemented from `Requirements.docx`. CAN E
 
 Configurations live beside `main.py` in `Configurations/`, independent of the working directory. Double-click a configuration to edit it while disconnected. New settings are editable in the configuration dialog:
 
-- `tester_present_interval_seconds`: positive interval, default 2 seconds.
-- `node_timeout_seconds`: greater than the heartbeat interval, default 6 seconds.
+- `tester_present_interval_seconds`: positive interval, default 0.5 seconds.
+- `node_timeout_seconds`: greater than the heartbeat interval, default 2 seconds. A node is shown as lost this long after its last frame; keep several heartbeats inside the window so one missed response is tolerated.
 - `request_id` and `response_id`: numeric CAN IDs, entered as hexadecimal in the dialog.
 - `response_ids`: optional list of monitored ECU IDs. When omitted, use `response_id`; the default OBD request/response pair `0x7DF`/`0x7E8` monitors `0x7E8` through `0x7EF`.
 - `database_family`: optional database stem/family. Empty selects the newest database across the database directory.

@@ -486,6 +486,12 @@ class ReceiveMailbox:
             self.closed = True
 
 
+# A node is reported lost after NODE_TIMEOUT without traffic. TesterPresent is sent several
+# times per timeout window so one missed response does not cause a false loss.
+DEFAULT_TESTER_PRESENT_INTERVAL = 0.5
+DEFAULT_NODE_TIMEOUT = 2.0
+
+
 def validate_config(config):
     """Normalize legacy configs and reject settings that cannot be operated."""
     cfg = dict(config)
@@ -494,8 +500,8 @@ def validate_config(config):
     cfg.setdefault("identifier_11_bit", True)
     cfg.setdefault("request_id", 0x7DF)
     cfg.setdefault("response_id", 0x7E8)
-    cfg.setdefault("tester_present_interval_seconds", 2.0)
-    cfg.setdefault("node_timeout_seconds", 6.0)
+    cfg.setdefault("tester_present_interval_seconds", DEFAULT_TESTER_PRESENT_INTERVAL)
+    cfg.setdefault("node_timeout_seconds", DEFAULT_NODE_TIMEOUT)
     cfg.setdefault("database_family", "")
     if not isinstance(cfg["name"], str) or not cfg["name"].strip():
         raise ValueError("Configuration name must be nonempty text")

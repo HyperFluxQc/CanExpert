@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QMimeData, QTimer
 from PyQt5.QtGui import QFont, QColor, QDrag, QCursor
 
-from ui_common import SplitterPanel
+from ui_common import SplitterPanel, enable_maximize
 from panel import DATABASES_DIR, parse_widget, WIDGET_GROUPS
 from panel_runtime import SCRIPT_TEMPLATE
 
@@ -850,6 +850,7 @@ class FormDesigner(QDialog):
     def __init__(self, parent=None, db_id: str = "", db_name: str = "", description: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Form Designer")
+        enable_maximize(self)
         self.setMinimumSize(900, 600)
         self.resize(1000, 700)
         self.database_dir = DATABASES_DIR

@@ -35,7 +35,7 @@ try:
 except ImportError:
     HAS_ODXTOOLS = False
 
-from ui_common import SplitterPanel
+from ui_common import SplitterPanel, enable_maximize
 from panel_runtime import ReceiveMailbox
 from uds_services import uds_request
 
@@ -71,6 +71,7 @@ class DiagnosticWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Diagnostic Window")
+        enable_maximize(self)
         self.setMinimumSize(850, 600)
         self.odx_db = None
         self.odx_path = None

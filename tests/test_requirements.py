@@ -399,6 +399,25 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertFalse(action.isEnabled())
         self.assertIn("does not define Flashing", action.toolTip())
 
+    def test_default_node_loss_timing(self):
+        cfg = validate_config({"name": "Defaults"})
+        self.assertEqual(cfg["node_timeout_seconds"], 2.0)
+        self.assertEqual(cfg["tester_present_interval_seconds"], 0.5)
+        dialog = main.ConfigurationDialog(self.window, {"name": "Legacy"})
+        self.assertEqual(dialog.node_timeout_spin.value(), 2.0)
+        self.assertEqual(dialog.heartbeat_spin.value(), 0.5)
+
+    def test_tool_windows_can_be_maximized(self):
+        from PyQt5.QtCore import Qt
+        from can_logger import CANLoggerWindow
+        from diagnostic_window import DiagnosticWindow
+        for window in (FormDesigner(self.window), CANLoggerWindow(self.window), DiagnosticWindow(self.window)):
+            flags = window.windowFlags()
+            self.assertTrue(flags & Qt.WindowMaximizeButtonHint, type(window).__name__)
+            self.assertTrue(flags & Qt.WindowCloseButtonHint, type(window).__name__)
+            self.assertFalse(flags & Qt.WindowContextHelpButtonHint, type(window).__name__)
+            window.close()
+
     def test_all_display_and_input_widget_types(self):
         path = self.databases/'controls.xml'
         path.write_text('''<application_database><pages><page>
