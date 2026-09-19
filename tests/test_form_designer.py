@@ -173,10 +173,14 @@ class FormDesignerTest(unittest.TestCase):
         painted = sum(image.pixelColor(x, y).alpha() > 0 for x in range(24) for y in range(24))
         self.assertGreater(painted, 20)                                          # dimmed, not blank
         self.designer.show()
-        self.designer.design_tabs.setCurrentIndex(1)
+        form_sizes = self.designer.design_splitter.sizes()
+        self.designer.design_tabs.setCurrentIndex(1)                             # the script gets the whole width
         self.assertFalse(self.designer.properties_panel.isVisible())
+        self.assertFalse(self.designer.symbols_panel.isVisible())
         self.designer.design_tabs.setCurrentIndex(0)
         self.assertTrue(self.designer.properties_panel.isVisible())
+        self.assertTrue(self.designer.symbols_panel.isVisible())
+        self.assertEqual(self.designer.design_splitter.sizes(), form_sizes)      # and the form its layout back
 
     def test_test_panel_flashes_firmware_into_the_simulated_ecu(self):
         from canexpert.flashing import load_firmware

@@ -251,11 +251,13 @@ class FormDesigner(QDialog):
         left_widget.setMinimumWidth(0)
         self.design_tabs.setMinimumWidth(0)
         self.properties.setMinimumWidth(0)
-        splitter.addWidget(SplitterPanel("Symbols & controls", left_widget, Qt.Horizontal))
+        self.symbols_panel = SplitterPanel("Symbols & controls", left_widget, Qt.Horizontal)
+        splitter.addWidget(self.symbols_panel)
         splitter.addWidget(SplitterPanel("Form / Code", self.design_tabs, Qt.Horizontal))
         self.properties_panel = SplitterPanel("Properties", self.properties, Qt.Horizontal)
         splitter.addWidget(self.properties_panel)
-        splitter.setSizes([230, 680, 300])
+        self.design_splitter, self.design_sizes = splitter, [230, 680, 300]
+        splitter.setSizes(self.design_sizes)
 
         top_layout = QHBoxLayout()
         self.db_id_edit = QLineEdit(self.db_id)
@@ -332,9 +334,15 @@ class FormDesigner(QDialog):
         return ok
 
     def _on_tab_changed(self, index):
-        # Control properties only make sense next to the form; the script gets the room instead.
-        self.properties_panel.setVisible(self.design_tabs.widget(index) is self.canvas)
-        if self.design_tabs.widget(index) is not self.canvas:
+        # The palette, the DBC symbols and the properties all act on the form; the script gets the room instead.
+        on_form = self.design_tabs.widget(index) is self.canvas
+        if not on_form:
+            self.design_sizes = self.design_splitter.sizes()
+        self.symbols_panel.setVisible(on_form)
+        self.properties_panel.setVisible(on_form)
+        if on_form:
+            self.design_splitter.setSizes(self.design_sizes)
+        else:
             words = []
             for page in self.canvas.pages:
                 for data in page["widgets"]:
