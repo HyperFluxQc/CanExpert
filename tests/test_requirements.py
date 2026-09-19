@@ -418,6 +418,41 @@ VAL_ 256 Enable 0 "Off" 1 "On";
             self.assertFalse(flags & Qt.WindowContextHelpButtonHint, type(window).__name__)
             window.close()
 
+    def test_designer_widgets_reach_top_left_corner(self):
+        from PyQt5.QtCore import QEvent, QPoint, Qt
+        from PyQt5.QtGui import QMouseEvent
+
+        def mouse(viewport, kind, pos, buttons):
+            event = QMouseEvent(kind, pos, viewport.mapToGlobal(pos), Qt.LeftButton, buttons, Qt.NoModifier)
+            APP.sendEvent(viewport, event)
+
+        def drag(view, start, end):
+            viewport = view.viewport()
+            mouse(viewport, QEvent.MouseButtonPress, start, Qt.LeftButton)
+            for step in range(1, 11):
+                mouse(viewport, QEvent.MouseMove, start + (end - start) * step / 10, Qt.LeftButton)
+            mouse(viewport, QEvent.MouseButtonRelease, end, Qt.NoButton)
+
+        for size in ((1800, 1200), (1000, 700)):  # canvas larger and smaller than the 800 x 600 page
+            designer = FormDesigner(self.window)
+            designer.resize(*size)
+            designer.show()
+            canvas, view = designer.canvas, designer.canvas.graphics_view
+            self.assertTrue(spin_until(lambda: view.mapFromScene(0, 0) == QPoint(0, 0), 1), size)
+            canvas.add_widget_at("button", 200, 150)
+            APP.processEvents()
+            widget = canvas._current_widgets()[0]
+            grab = view.mapFromScene(210, 160)
+            drag(view, grab, grab - QPoint(400, 400))                  # past the top-left corner
+            self.assertEqual((widget["x"], widget["y"]), (0, 0), size)
+            self.assertEqual(view.mapFromScene(0, 0), QPoint(0, 0), size)
+            drag(view, view.mapFromScene(10, 10), view.mapFromScene(10, 10) + QPoint(300, 300))
+            self.assertEqual((widget["x"], widget["y"]), (300, 300), size)
+            canvas.add_widget_at("button", 1500, 900)                  # beyond the initial page
+            self.assertGreaterEqual(canvas.scene.sceneRect().right(), 1600)
+            self.assertGreaterEqual(canvas.scene.sceneRect().bottom(), 1000)
+            designer.close()
+
     def test_all_display_and_input_widget_types(self):
         path = self.databases/'controls.xml'
         path.write_text('''<application_database><pages><page>

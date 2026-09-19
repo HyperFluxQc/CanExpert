@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QTabWidget, QMenu, QInputDialog, QGraphicsItem, QTreeWidget,
     QTreeWidgetItem, QProgressBar,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QMimeData, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QRectF, QMimeData, QTimer
 from PyQt5.QtGui import QFont, QColor, QDrag, QCursor
 
 from ui_common import SplitterPanel, enable_maximize
@@ -252,6 +252,18 @@ class DroppableGraphicsView(QGraphicsView):
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
         self.setAcceptDrops(True)
+        self._shown = False
+
+    def scroll_to_origin(self):
+        """Show the page's top-left corner (Qt otherwise keeps the scene centre in view)."""
+        for bar in (self.horizontalScrollBar(), self.verticalScrollBar()):
+            bar.setValue(bar.minimum())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._shown:
+            self._shown = True
+            QTimer.singleShot(0, self.scroll_to_origin)  # after the dialog's layout has settled
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(WIDGET_TYPE_MIME):
@@ -439,6 +451,9 @@ class FormCanvas(QGroupBox):
         self.scene = QGraphicsScene(0, 0, 800, 600)
         self.scene.setBackgroundBrush(QColor(245, 245, 245))
         self.graphics_view = DroppableGraphicsView(self.scene)
+        # Page origin at the view's top-left, as in the connected panel. The default centred
+        # alignment left an invisible border that widgets could not be moved into.
+        self.graphics_view.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.graphics_view.setMinimumSize(400, 300)
         self.graphics_view.setToolTip("Drag widgets from the palette. Left-click and drag to move. Right-click for Copy/Cut/Paste/Delete/Size/Variable.")
         self.graphics_view.widget_dropped.connect(self.add_widget_at)
@@ -472,7 +487,7 @@ class FormCanvas(QGroupBox):
         self.current_page_index = len(self.pages) - 1
         self.selected_index = -1
         self._rebuild_page_bar()
-        self._rebuild()
+        self._show_page()
 
     def _show_page_context_menu(self, page_index: int, button: QPushButton, pos):
         menu = QMenu(self)
@@ -492,7 +507,7 @@ class FormCanvas(QGroupBox):
             self.current_page_index -= 1
         self.selected_index = -1
         self._rebuild_page_bar()
-        self._rebuild()
+        self._show_page()
 
     def _switch_page(self, index: int):
         if 0 <= index < len(self.pages):
@@ -500,7 +515,7 @@ class FormCanvas(QGroupBox):
             self.selected_index = -1
             for i, btn in enumerate(self.page_buttons):
                 btn.setChecked(i == index)
-            self._rebuild()
+            self._show_page()
 
     def add_widget(self, wtype: str) -> dict:
         return self.add_widget_at(wtype, 0, 0)
@@ -567,6 +582,16 @@ class FormCanvas(QGroupBox):
             proxy.setPos(px, py)
             proxy.setZValue(i)
             self.scene.addItem(proxy)
+        self._fit_scene()
+
+    def _show_page(self):
+        self._rebuild()
+        self.graphics_view.scroll_to_origin()
+
+    def _fit_scene(self):
+        """Keep the page origin at (0, 0) and grow the page so widgets can be placed beyond 800 x 600."""
+        bounds = self.scene.itemsBoundingRect()
+        self.scene.setSceneRect(QRectF(0, 0, max(800, bounds.right() + 100), max(600, bounds.bottom() + 100)))
 
     def _make_preview_widget(self, data: dict, selected: bool = False):
         """Build the actual widget type for the canvas preview (button looks like button, etc.)."""
@@ -657,6 +682,7 @@ class FormCanvas(QGroupBox):
         if 0 <= index < len(w):
             w[index]["x"] = max(0, int(x))
             w[index]["y"] = max(0, int(y))
+            self._fit_scene()
 
     def _show_widget_context_menu(self, index: int, global_pos):
         """Show right-click menu for a widget: Copy, Cut, Paste, Delete, Change size, Variable."""
@@ -810,7 +836,7 @@ class FormCanvas(QGroupBox):
         self.current_page_index = 0
         self.selected_index = -1
         self._rebuild_page_bar()
-        self._rebuild()
+        self._show_page()
 
     def _parse_hex(self, s: str) -> list:
         return [int(x, 16) for x in str(s).replace(",", " ").split() if x.strip()] or [0] * 8
