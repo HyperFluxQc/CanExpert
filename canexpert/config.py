@@ -24,6 +24,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from canexpert.paths import CONFIG_DIR
+
 # A node is reported lost after node_timeout_seconds without a reply. TesterPresent is sent several times
 # per timeout window so one missed response does not cause a false loss.
 DEFAULT_TESTER_PRESENT_INTERVAL = 0.5
@@ -138,7 +140,7 @@ def _hex(text, what, maximum=0x1FFFFFFF):
 class ConfigurationDialog(QDialog):
     """Create or edit a configuration; accepted() once it is saved to directory."""
 
-    def __init__(self, parent=None, config=None, directory="."):
+    def __init__(self, parent=None, config=None, directory=CONFIG_DIR):
         super().__init__(parent)
         self.setWindowTitle("CAN Connection Configuration")
         self.setAttribute(Qt.WA_DeleteOnClose)

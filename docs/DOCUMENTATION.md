@@ -20,61 +20,89 @@ This document describes the architecture, threads and data flows of **CAN Expert
 
 ```mermaid
 flowchart LR
-    main["main.py"]
-    main --> panel["panel.py"]
-    main --> panel_runtime["panel_runtime.py"]
-    main --> form_designer["form_designer.py"]
+    main["main_window.py"]
+    main --> can_bus["can_bus.py"]
+    main --> config["config.py"]
+    main --> panel_view["panel/view.py"]
+    main --> panel_runtime["panel/runtime.py"]
+    main --> form_designer["designer/form_designer.py"]
     main --> can_logger["can_logger.py"]
     main --> diagnostic_window["diagnostic_window.py"]
+    main --> flashing["flashing.py"]
     main --> ui_common["ui_common.py"]
-    form_designer --> panel
+    form_designer --> canvas["designer/canvas.py"]
+    form_designer --> side_panels["designer/side_panels.py"]
+    form_designer --> code_editor["designer/code_editor.py"]
     form_designer --> panel_runtime
-    form_designer --> code_editor["code_editor.py"]
-    code_editor --> uds_library["uds_library.py"]
-    panel_runtime --> uds_library
-    panel --> panel_controls["panel_controls.py"]
-    form_designer --> panel_controls
-    panel_runtime --> uds_services["uds_services.py"]
-    diagnostic_window --> panel_runtime
-    diagnostic_window --> uds_services
+    form_designer --> panel_view
+    code_editor --> uds_client["uds/client.py"]
+    panel_view --> panel_controls["panel/controls.py"]
+    panel_view --> panel_database["panel/database.py"]
+    canvas --> panel_controls
+    side_panels --> panel_controls
+    panel_runtime --> uds_client
+    panel_runtime --> config
+    panel_runtime --> flashing
+    uds_client --> isotp["uds/isotp.py"]
+    can_bus --> config
+    diagnostic_window --> can_bus
+    diagnostic_window --> uds_client
     can_logger --> ui_common
-    form_designer --> ui_common
-    diagnostic_window --> ui_common
-    dummy_ecu["dummy_ecu.py"] --> uds_services
-    dummy_ecu_window["dummy_ecu_window.py"] --> dummy_ecu
-    dummy_ecu_window --> ui_common
+    simulator_ecu["simulator/ecu.py"] --> isotp
+    simulator_window["simulator/window.py"] --> simulator_ecu
 ```
 
 | Module | Role |
 |--------|------|
-| **main.py** | Main window, configuration list and dialog, receiver/node tree, Connect/Disconnect, Flashing button and progress dialog, `CanWorker` (hardware reader + TesterPresent, also used for the ECU check that keeps node status live after Disconnect), `ChannelActivityScanner`, CAN and debug logs, theme. |
-| **panel.py** | Panel databases: `select_database()` (newest dated file per family), XML → dict parsing (`parse_widget()`), `decode_value_from_can_data()`, and `PanelView`, which renders pages and controls, decodes raw/DBC-bound values and emits `control_changed(name, value)`. |
-| **panel_controls.py** | Control registry shared by the designer preview and running panels: per control its palette entry, properties, construction, value display and input events; painted controls (gauge, LED, multi-state indicator, toggle switch, knob, 7-segment display, trend); `format_value()` and appearance handling. |
-| **panel_runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.signal/set_signal/send_message`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators, timers, flashing, cancellation), `ReceiveMailbox` (bus facade fed by `CanWorker`), `validate_config()`. |
-| **uds_services.py** | ISO-TP transport (single, first, consecutive and flow-control frames), `uds_request()` and UDS helpers, `load_firmware()` for S-record/Intel HEX files, flashing helper. |
-| **form_designer.py** | Panel designer: palette, DBC symbol tree (drag signals onto the form), canvas with multi-select, align/distribute, grid snap, resize handle, z-order, clipboard, keyboard and undo/redo; schema-driven property editor; handler stubs; Test mode against the simulated ECU; saves XML + `_script.py`. |
-| **code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals, UDS functions), syntax check; `UdsFunctionPanel` lists the UDS functions by ISO 14229 functional unit and inserts calls. |
-| **uds_library.py** | ISO 14229-1 service functions for scripts (`RDBI`, `WDBI`, `DSC`, `SA`, `RC`, `RD`/`TD`/`RTE`, ... all services except 0x29 and 0x84) returning `UdsResult`; injected into script globals by `ScriptRuntime`; `NRC_NAMES`. |
+| **main_window.py** | Main window: configuration list, receiver/node tree, Connect/Disconnect, the ECU check that keeps node status live after Disconnect, Flashing button and progress, tool windows, CAN and debug logs, theme. |
+| **can_bus.py** | `open_channel()`/`create_can_bus()`, `CanWorker` (the session's only bus reader, which also sends TesterPresent), `ReceiveMailbox` (bus facade for code off the GUI thread), `ChannelActivityScanner`. |
+| **config.py** | Configuration defaults, `validate_config()`, `diagnostic_request_id()`/`uds_transport()` (the IDs and timing a configuration implies), `read_configurations()`/`save_configuration()`, and `ConfigurationDialog`. |
+| **paths.py** | The data folders (`Configurations/`, `Databases/`, `DBC/`, `ODX/`, `examples/`), next to `main.py` or next to a frozen executable. |
+| **panel/database.py** | Panel database files: `select_database()` (newest dated file per family), XML → dict parsing (`parse_widget()`), `decode_value_from_can_data()`. |
+| **panel/view.py** | `PanelView`: renders pages and controls, decodes raw and DBC-bound values, emits `control_changed(name, value)`. |
+| **panel/controls.py** | Control registry shared by the designer and running panels: per control its palette entry, properties, construction, value display and input events; painted controls (gauge, LED, multi-state indicator, toggle switch, knob, 7-segment display, trend); `format_value()` and appearance handling. |
+| **panel/runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.signal/set_signal/send_message`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators, timers, flashing, cancellation). |
+| **uds/isotp.py** | ISO 15765-2 transport: single, first and consecutive frames, flow control (block size, STmin, WAIT, overflow) in both directions, the escape sequence beyond 4095 bytes. |
+| **uds/client.py** | `uds_request()` (one exchange, skipping unrelated replies and extending the wait on NRC 0x78) and the ISO 14229-1 service functions for scripts (`RDBI`, `WDBI`, `DSC`, `SA`, `RC`, `RD`/`TD`/`RTE`, ... every service except 0x29 and 0x84) returning `UdsResult`; `NRC_NAMES`. |
+| **flashing.py** | Firmware images: S-record/Intel HEX parsing (`load_firmware()`), and the dialogs shared by the main window and the designer's Test panel (choose a file, confirm with its address ranges, progress with Cancel, result). |
+| **designer/form_designer.py** | The Form Designer dialog: pages, DBC path, save/load of XML + `_script.py`, handler stubs, the script editor tab and Test mode against the simulated ECU. |
+| **designer/canvas.py** | The page canvas: widgets to move, resize, select and order, the drop target for palette items and DBC signals, layout tools, clipboard and undo/redo. |
+| **designer/side_panels.py** | Control palette, DBC symbol list and the schema-driven property editor, with the designer's shared constants and naming helpers. |
+| **designer/code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals, UDS functions), syntax check; `UdsFunctionPanel` lists the UDS functions by ISO 14229 functional unit and inserts calls. |
 | **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, follow/pause/fit, Lock X / Lock Y for mouse zoom and pan, two measurement cursors with per-signal values and Δ, a dotted hover crosshair with a time/value readout, CSV export of all decoded data. |
-| **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors request/response IDs. |
-| **flashing_ui.py** | Flashing dialogs shared by the main window and the designer's Test panel: choose and load a firmware file, confirm with its address ranges, progress dialog with Cancel, result message. |
-| **dummy_ecu.py** | Stand-alone simulated UDS ECU (sessions, security, DIDs, DTCs, flashing with RequestDownload/RequestUpload, ISO-TP flow control, periodic frames) for Kvaser virtual channels or any python-can interface. `EcuConfig` holds every setting and is read for each frame, so changes apply while running; `load_profile()`/`save_profile()` store it as JSON; `main()` opens the window, or runs headless with `--console`. |
-| **dummy_ecu_window.py** | Dummy ECU window: connection (interface, channel detection, bit rate, Connect/Disconnect with the one-ECU-per-channel lock), settings tabs (addressing, flow control, UDS timing and security, flashing, periodic frames) applied live and remembered in QSettings, ECU status, log with an optional frame trace, JSON profiles. |
-| **ui_common.py** | Shared Qt helpers: `app_settings()` (persistent QSettings, migrating the legacy `EZCan2/KvaserCAN` store once), `toolbar_icon()`, and `SplitterPanel` (collapsible titled panel). |
+| **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors the ECU's CAN IDs. |
+| **simulator/ecu.py** | The simulated UDS ECU (sessions, security, DIDs, DTCs, flashing with RequestDownload/RequestUpload, ISO-TP flow control, periodic frames) for Kvaser virtual channels or any python-can interface. `EcuConfig` holds every setting and is read for each frame, so changes apply while running; `load_profile()`/`save_profile()` store it as JSON; `main()` opens the window, or runs headless with `--console`. |
+| **simulator/window.py** | Dummy ECU window: connection (interface, channel detection, bit rate, Connect/Disconnect with the one-ECU-per-channel lock), settings tabs (addressing, flow control, UDS timing and security, flashing, periodic frames) applied live and remembered in QSettings, ECU status, log with an optional frame trace, JSON profiles. |
+| **ui_common.py** | Shared Qt helpers: `app_settings()` (persistent QSettings, migrating the legacy `EZCan2/KvaserCAN` store once), `toolbar_icon()`, `CaptionButton`, `SplitterPanel` and `DockTitleBar`. |
 
 ---
 
 ## 3. Files and Folders
 
-```
+
 CanExpert/
-├── main.py                 # Entry point: python main.py
-├── Configurations/         # config_<name>.json, one per configuration
-├── Databases/              # <family>_<YYYY-MM-DD>.xml and matching _script.py
-├── examples/               # Runnable panel + script pair (copy to Databases/)
-├── DBC/, ODX/              # Default folders for DBC and ODX/PDX files (sample DBCs in DBC/)
-├── tests/                  # Hardware-free acceptance and UDS transport tests
-└── *.py                    # Modules listed above
+├── main.py                     # Start CAN Expert
+├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
+├── canexpert/
+│   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
+│   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox, activity scan
+│   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
+│   ├── paths.py                # Where the data folders are (also next to a frozen executable)
+│   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
+│   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
+│   ├── diagnostic_window.py    # ODX Diagnostic Window
+│   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
+│   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
+│   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
+│   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
+│   └── simulator/              # ecu.py (the simulated ECU), window.py (its window)
+├── Configurations/             # config_<name>.json, one per configuration
+├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
+├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
+├── examples/                   # Runnable panel + script pair, demo firmware
+├── docs/                       # DOCUMENTATION.md, REQUIREMENTS_STATUS.md, Requirements.docx
+├── tests/                      # Hardware-free acceptance, UDS and UI tests
+└── requirements.txt
 ```
 
 ---
@@ -117,7 +145,7 @@ Any failure before or during start-up calls `on_disconnect_clicked()`, which lea
 
 A mailbox acts as a bus for code running off the GUI thread: `send()` goes straight to the adapter, `recv()` reads the mailbox queue. The panel script owns one mailbox for the whole session; each Diagnostic Window request registers a private mailbox for the duration of its exchange, so the two never compete for replies.
 
-**UDS exchanges** (`uds_services.uds_request`):
+**UDS exchanges** (`uds.client.uds_request`):
 
 - flush the mailbox first, so a reply queued before the request cannot answer it;
 - run inside `mailbox.transaction()`; while any mailbox is in a transaction `CanWorker` defers its TesterPresent, because a single frame interleaved with a multi-frame request would abort it on the ECU;
@@ -203,7 +231,7 @@ The button is visible only while connected and enabled only when the script defi
 </application_database>
 ```
 
-Control types (see `panel_controls.CONTROLS`): `button`, `switch`, `checkbox`, `radio`, `combo`, `slider`, `knob`, `spin`, `io_box`, `text_input`, `value`, `display`, `gauge`, `progress_bar`, `led`, `indicator`, `trend`, `output`, `label`, `group_box`, `picture`. Controls may be driven by a script binding, a DBC `Message.Signal` binding (the panel takes the signal's unit and value table), or legacy raw `can_id`/byte/bit mappings. A `handler` attribute names the script function an input calls. Element order within a page is the z-order. `panel.parse_widget()` parses the common attributes; control-specific attributes are kept as-is and interpreted by `panel_controls`.
+Control types (see `panel.controls.CONTROLS`): `button`, `switch`, `checkbox`, `radio`, `combo`, `slider`, `knob`, `spin`, `io_box`, `text_input`, `value`, `display`, `gauge`, `progress_bar`, `led`, `indicator`, `trend`, `output`, `label`, `group_box`, `picture`. Controls may be driven by a script binding, a DBC `Message.Signal` binding (the panel takes the signal's unit and value table), or legacy raw `can_id`/byte/bit mappings. A `handler` attribute names the script function an input calls. Element order within a page is the z-order. `panel.database.parse_widget()` parses the common attributes; control-specific attributes are kept as-is and interpreted by `panel.controls`.
 
 ---
 

@@ -40,7 +40,7 @@ pip install -r requirements.txt
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 
-See [Requirements implementation](REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
 ## Application Database (XML)
 
@@ -132,32 +132,33 @@ else:
 
 Authentication (0x29) and SecuredDataTransmission (0x84) are not included.
 
-See [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts) for the full API and [Firmware flashing](REQUIREMENTS_STATUS.md#firmware-flashing) for `Flashing(api, firmware)`.
+See [Requirements implementation](docs/REQUIREMENTS_STATUS.md#panel-scripts) for the full API and [Firmware flashing](docs/REQUIREMENTS_STATUS.md#firmware-flashing) for `Flashing(api, firmware)`.
 
 ## File structure
 
-```
+
 CanExpert/
-├── main.py                 # Entry point
-├── panel.py                # Panel database selection, parsing and rendering
-├── panel_controls.py       # Control library shared by the designer and running panels
-├── panel_runtime.py        # Script API and runtime, CAN mailbox, config validation
-├── uds_services.py         # ISO-TP transport, UDS services, S-record/Intel HEX loading
-├── form_designer.py        # Form Designer (layout tools, undo/redo, Test mode)
-├── code_editor.py          # Python editor: highlighting, line numbers, completion, UDS functions panel
-├── uds_library.py          # ISO 14229 service functions for scripts (RDBI, WDBI, DSC, ...)
-├── flashing_ui.py          # Firmware file, confirmation and progress dialogs for Flashing
-├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
-├── diagnostic_window.py    # ODX Diagnostic Window
-├── ui_common.py            # Settings, toolbar icons, collapsible panels
-├── dummy_ecu.py            # Simulated UDS ECU for testing without a vehicle
-├── dummy_ecu_window.py     # Dummy ECU window: connection, settings, status and log
-├── Databases/              # family_YYYY-MM-DD.xml + _script.py
-├── DBC/                    # Sample DBC files
-├── Configurations/         # config_*.json
-├── examples/
-├── tests/
-├── DOCUMENTATION.md        # Developer docs + architecture diagrams
+├── main.py                     # Start CAN Expert
+├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
+├── canexpert/
+│   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
+│   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox, activity scan
+│   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
+│   ├── paths.py                # Where the data folders are (also next to a frozen executable)
+│   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
+│   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
+│   ├── diagnostic_window.py    # ODX Diagnostic Window
+│   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
+│   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
+│   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
+│   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
+│   └── simulator/              # ecu.py (the simulated ECU), window.py (its window)
+├── Configurations/             # config_<name>.json, one per configuration
+├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
+├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
+├── examples/                   # Runnable panel + script pair, demo firmware
+├── docs/                       # DOCUMENTATION.md, REQUIREMENTS_STATUS.md, Requirements.docx
+├── tests/                      # Hardware-free acceptance, UDS and UI tests
 └── requirements.txt
 ```
 
