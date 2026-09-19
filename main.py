@@ -51,7 +51,6 @@ from PyQt5.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QScrollArea,
-    QStyle,
     QTabWidget,
     QToolBar,
     QToolButton,
@@ -71,7 +70,7 @@ from can_logger import CANLoggerWindow
 from diagnostic_window import DiagnosticWindow
 from panel_runtime import (DEFAULT_NODE_TIMEOUT, DEFAULT_TESTER_PRESENT_INTERVAL, ReceiveMailbox,
                            ScriptRuntime, validate_config)
-from ui_common import app_settings, toolbar_icon
+from ui_common import CaptionButton, app_settings, toolbar_icon
 from uds_services import FIRMWARE_FILE_FILTER, load_firmware
 
 # -----------------------------------------------------------------------------
@@ -510,17 +509,11 @@ class DockTitleBar(QWidget):
         self.title_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(self.title_label)
 
-        self.min_btn = QToolButton()
-        self.min_btn.setToolTip("Minimize panel to a thin strip")
-        self.min_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarMinButton))
-        self.min_btn.setIconSize(QSize(16, 16))
+        self.min_btn = CaptionButton(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
         self.min_btn.clicked.connect(self._toggle_minimized)
         layout.addWidget(self.min_btn)
 
-        self.close_btn = QToolButton()
-        self.close_btn.setToolTip("Close panel")
-        self.close_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarCloseButton))
-        self.close_btn.setIconSize(QSize(16, 16))
+        self.close_btn = CaptionButton(CaptionButton.CLOSE, "Close panel")
         self.close_btn.clicked.connect(self.dock.close)
         layout.addWidget(self.close_btn)
 
@@ -528,11 +521,11 @@ class DockTitleBar(QWidget):
 
     def _toggle_minimized(self):
         if self.is_minimized:
-            self._restore()
+            self.restore()
         else:
-            self._minimize()
+            self.minimize()
 
-    def _minimize(self):
+    def minimize(self):
         self.is_minimized = True
         # Save current size for restore
         if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
@@ -549,7 +542,7 @@ class DockTitleBar(QWidget):
         self.dock.widget().hide()
         self._update_title_bar_appearance()
 
-    def _restore(self):
+    def restore(self):
         self.is_minimized = False
         if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
             self.dock.setMinimumWidth(80)
@@ -566,16 +559,15 @@ class DockTitleBar(QWidget):
         self._update_title_bar_appearance()
 
     def _update_title_bar_appearance(self):
-        if self.is_minimized:
-            self.min_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarNormalButton))
-            self.min_btn.setToolTip("Restore panel")
-            self.title_label.hide()
-            self.close_btn.hide()
+        minimized = self.is_minimized
+        if minimized:
+            self.min_btn.set_kind(CaptionButton.RESTORE, "Restore panel")
         else:
-            self.min_btn.setIcon(self.main_window.style().standardIcon(QStyle.SP_TitleBarMinButton))
-            self.min_btn.setToolTip("Minimize panel to a thin strip")
-            self.title_label.show()
-            self.close_btn.show()
+            self.min_btn.set_kind(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
+        self.min_btn.set_compact(minimized)
+        self.layout().setContentsMargins(*((3, 3, 3, 3) if minimized else (4, 2, 2, 2)))
+        self.title_label.setVisible(not minimized)
+        self.close_btn.setVisible(not minimized)
 
 
 class MainWindow(QMainWindow):
@@ -601,6 +593,8 @@ class MainWindow(QMainWindow):
         self.activity_scanner = None
         self.script_runtime = None
         self.flash_dialog = None
+        self._auto_minimized = []  # dock title bars minimized on connect, restored on disconnect
+        self._left_split = None    # Configuration / CAN Channels heights before they were minimized
         self.panel = None
         self.session_config = None
         self.node_states = {}
@@ -996,6 +990,12 @@ class MainWindow(QMainWindow):
             palette.setColor(QPalette.Link, QColor(42, 130, 218))
             palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
             palette.setColor(QPalette.HighlightedText, Qt.black)
+            # Shades used by panel headers, frames and toolbar hover; Qt's defaults are light-theme greys.
+            palette.setColor(QPalette.Light, QColor(80, 80, 80))
+            palette.setColor(QPalette.Midlight, QColor(66, 66, 66))
+            palette.setColor(QPalette.Mid, QColor(38, 38, 38))
+            palette.setColor(QPalette.Dark, QColor(30, 30, 30))
+            palette.setColor(QPalette.Shadow, QColor(15, 15, 15))
             self.dark_mode_action.setChecked(True)
         else:
             palette = QPalette()
@@ -1171,6 +1171,7 @@ class MainWindow(QMainWindow):
             self.database_dock.show()
             self.channels_dock.show()
             self.resizeDocks([self.config_dock, self.database_dock], [280, 700], Qt.Horizontal)
+            self._minimize_side_panels()
             self.refresh_channel_list()
             self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
             self.log_verbose(f"Loaded {database['source_path']}")
@@ -1212,11 +1213,31 @@ class MainWindow(QMainWindow):
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.config_list.setEnabled(True)
+        self._restore_side_panels()
         self.database_dock.hide()
         self.channels_dock.show()
         self._set_status("Disconnected", "gray")
         self.clear_application_ui()
         self._update_nodes()
+
+    def _minimize_side_panels(self):
+        """Give the loaded database the room: collapse Configuration, CAN Channels and Log to strips."""
+        self._left_split = [self.config_dock.height(), self.channels_dock.height()]
+        for dock in (self.config_dock, self.channels_dock, self.log_dock):
+            title_bar = dock.titleBarWidget()
+            if not dock.isHidden() and not title_bar.is_minimized:
+                title_bar.minimize()
+                self._auto_minimized.append(title_bar)
+
+    def _restore_side_panels(self):
+        """Undo _minimize_side_panels; panels the user minimized or restored themselves are left alone."""
+        for title_bar in self._auto_minimized:
+            if title_bar.is_minimized:
+                title_bar.restore()
+        if self._auto_minimized and self._left_split and min(self._left_split) > 0:
+            self.resizeDocks([self.config_dock, self.channels_dock], self._left_split, Qt.Vertical)
+        self._auto_minimized = []
+        self._left_split = None
 
     # --- Flashing ---
 

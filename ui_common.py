@@ -1,13 +1,12 @@
-"""Shared Qt helpers: persistent settings, toolbar icons and the collapsible SplitterPanel."""
-from PyQt5.QtCore import QByteArray, QSettings, QSize, Qt
-from PyQt5.QtGui import QIcon, QPainter, QPixmap
+"""Shared Qt helpers: persistent settings, toolbar icons, Windows 11-style caption buttons and
+the collapsible SplitterPanel."""
+from PyQt5.QtCore import QByteArray, QEvent, QPointF, QRectF, QSettings, Qt
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QLabel,
     QSplitter,
-    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -91,6 +90,75 @@ def toolbar_icon(name, dark=False):
 
 
 # -----------------------------------------------------------------------------
+# CaptionButton: Windows 11-style panel buttons (minimize / restore / close)
+# -----------------------------------------------------------------------------
+
+class CaptionButton(QToolButton):
+    """Flat caption button with thin line glyphs, a soft rounded hover and a red close hover."""
+    MINIMIZE, RESTORE, CLOSE = "minimize", "restore", "close"
+    CLOSE_HOVER, CLOSE_PRESSED = QColor("#C42B1C"), QColor("#B3261E")
+
+    def __init__(self, kind, tooltip="", parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self.setToolTip(tooltip)
+        self.setAccessibleName(tooltip or kind)
+        self.setAutoRaise(True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.set_compact(False)
+
+    def set_kind(self, kind, tooltip):
+        self.kind = kind
+        self.setToolTip(tooltip)
+        self.setAccessibleName(tooltip)
+        self.update()
+
+    def set_compact(self, compact):
+        """Compact (square) size fits the thin strip of a minimized panel."""
+        self.setFixedSize(22, 22) if compact else self.setFixedSize(30, 22)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        text = self.palette().color(QPalette.ButtonText)
+        glyph = QColor(text)
+        pressed = self.isDown()
+        hovered = self.underMouse() and self.isEnabled()
+        background = None
+        if self.kind == self.CLOSE and (hovered or pressed):
+            background = self.CLOSE_PRESSED if pressed else self.CLOSE_HOVER
+            glyph = QColor(Qt.white)
+        elif hovered or pressed:
+            background = QColor(text)
+            background.setAlpha(40 if pressed else 24)
+        if background is not None:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(background)
+            painter.drawRoundedRect(QRectF(self.rect()), 4, 4)
+        if not self.isEnabled():
+            glyph.setAlpha(110)
+        painter.setPen(QPen(glyph, 1.0))
+        painter.setBrush(Qt.NoBrush)
+        # Glyphs are 10 px, centred on a pixel boundary so 1 px lines stay crisp.
+        x, y, half = self.width() // 2 + 0.5, self.height() // 2 + 0.5, 5
+        if self.kind == self.MINIMIZE:
+            painter.drawLine(QPointF(x - half, y), QPointF(x + half, y))
+        elif self.kind == self.RESTORE:
+            painter.drawRoundedRect(QRectF(x - half, y - half, 2 * half, 2 * half), 1.5, 1.5)
+        else:
+            painter.drawLine(QPointF(x - half, y - half), QPointF(x + half, y + half))
+            painter.drawLine(QPointF(x - half, y + half), QPointF(x + half, y - half))
+
+
+# -----------------------------------------------------------------------------
 # SplitterPanel: titled panel that minimizes to a thin strip showing only its restore icon
 # -----------------------------------------------------------------------------
 
@@ -122,19 +190,27 @@ class SplitterPanel(QWidget):
         self._title_label.setStyleSheet("font-weight: bold;")
         bar_layout.addWidget(self._title_label)
         bar_layout.addStretch()
-        self._min_btn = QToolButton()
-        self._min_btn.setToolTip("Minimize panel to a thin strip")
-        style = QApplication.style() or self.style()
-        self._min_btn.setIcon(style.standardIcon(QStyle.SP_TitleBarMinButton))
-        self._min_btn.setIconSize(QSize(16, 16))
+        self._min_btn = CaptionButton(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
         self._min_btn.clicked.connect(self._toggle_minimized)
         bar_layout.addWidget(self._min_btn)
-        self._bar.setStyleSheet("background: palette(mid); border: 1px solid palette(dark);")
+        self._bar_layout = bar_layout
+        # Scoped to the bar itself so the title and buttons are not boxed in by the border.
+        self._bar.setObjectName("splitterPanelBar")
+        self._bar.setAttribute(Qt.WA_StyledBackground, True)
+        self._apply_bar_style()
         layout.addWidget(self._bar, 0, Qt.AlignTop)
 
         layout.addWidget(content_widget, 1)
         self._content.setMinimumWidth(0)
         self._content.setMinimumHeight(0)
+
+    def _apply_bar_style(self):
+        self._bar.setStyleSheet("#splitterPanelBar { background: palette(mid); border: 1px solid palette(dark); }")
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            self._apply_bar_style()  # palette(...) in a style sheet is resolved when the sheet is set
 
     def _splitter_and_index(self):
         p = self.parent()
@@ -191,12 +267,11 @@ class SplitterPanel(QWidget):
             splitter.setSizes(restored)
 
     def _update_bar_appearance(self):
-        style = QApplication.style() or self.style()
-        if self._is_minimized:
-            self._min_btn.setIcon(style.standardIcon(QStyle.SP_TitleBarNormalButton))
-            self._min_btn.setToolTip("Restore panel")
-            self._title_label.hide()
+        minimized = self._is_minimized
+        if minimized:
+            self._min_btn.set_kind(CaptionButton.RESTORE, "Restore panel")
         else:
-            self._min_btn.setIcon(style.standardIcon(QStyle.SP_TitleBarMinButton))
-            self._min_btn.setToolTip("Minimize panel to a thin strip")
-            self._title_label.show()
+            self._min_btn.set_kind(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
+        self._min_btn.set_compact(minimized)
+        self._bar_layout.setContentsMargins(*((3, 3, 3, 3) if minimized else (6, 3, 4, 3)))
+        self._title_label.setVisible(not minimized)

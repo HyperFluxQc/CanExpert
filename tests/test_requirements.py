@@ -399,6 +399,41 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertFalse(action.isEnabled())
         self.assertIn("does not define Flashing", action.toolTip())
 
+    def test_side_panels_minimize_while_connected(self):
+        side = [dock.titleBarWidget() for dock in (self.window.config_dock, self.window.channels_dock, self.window.log_dock)]
+        self.window.on_connect_clicked()
+        self.assertIsNotNone(self.window.can_bus)
+        self.assertTrue(all(bar.is_minimized for bar in side))
+        self.assertFalse(self.window.database_dock.isHidden())
+        self.assertFalse(self.window.database_dock.titleBarWidget().is_minimized)
+        self.window.on_disconnect_clicked()
+        self.assertFalse(any(bar.is_minimized for bar in side))                 # back for the next connection
+        side[2].minimize()                                                       # the user's own choice is kept
+        self.window.on_connect_clicked()
+        self.window.on_disconnect_clicked()
+        self.assertEqual([bar.is_minimized for bar in side], [False, False, True])
+
+    def test_windows11_caption_buttons(self):
+        from PyQt5.QtCore import Qt
+        from ui_common import CaptionButton, SplitterPanel
+        bar = self.window.channels_dock.titleBarWidget()
+        self.assertIsInstance(bar.min_btn, CaptionButton)
+        self.assertEqual((bar.min_btn.kind, bar.close_btn.kind), (CaptionButton.MINIMIZE, CaptionButton.CLOSE))
+        self.assertEqual(bar.min_btn.size().width(), 30)
+        bar.minimize()
+        self.assertEqual(bar.min_btn.kind, CaptionButton.RESTORE)
+        self.assertEqual(bar.min_btn.size().width(), 22)                         # fits the thin strip
+        self.assertTrue(bar.close_btn.isHidden())
+        bar.restore()
+        self.assertEqual((bar.min_btn.kind, bar.min_btn.size().width()), (CaptionButton.MINIMIZE, 30))
+        panel = SplitterPanel("Panel", QMessageBox())
+        panel._minimize()
+        self.assertEqual(panel._min_btn.kind, CaptionButton.RESTORE)
+        for button in (bar.min_btn, bar.close_btn, panel._min_btn):              # every paint state renders
+            for hovered in (False, True):
+                button.setAttribute(Qt.WA_UnderMouse, hovered)
+                self.assertFalse(button.grab().isNull())
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)
