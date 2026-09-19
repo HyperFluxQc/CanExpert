@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QDialog
 
 from canexpert import can_logger
 from canexpert.can_logger import CANLoggerWindow, COL_C1, COL_C2, COL_DELTA, COL_VALUE, VALUE_REFRESH_TICKS
@@ -60,6 +60,61 @@ class CanLoggerTest(unittest.TestCase):
         self.assertNotEqual(pause.icon().pixmap(18, 18).toImage(), symbol)
         pause.setChecked(False)
         self.assertEqual(pause.accessibleName(), "Pause")
+
+    def test_graph_options_set_exact_ranges_and_the_drawing_style(self):
+        self.logger.set_signal_plotted(TEMP)
+        self.feed((0.0, 0x300, engine_frame(20.0, 1.0)), (1.0, 0x300, engine_frame(30.0, 1.0)))
+        dialog = {}
+
+        def options(values):
+            """Answer the Graph options dialog with these settings."""
+            def run(self_dialog):
+                dialog["seen"] = self_dialog
+                for name, value in values.items():
+                    widget = getattr(self_dialog, name)
+                    widget.setChecked(value) if hasattr(widget, "setChecked") else None
+                    widget.setValue(value) if hasattr(widget, "setValue") else None
+                    widget.setCurrentText(value) if hasattr(widget, "setCurrentText") else None
+                return QDialog.Accepted
+            return patch.object(can_logger.GraphOptionsDialog, "exec_", run)
+
+        with options({"fixed_x_cb": True, "x_start": 0.25, "x_end": 0.75,
+                      "fixed_y_cb": True, "y_start": -5.0, "y_end": 45.0, "style_combo": "Dots"}):
+            self.logger._show_graph_options()
+        self.assertEqual((self.logger._x_range, self.logger._y_range), ((0.25, 0.75), (-5.0, 45.0)))
+        self.assertFalse(self.logger.follow_btn.isChecked())                     # a fixed time range cannot scroll
+        self.assertFalse(self.logger._autoscale)
+        plot = self.logger._plots[TEMP][0]
+        x_range, y_range = plot.getViewBox().viewRange()
+        self.assertAlmostEqual(x_range[0], 0.25, places=3)
+        self.assertAlmostEqual(x_range[1], 0.75, places=3)
+        self.assertAlmostEqual(y_range[0], -5.0, places=3)
+        self.assertAlmostEqual(y_range[1], 45.0, places=3)
+        self.assertEqual(self.logger._curve_style, "Dots")
+        self.assertIsNone(self.logger._plots[TEMP][1].opts["pen"])               # dots only, no line
+        self.assertEqual(self.logger._plots[TEMP][1].opts["symbol"], "o")
+        self.assertFalse(hasattr(dialog["seen"], "y_scale_spin"))                # the Y scale factor is gone
+
+        with options({"fixed_x_cb": False, "fixed_y_cb": False, "style_combo": "Line"}):
+            self.logger._show_graph_options()                                    # back to free ranges, step line
+        self.assertEqual((self.logger._x_range, self.logger._y_range), (None, None))
+        self.assertIsNotNone(self.logger._plots[TEMP][1].opts["pen"])
+        self.assertEqual(self.logger._plots[TEMP][1].opts["stepMode"], "right")
+
+    def test_cursors_are_labelled_dashed_lines(self):
+        self.logger.set_signal_plotted(TEMP)
+        self.logger.set_signal_plotted(PRESSURE)
+        self.feed((0.0, 0x300, engine_frame(20.0, 1.0)), (1.0, 0x300, engine_frame(30.0, 2.0)))
+        self.logger.cursors_btn.setChecked(True)
+        colour = self.logger._theme_colors()["cursor"]
+        for row, name in enumerate((TEMP, PRESSURE)):
+            for index, line in enumerate(self.logger._plots[name][2:]):
+                pen = line.pen
+                self.assertEqual(pen.color().name(), colour.name())
+                self.assertEqual([float(dash) for dash in pen.dashPattern()], [30.0, 10.0])
+                label = getattr(line, "label", None)                              # only the top graph is labelled
+                self.assertEqual(label.format if row == 0 else None,
+                                 f"#{index + 1}" if row == 0 else None)
 
     def test_each_ticked_signal_gets_its_own_graph(self):
         self.assertEqual(self.logger.graph_stack.currentIndex(), 0)            # placeholder

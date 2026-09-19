@@ -1,7 +1,7 @@
 """
 CAN Logger: a CANoe-style graphics window. Load a DBC, tick signals in the list and each one
 gets its own strip chart; all strips share one time axis. Measurement cursors, follow/pause,
-fit, and CSV export of everything received.
+fit, exact time and value ranges, line or dot drawing, and CSV export of everything received.
 """
 import bisect
 import csv
@@ -12,6 +12,7 @@ from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
@@ -67,11 +68,24 @@ TOOL_ICONS = {
                '<path d="M13.5 4h5l-2.5 3z" fill="currentColor"/>',
 }
 
+CURVE_STYLES = ("Line", "Line + dots", "Dots")
+CURSOR_DASH = [30, 10]      # dash and gap of the measurement cursors, in pixels
+
 STRIP_MIN_HEIGHT = 110      # px per signal graph; more strips than fit make the graph area scroll
 REDRAW_INTERVAL_MS = 50     # curves; the value column refreshes every VALUE_REFRESH_TICKS redraws
 VALUE_REFRESH_TICKS = 4
 AXIS_WIDTH = 64             # fixed left-axis width keeps all strips' time axes aligned
 COL_SIGNAL, COL_VALUE, COL_UNIT, COL_C1, COL_C2, COL_DELTA = range(6)
+
+
+def _curve_args(color, style):
+    """pyqtgraph plot() arguments for a drawing style: a step line, a line with a dot per sample, or dots."""
+    dots = {"symbol": "o", "symbolSize": 5, "symbolPen": None, "symbolBrush": color}
+    if style == "Dots":
+        return {"pen": None, **dots}
+    if style == "Line + dots":
+        return {"pen": pg.mkPen(color, width=1.5), **dots}
+    return {"pen": pg.mkPen(color, width=1.5), "stepMode": "right"}
 
 
 def _get_theme() -> str:
@@ -87,30 +101,67 @@ def _format(value) -> str:
 
 
 class GraphOptionsDialog(QDialog):
-    """Graph options: Y scale factor, autoscale, follow time window."""
+    """Graph options: how signals are drawn, the follow window, and exact time and value ranges."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Graph options")
         layout = QVBoxLayout()
         self.setLayout(layout)  # do not use QVBoxLayout(self) to avoid reparent layout on close
         form = QFormLayout()
-        self.y_scale_spin = QDoubleSpinBox()
-        self.y_scale_spin.setRange(0.01, 1000.0)
-        self.y_scale_spin.setValue(1.0)
-        self.y_scale_spin.setDecimals(3)
-        form.addRow("Y scale factor:", self.y_scale_spin)
-        self.autoscale_cb = QCheckBox("Autoscale each graph's Y axis to its data")
-        self.autoscale_cb.setChecked(True)
-        form.addRow(self.autoscale_cb)
+        self.style_combo = QComboBox()
+        self.style_combo.addItems(CURVE_STYLES)
+        self.style_combo.setToolTip("Line holds each value until the next one, as an ECU signal does; "
+                                    "Dots marks every received sample")
+        form.addRow("Draw signals as:", self.style_combo)
         self.window_spin = QDoubleSpinBox()
         self.window_spin.setRange(0.5, 3600.0)
         self.window_spin.setValue(10.0)
         self.window_spin.setSuffix(" s")
         form.addRow("Follow time window:", self.window_spin)
+
+        self.fixed_x_cb = QCheckBox("Fixed time range (turns Follow off)")
+        self.x_start, self.x_end = self._range_row(form, self.fixed_x_cb, "Time", " s", 0.1)
+        self.autoscale_cb = QCheckBox("Autoscale each graph's Y axis to its data")
+        self.autoscale_cb.setChecked(True)
+        form.addRow(self.autoscale_cb)
+        self.fixed_y_cb = QCheckBox("Fixed value range for every graph")
+        self.y_start, self.y_end = self._range_row(form, self.fixed_y_cb, "Value", "", 1.0)
+        self.fixed_y_cb.toggled.connect(lambda fixed: self.autoscale_cb.setEnabled(not fixed))
         layout.addLayout(form)
-        ok_btn = QPushButton("OK")
-        ok_btn.clicked.connect(self.accept)
-        layout.addWidget(ok_btn)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        for text, slot in (("OK", self.accept), ("Cancel", self.reject)):
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+
+    def _range_row(self, form, checkbox, label, suffix, step):
+        """A "from ... to ..." pair of spin boxes, enabled by checkbox."""
+        spins = []
+        row = QHBoxLayout()
+        for index in range(2):
+            spin = QDoubleSpinBox()
+            spin.setRange(-1e9, 1e9)
+            spin.setDecimals(4)
+            spin.setSingleStep(step)
+            spin.setSuffix(suffix)
+            spin.setEnabled(False)
+            checkbox.toggled.connect(spin.setEnabled)
+            row.addWidget(QLabel("from" if index == 0 else "to"))
+            row.addWidget(spin)
+            spins.append(spin)
+        form.addRow(checkbox)
+        form.addRow(f"{label} range:", row)
+        return spins
+
+    def ranges(self):
+        """((time start, time end) or None, (value start, value end) or None)."""
+        x = (self.x_start.value(), self.x_end.value()) if self.fixed_x_cb.isChecked() else None
+        y = (self.y_start.value(), self.y_end.value()) if self.fixed_y_cb.isChecked() else None
+        return (x if x is None or x[0] < x[1] else None), (y if y is None or y[0] < y[1] else None)
 
 
 class _Series:
@@ -179,7 +230,9 @@ class CANLoggerWindow(QDialog):
         self._new_curve_data = set()     # signals whose graph needs redrawing
         self._new_values = set()         # signals whose Value column needs refreshing
         self._t0 = None
-        self._y_scale = 1.0
+        self._curve_style = CURVE_STYLES[0]
+        self._x_range = None        # fixed time range from Graph options, else None
+        self._y_range = None        # fixed value range for every graph, else None
         self._autoscale = True
         self._window_seconds = 10.0
         self._cursor_pos = [0.0, 0.0]
@@ -339,10 +392,10 @@ class CANLoggerWindow(QDialog):
         """Background, axis, grid, text, cursor and curve colors for the current theme."""
         if _get_theme() == "dark":
             return {"background": QColor(18, 18, 18), "axis": QColor(200, 200, 200), "text": QColor(220, 220, 220),
-                    "cursor_a": QColor(100, 180, 255), "cursor_b": QColor(255, 120, 120),
-                    "curves": _CURVE_COLORS_DARK}
+                    "cursor": QColor(255, 255, 255), "curves": _CURVE_COLORS_DARK}
+        # White would vanish on the light background, so the cursors take the foreground colour there.
         return {"background": QColor(255, 255, 255), "axis": QColor(60, 60, 60), "text": QColor(0, 0, 0),
-                "cursor_a": QColor(0, 0, 200), "cursor_b": QColor(200, 0, 0), "curves": _CURVE_COLORS_LIGHT}
+                "cursor": QColor(20, 20, 20), "curves": _CURVE_COLORS_LIGHT}
 
     def _color(self, display_name):
         curves = self._theme_colors()["curves"]
@@ -514,11 +567,15 @@ class CANLoggerWindow(QDialog):
             else:
                 bottom.setStyle(showValues=False)
                 bottom.setHeight(4)
-            curve = plot.plot(pen=pg.mkPen(color, width=1.5), stepMode="right")
+            curve = plot.plot(**_curve_args(color, self._curve_style))
             cursors = []
-            for index, key in enumerate(("cursor_a", "cursor_b")):
-                line = pg.InfiniteLine(self._cursor_pos[index], angle=90, movable=True,
-                                       pen=pg.mkPen(theme[key], width=1.5))
+            for index in range(2):
+                pen = pg.mkPen(theme["cursor"], width=1)
+                pen.setDashPattern(CURSOR_DASH)
+                line = pg.InfiniteLine(self._cursor_pos[index], angle=90, movable=True, pen=pen,
+                                       label=f"#{index + 1}" if row == 0 else None,
+                                       labelOpts={"position": 0.95, "color": theme["cursor"],
+                                                  "fill": theme["background"], "movable": False})
                 line.setVisible(self.cursors_btn.isChecked())
                 line.sigPositionChanged.connect(lambda ln, i=index: self._on_cursor_moved(i, ln.value()))
                 plot.addItem(line, ignoreBounds=True)
@@ -532,7 +589,19 @@ class CANLoggerWindow(QDialog):
             self._update_curve(name)
         if previous_range is not None:
             first.setXRange(*previous_range, padding=0)
+        self._apply_fixed_ranges()
         self._update_cursor_readout()
+
+    def _apply_fixed_ranges(self):
+        """Show exactly the time and value ranges set in Graph options."""
+        if not self._plots:
+            return
+        if self._x_range is not None:
+            next(iter(self._plots.values()))[0].setXRange(*self._x_range, padding=0)
+        if self._y_range is not None:
+            for plot, *_rest in self._plots.values():
+                plot.disableAutoRange(axis="y")
+                plot.setYRange(*self._y_range, padding=0)
 
     def _make_hover_items(self, plot, theme):
         """Dotted crosshair and a bottom-right time/value readout, shown while the mouse is over the graph."""
@@ -588,8 +657,7 @@ class CANLoggerWindow(QDialog):
         if series is None or not series.n:
             entry[1].setData([], [])
             return
-        values = series.values() * self._y_scale if np is not None else [v * self._y_scale for v in series.values()]
-        entry[1].setData(series.times(), values)
+        entry[1].setData(series.times(), series.values())
 
     # --- data -----------------------------------------------------------------------------
 
@@ -670,11 +738,12 @@ class CANLoggerWindow(QDialog):
         lock_x, lock_y = self.lock_x_btn.isChecked(), self.lock_y_btn.isChecked()
         for plot, *_rest in self._plots.values():
             plot.getViewBox().setMouseEnabled(x=not lock_x, y=not lock_y)
-            if lock_y and self._autoscale:
+            if lock_y and self._autoscale and self._y_range is None:
                 plot.enableAutoRange(axis="y")  # back to fitted values after a manual Y zoom
 
     def fit_all(self):
         self.follow_btn.setChecked(False)
+        self._x_range = self._y_range = None      # Fit shows everything, so the fixed ranges are dropped
         for plot, *_ in self._plots.values():
             plot.enableAutoRange(axis="x")
             if self._autoscale:
@@ -714,12 +783,11 @@ class CANLoggerWindow(QDialog):
         self._update_cursor_readout()
 
     def cursor_values(self, name):
-        """(value at cursor 1, value at cursor 2) for a signal, scaled like its graph."""
+        """(value at cursor 1, value at cursor 2) for a signal."""
         series = self._series.get(name)
         if series is None:
             return None, None
-        values = [series.at(t) for t in self._cursor_pos]
-        return tuple(None if v is None else v * self._y_scale for v in values)
+        return tuple(series.at(t) for t in self._cursor_pos)
 
     def _update_cursor_readout(self):
         if not self.cursors_btn.isChecked():
@@ -737,14 +805,31 @@ class CANLoggerWindow(QDialog):
 
     def _show_graph_options(self):
         dialog = GraphOptionsDialog(self)
-        dialog.y_scale_spin.setValue(self._y_scale)
+        dialog.style_combo.setCurrentText(self._curve_style)
         dialog.autoscale_cb.setChecked(self._autoscale)
         dialog.window_spin.setValue(self._window_seconds)
-        if dialog.exec_() == QDialog.Accepted:
-            self._y_scale = dialog.y_scale_spin.value()
-            self._autoscale = dialog.autoscale_cb.isChecked()
-            self._window_seconds = dialog.window_spin.value()
-            self._rebuild_strips()
+        # Start from what is on screen, so a range can be fine-tuned instead of typed from scratch.
+        x_range, y_range = self._x_range, self._y_range
+        if self._plots:
+            view = next(iter(self._plots.values()))[0].getViewBox().viewRange()
+            x_range, y_range = x_range or tuple(view[0]), y_range or tuple(view[1])
+        for checkbox, values, spins in ((dialog.fixed_x_cb, x_range, (dialog.x_start, dialog.x_end)),
+                                        (dialog.fixed_y_cb, y_range, (dialog.y_start, dialog.y_end))):
+            for spin, value in zip(spins, values or (0.0, 0.0)):
+                spin.setValue(value)
+        dialog.fixed_x_cb.setChecked(self._x_range is not None)
+        dialog.fixed_y_cb.setChecked(self._y_range is not None)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._curve_style = dialog.style_combo.currentText()
+        self._autoscale = dialog.autoscale_cb.isChecked()
+        self._window_seconds = dialog.window_spin.value()
+        self._x_range, self._y_range = dialog.ranges()
+        if self._x_range is not None:
+            self.follow_btn.setChecked(False)     # a fixed time range cannot scroll with the data
+        if self._y_range is not None:
+            self._autoscale = False
+        self._rebuild_strips()
 
     def _save_csv(self):
         if not self._series:
