@@ -6,5 +6,6 @@
   "timeout_ms": 5000,
   "extended_id": false,
   "request_id": 2015,
-  "response_id": 2024
+  "response_id": 2024,
+  "database_family": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
 }

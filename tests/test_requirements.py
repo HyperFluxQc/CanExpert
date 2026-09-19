@@ -391,6 +391,36 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.window.on_disconnect_clicked()
         self.assertFalse(item.isVisible())
 
+    def test_flashing_the_dummy_ecu_with_a_functional_request_id(self):
+        import threading
+        from dummy_ecu import DummyEcu, EcuConfig
+        from uds_services import load_firmware
+        examples = Path(__file__).resolve().parent.parent / "examples"
+        (self.databases/'panel_2026-09-18_script.py').write_text(
+            (examples / "example_2026-09-18_script.py").read_text(encoding="utf-8"))
+        self.window.active_config["request_id"] = 0x7DF                        # like the "test" configuration
+        stop = threading.Event()
+        ecu_bus = can.Bus(interface="virtual", channel=self.channel)
+        dump = self.root / "flashed.s19"
+        ecu = DummyEcu(ecu_bus, EcuConfig(erase_seconds=0.05, broadcast_interval=0, dump_path=str(dump)),
+                       log=lambda text: None)
+        threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
+        try:
+            self.window.on_connect_clicked()
+            self.assertTrue(spin_until(self.window._toolbar_actions["flashing"].isEnabled))
+            firmware = load_firmware(examples / "firmware" / "demo_app.hex")
+            results = []
+            with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+                self.window.start_flashing(firmware)
+                self.assertTrue(spin_until(lambda: results, 20))
+            self.assertEqual(results, [(True, "Flashing complete")])
+            self.assertEqual(load_firmware(dump).segments, firmware.segments)
+        finally:
+            self.window.on_disconnect_clicked()
+            stop.set()
+            time.sleep(0.05)
+            ecu_bus.shutdown()
+
     def test_flashing_button_disabled_without_flashing_function(self):
         self.window.on_connect_clicked()
         action = self.window._toolbar_actions["flashing"]

@@ -15,12 +15,15 @@ What it simulates:
 - ControlDTCSetting (0x85), CommunicationControl (0x28), ReadDTCInformation (0x19), ClearDTC (0x14)
 - Flashing: RoutineControl erase / checkProgrammingDependencies (0x31), RequestDownload (0x34),
   TransferData (0x36), RequestTransferExit (0x37), response pending (NRC 0x78) during erase
+- ISO-TP flow control on segmented requests: block size and STmin (--block-size, --stmin), optional
+  WAIT frames (--fc-wait), overflow for requests longer than maxNumberOfBlockLength
 - Periodic application frames: 0x300 temperature/pressure, 0x301 status; commands on 0x200/0x201
 """
 from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 import threading
 import time
@@ -29,7 +32,7 @@ from dataclasses import dataclass, field
 
 import can
 
-from uds_services import isotp_send
+from uds_services import FC_OVERFLOW, FC_WAIT, N_CR_TIMEOUT, flow_control_frame, isotp_send, parse_first_frame
 
 DEFAULT_SESSION, PROGRAMMING_SESSION, EXTENDED_SESSION = 0x01, 0x02, 0x03
 SESSION_NAMES = {DEFAULT_SESSION: "default", PROGRAMMING_SESSION: "programming", EXTENDED_SESSION: "extended"}
@@ -59,7 +62,10 @@ class EcuConfig:
     extended_ids: bool = False
     address_byte: int | None = None
     padding: int | None = 0xAA
-    max_block_length: int = 0x402
+    max_block_length: int = 0x402      # also the receive buffer: longer requests get flow control overflow
+    block_size: int = 8                # flow control BS: consecutive frames per block (0 = no limit)
+    st_min: int = 0x01                 # flow control STmin byte: 0x00-0x7F ms, 0xF1-0xF9 100-900 us
+    flow_waits: int = 0                # flow control WAIT frames sent before each ContinueToSend
     erase_seconds: float = 1.0
     s3_timeout: float = 5.0
     broadcast_interval: float = 0.1
@@ -142,21 +148,46 @@ class DummyEcu:
             length = data[0] & 0x0F
             if 0 < length <= len(data) - 1:
                 self._handle(data[1:1 + length], functional)
-        elif kind == 0x1 and not functional and len(data) >= 2:
-            total = ((data[0] & 0x0F) << 8) | data[1]
-            self._rx = {"total": total, "data": bytearray(data[2:]), "next": 1}
-            self._send_frame(bytes([0x30, 0x00, 0x00]))  # clear to send, no block limit, no STmin
+        elif kind == 0x1 and not functional:  # segmented requests are physical only
+            first = parse_first_frame(data, 7 - (self.config.address_byte is not None))
+            if first is None:
+                return
+            self._rx = None
+            if first[0] > self.config.max_block_length:
+                self.log(f"ISO-TP: {first[0]}-byte request exceeds the receive buffer; flow control overflow")
+                self._send_frame(flow_control_frame(status=FC_OVERFLOW))
+                return
+            self._rx = {"total": first[0], "data": bytearray(first[1]), "next": 1, "left": self.config.block_size}
+            self._continue_to_send()
+            self._rx["deadline"] = time.monotonic() + N_CR_TIMEOUT
         elif kind == 0x2 and not functional and self._rx:
+            if time.monotonic() > self._rx["deadline"]:
+                self.log("ISO-TP: consecutive frame too late (N_Cr); message dropped")
+                self._rx = None
+                return
             if data[0] & 0x0F != self._rx["next"]:
                 self.log("ISO-TP: consecutive frame out of sequence; message dropped")
                 self._rx = None
                 return
             self._rx["data"] += data[1:]
-            self._rx["next"] = (self._rx["next"] + 1) & 0x0F
             if len(self._rx["data"]) >= self._rx["total"]:
                 request = bytes(self._rx["data"][:self._rx["total"]])
                 self._rx = None
                 self._handle(request, False)
+                return
+            self._rx["next"] = (self._rx["next"] + 1) & 0x0F
+            self._rx["left"] -= 1
+            if self._rx["left"] == 0:  # block complete: the tester waits for the next flow control
+                self._rx["left"] = self.config.block_size
+                self._continue_to_send()
+            self._rx["deadline"] = time.monotonic() + N_CR_TIMEOUT
+
+    def _continue_to_send(self):
+        """Flow control for the next block, after the configured WAIT frames (each well within N_Bs)."""
+        for _ in range(self.config.flow_waits):
+            self._send_frame(flow_control_frame(status=FC_WAIT))
+            time.sleep(0.1)
+        self._send_frame(flow_control_frame(self.config.block_size, self.config.st_min))
 
     # --- UDS ---------------------------------------------------------------------
 
@@ -491,6 +522,44 @@ class DummyEcu:
                     self._rx = None
 
 
+BROADCAST_IDS = (0x300, 0x301)
+
+
+def claim_channel(interface, channel):
+    """Hold a localhost port as a per-channel lock while this ECU runs, or return None if another dummy ECU
+    on this computer already holds it. (On Kvaser, programs sharing a channel do not see each other's
+    frames, so only a lock can tell that a second copy was started.)"""
+    port = 47000 + zlib.crc32(f"{interface}:{channel}".encode()) % 2000
+    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: no other socket may share the port
+        lock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    try:
+        lock.bind(("127.0.0.1", port))
+    except OSError:
+        lock.close()
+        return None
+    return lock
+
+
+def other_ecu_present(bus, config: EcuConfig, listen: float = 0.4) -> bool:
+    """True when another ECU already answers on this bus, e.g. a second dummy ECU on the same channel.
+    Two ECUs answering the same requests break security access and flashing."""
+    probe = bytes([0x02, 0x3E, 0x00])  # functional TesterPresent
+    if config.address_byte is not None:
+        probe = bytes([config.address_byte]) + probe
+    bus.send(can.Message(arbitration_id=config.functional_id, data=probe, is_extended_id=config.extended_ids))
+    deadline = time.monotonic() + listen
+    while time.monotonic() < deadline:
+        message = bus.recv(0.05)
+        if message is None or message.is_error_frame:
+            continue
+        if message.arbitration_id == config.response_id and bool(message.is_extended_id) == config.extended_ids:
+            return True
+        if message.arbitration_id in BROADCAST_IDS and not message.is_extended_id:
+            return True
+    return False
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     hex_int = lambda text: int(text, 16)  # noqa: E731
@@ -503,21 +572,43 @@ def main(argv=None):
     parser.add_argument("--extended-ids", action="store_true", help="use 29-bit identifiers")
     parser.add_argument("--address-byte", type=hex_int, help="extended addressing byte, hex")
     parser.add_argument("--max-block", type=hex_int, default=0x402, help="maxNumberOfBlockLength, hex (default 402)")
+    parser.add_argument("--block-size", type=int, default=8,
+                        help="flow control BS: consecutive frames per block, 0 = no limit (default 8)")
+    parser.add_argument("--stmin", type=lambda text: int(text, 0), default=0x01,
+                        help="flow control STmin byte: 0-127 ms or 0xF1-0xF9 for 100-900 us (default 1)")
+    parser.add_argument("--fc-wait", type=int, default=0, metavar="N",
+                        help="send N flow control WAIT frames before each ContinueToSend (default 0)")
     parser.add_argument("--erase-seconds", type=float, default=1.0, help="simulated erase time")
     parser.add_argument("--no-broadcast", action="store_true", help="do not send 0x300/0x301 frames")
     parser.add_argument("--dump", metavar="FILE", help="write the flashed image as S-records after flashing")
+    parser.add_argument("--force", action="store_true", help="start even if another ECU already answers")
     args = parser.parse_args(argv)
 
     channel = int(args.channel) if args.channel.isdigit() else args.channel
     config = EcuConfig(request_id=args.request_id, response_id=args.response_id, functional_id=args.functional_id,
                        extended_ids=args.extended_ids, address_byte=args.address_byte,
-                       max_block_length=args.max_block, erase_seconds=args.erase_seconds,
+                       max_block_length=args.max_block, block_size=args.block_size, st_min=args.stmin,
+                       flow_waits=args.fc_wait, erase_seconds=args.erase_seconds,
                        broadcast_interval=0 if args.no_broadcast else 0.1, dump_path=args.dump)
+    lock = None if args.force else claim_channel(args.interface, channel)
     bus = can.Bus(interface=args.interface, channel=channel, bitrate=args.bitrate)
     started = time.strftime("%H:%M:%S")
 
     def log(text):
         print(f"{time.strftime('%H:%M:%S')}  {text}", flush=True)
+
+    if not args.force and (lock is None or other_ecu_present(bus, config)):
+        print(f"Another ECU already answers on {args.interface} channel {channel}"
+              f"{' (a dummy ECU is already running there)' if lock is None else ''}. Close the other dummy ECU "
+              f"window first: two ECUs answering the same requests break security access and flashing. "
+              f"(--force starts anyway.)", flush=True)
+        bus.shutdown()
+        if sys.stdin is not None and sys.stdin.isatty():
+            try:
+                input("Press Enter to close...")  # keep a double-clicked window open long enough to read this
+            except (EOFError, KeyboardInterrupt):
+                pass
+        return 1
 
     ecu = DummyEcu(bus, config, log)
     print(f"{started}  Dummy ECU on {args.interface} channel {channel}: requests 0x{config.request_id:X} "
@@ -529,6 +620,8 @@ def main(argv=None):
         pass
     finally:
         bus.shutdown()
+        if lock is not None:
+            lock.close()
     return 0
 
 

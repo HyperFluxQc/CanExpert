@@ -1,15 +1,20 @@
 """UDS/ISO-TP transport tests over python-can's virtual interface; no hardware is contacted."""
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import can
 
+import uds_services
 from panel_runtime import DatabaseAPI, ReceiveMailbox
+from uds_library import UdsFunctions
 from uds_services import (
-    isotp_recv, isotp_send, load_firmware, uds_rdbi, uds_request, uds_request_download, uds_tester_present,
+    IsoTpError, isotp_recv, isotp_send, load_firmware, uds_rdbi, uds_request, uds_request_download,
+    uds_tester_present,
 )
 
 EXAMPLE_SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "example_2026-09-18_script.py"
@@ -181,14 +186,143 @@ class UdsTransportTest(unittest.TestCase):
         self.assertEqual(firmware.segments, sorted(firmware_data.items()))
         bootloader = FakeBootloader()
         self.start_ecu(bootloader)
-        namespace = {}
-        exec(compile(EXAMPLE_SCRIPT.read_text(encoding="utf-8"), str(EXAMPLE_SCRIPT), "exec"), namespace)
         api = DatabaseAPI(self.mailbox, TESTER_ID, ECU_ID)
+        namespace = UdsFunctions(lambda payload, timeout, wait: api.uds.request(payload, timeout, wait)).namespace()
+        exec(compile(EXAMPLE_SCRIPT.read_text(encoding="utf-8"), str(EXAMPLE_SCRIPT), "exec"), namespace)
         self.assertTrue(namespace["Flashing"](api, firmware))
         for base, data in firmware_data.items():
             self.assertEqual(bytes(bootloader.memory[base + i] for i in range(len(data))), data)
         self.assertEqual(bootloader.log[:6], [0x10, 0x85, 0x28, 0x10, 0x27, 0x27])
-        self.assertEqual(bootloader.log[-2:], [0x31, 0x11])
+        self.assertEqual(bootloader.log[-3:], [0x31, 0x11, 0x22])          # check, reset, read new version
+
+
+class Background(threading.Thread):
+    """Runs target(*args, **kwargs) and keeps its result or exception."""
+
+    def __init__(self, target, *args, **kwargs):
+        super().__init__(daemon=True)
+        self.call = lambda: target(*args, **kwargs)
+        self.result = self.error = None
+        self.start()
+
+    def run(self):
+        try:
+            self.result = self.call()
+        except Exception as exc:
+            self.error = exc
+
+
+class FlowControlTest(unittest.TestCase):
+    """ISO 15765-2 flow control, frame by frame: the test plays the ECU on the other end."""
+
+    def setUp(self):
+        channel = "fc-" + str(uuid.uuid4())
+        self.tester = can.Bus(interface="virtual", channel=channel)
+        self.ecu = can.Bus(interface="virtual", channel=channel)
+        self.sniffer = can.Bus(interface="virtual", channel=channel)
+
+    def tearDown(self):
+        for bus in (self.tester, self.ecu, self.sniffer):
+            bus.shutdown()
+
+    def from_ecu(self, *data):
+        self.ecu.send(can.Message(arbitration_id=ECU_ID, data=bytes(data), is_extended_id=False))
+
+    def send_first_frame(self, payload):
+        sending = Background(isotp_send, self.tester, TESTER_ID, payload, ECU_ID)
+        self.assertEqual(self.ecu.recv(1).data[0] >> 4, 0x1)
+        return sending
+
+    def test_sender_follows_block_size_and_stmin(self):
+        payload = bytes(range(40))                                       # first frame + 5 consecutive frames
+        sending = self.send_first_frame(payload)
+        self.from_ecu(0x30, 2, 30)                                       # 2 frames per block, STmin 30 ms
+        block = []
+        for _ in range(2):
+            block.append((self.ecu.recv(1), time.perf_counter()))
+        self.assertGreaterEqual(block[1][1] - block[0][1], 0.025)
+        self.assertIsNone(self.ecu.recv(0.15))                           # waits for the next flow control
+        self.from_ecu(0x30, 0, 0)                                        # the rest without limit
+        frames = [message for message, _ in block] + [self.ecu.recv(1) for _ in range(3)]
+        sending.join(1)
+        self.assertIsNone(sending.error)
+        self.assertEqual([message.data[0] for message in frames], [0x21, 0x22, 0x23, 0x24, 0x25])
+        self.assertEqual(bytes(range(6)) + b"".join(bytes(m.data[1:]) for m in frames), payload)
+
+    def test_sender_handles_wait_overflow_and_missing_flow_control(self):
+        sending = self.send_first_frame(bytes(20))
+        for _ in range(3):
+            self.from_ecu(0x31, 0, 0)                                    # WAIT: the ECU is not ready yet
+            self.assertIsNone(self.ecu.recv(0.1))
+        self.from_ecu(0x30, 0, 0)
+        self.assertEqual([self.ecu.recv(1).data[0] for _ in range(2)], [0x21, 0x22])
+        sending.join(1)
+        self.assertIsNone(sending.error)
+        for status, message in ((0x32, "overflow"), (0x37, "Invalid flow status 0x7")):
+            sending = self.send_first_frame(bytes(20))
+            self.from_ecu(status, 0, 0)
+            sending.join(1)
+            self.assertIsInstance(sending.error, IsoTpError)
+            self.assertIn(message, str(sending.error))
+            self.assertIsNone(self.ecu.recv(0.1))                        # nothing more after an abort
+        with patch.object(uds_services, "MAX_FC_WAITS", 2):
+            sending = self.send_first_frame(bytes(20))
+            for _ in range(3):
+                self.from_ecu(0x31, 0, 0)
+            sending.join(1)
+            self.assertIn("kept sending flow control WAIT", str(sending.error))
+        with patch.object(uds_services, "N_BS_TIMEOUT", 0.2):
+            with self.assertRaisesRegex(IsoTpError, "No flow control"):
+                isotp_send(self.tester, TESTER_ID, bytes(20), ECU_ID)
+
+    def test_receiver_sends_flow_control_after_every_block(self):
+        payload = bytes(range(34))                                       # first frame + 4 consecutive frames
+        receiving = Background(isotp_recv, self.tester, ECU_ID, TESTER_ID, 1.0, block_size=2, st_min=0x05)
+        self.from_ecu(0x10, 34, *payload[:6])
+        self.assertEqual(bytes(self.ecu.recv(1).data), b"\x30\x02\x05")
+        for index in range(4):
+            self.from_ecu(0x21 + index, *payload[6 + 7 * index:13 + 7 * index])
+            if index == 1:
+                self.assertEqual(bytes(self.ecu.recv(1).data), b"\x30\x02\x05")  # end of the first block
+        receiving.join(1)
+        self.assertEqual(receiving.result, payload)
+        self.assertIsNone(self.ecu.recv(0.1))                            # none after the last frame
+
+    def test_receiver_handles_unexpected_frames(self):
+        receiving = Background(isotp_recv, self.tester, ECU_ID, TESTER_ID, 1.0)
+        self.from_ecu(0x10, 20, *b"AAAAAA")
+        self.ecu.recv(1)
+        self.from_ecu(0x21, *b"AAAAAAA")
+        self.from_ecu(0x10, 10, *b"BBBBBB")                              # a new first frame replaces it
+        self.assertEqual(bytes(self.ecu.recv(1).data), b"\x30\x00\x00")
+        self.from_ecu(0x21, *b"BBBB")
+        receiving.join(1)
+        self.assertEqual(receiving.result, b"B" * 10)
+
+        receiving = Background(isotp_recv, self.tester, ECU_ID, TESTER_ID, 1.0)
+        self.from_ecu(0x10, 20, *b"AAAAAA")
+        self.ecu.recv(1)
+        self.from_ecu(0x02, 0x7E, 0x00)                                  # so does a single frame
+        receiving.join(1)
+        self.assertEqual(receiving.result, b"\x7E\x00")
+
+        receiving = Background(isotp_recv, self.tester, ECU_ID, TESTER_ID, 1.0)
+        self.from_ecu(0x10, 20, *b"AAAAAA")
+        self.ecu.recv(1)
+        self.from_ecu(0x22, *b"AAAAAAA")                                 # sequence number 2 instead of 1
+        receiving.join(1)
+        self.assertIn("out of sequence", str(receiving.error))
+
+        self.from_ecu(0x10, 7, 1, 2, 3, 4, 5, 6)                         # fits a single frame: invalid
+        self.assertIsNone(isotp_recv(self.tester, ECU_ID, TESTER_ID, 0.2))
+        self.assertIsNone(self.ecu.recv(0.1))                            # and not answered
+
+    def test_messages_longer_than_4095_bytes_use_the_escape_sequence(self):
+        payload = bytes(i & 0xFF for i in range(5000))
+        sending = Background(isotp_send, self.ecu, ECU_ID, payload, TESTER_ID)
+        self.assertEqual(isotp_recv(self.tester, ECU_ID, TESTER_ID, 2.0), payload)
+        sending.join(1)
+        self.assertEqual(bytes(self.sniffer.recv(1).data), bytes([0x10, 0x00, 0x00, 0x00, 0x13, 0x88, 0x00, 0x01]))
 
 
 class FirmwareFileTest(unittest.TestCase):

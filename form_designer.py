@@ -27,7 +27,9 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from code_editor import CodeEditor
+from code_editor import CodeEditor, UdsFunctionPanel
+from flashing_ui import (EXAMPLE_FIRMWARE_DIR, choose_firmware, close_progress, confirm_flash, progress_dialog,
+                         report_result, update_progress)
 from panel import DATABASES_DIR, parse_widget, parse_application_database
 from panel_controls import APPEARANCE, CATEGORIES, CONTROLS, READ_ONLY, WIDGET_GROUPS, build
 from panel_runtime import SCRIPT_TEMPLATE
@@ -1538,6 +1540,19 @@ class TestPanelDialog(QDialog):
         self.panel.control_changed.connect(lambda name, value: self.runtime.post("control", name, value))
         self.runtime.dbc = self.panel.dbc
         self.runtime.handlers = self.panel.handlers()
+        self.flash_button = QPushButton("Flashing...")
+        self.flash_button.setEnabled(False)
+        self.flash_button.setToolTip("Flash a .s19/.hex file into the simulated ECU with the script's Flashing() "
+                                     "(enabled when the script defines it)")
+        self.flash_button.clicked.connect(self.open_flashing)
+        self.flash_dialog = None
+        self.runtime.flashing_available.connect(self.flash_button.setEnabled)
+        self.runtime.flash_progress.connect(lambda done, total, text: update_progress(self.flash_dialog, done, total, text))
+        self.runtime.flash_finished.connect(self._flash_finished)
+        bar = QHBoxLayout()
+        bar.addWidget(self.flash_button)
+        bar.addStretch()
+        layout.addLayout(bar)
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self.panel)
         log_box = QWidget()
@@ -1558,6 +1573,26 @@ class TestPanelDialog(QDialog):
 
     def _log(self, text):
         self.log_view.appendPlainText(str(text))
+
+    def open_flashing(self):
+        """Same flow as the main window's Flashing button, against the simulated ECU."""
+        start = EXAMPLE_FIRMWARE_DIR if EXAMPLE_FIRMWARE_DIR.exists() else Path.home()
+        firmware = choose_firmware(self, start)
+        if firmware is not None and confirm_flash(self, firmware, "the simulated ECU"):
+            self.start_flashing(firmware)
+
+    def start_flashing(self, firmware):
+        self.flash_button.setEnabled(False)
+        self.flash_dialog = progress_dialog(self, firmware, self.runtime.cancel_flash)
+        self._log(f"Flashing {Path(firmware.path).name}: {firmware.size} bytes in {len(firmware.segments)} segment(s)")
+        self.runtime.start_flash(firmware)
+
+    def _flash_finished(self, ok, text):
+        dialog, self.flash_dialog = self.flash_dialog, None
+        close_progress(dialog)
+        self.flash_button.setEnabled(self.runtime.flash_function is not None)
+        self._log(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
+        report_result(self, ok, text)
 
     def _traffic(self, direction, can_id, data):
         if self.show_traffic.isChecked():
@@ -1582,6 +1617,8 @@ class TestPanelDialog(QDialog):
             self.runtime.post("can", message.arbitration_id, data)
 
     def done(self, result):
+        dialog, self.flash_dialog = self.flash_dialog, None
+        close_progress(dialog)
         self._pump.stop()
         self.runtime.stop()
         self.mailbox.close()
@@ -1654,7 +1691,14 @@ class FormDesigner(QDialog):
         code_bar.addWidget(check_btn)
         code_bar.addWidget(self.syntax_label, 1)
         code_layout.addLayout(code_bar)
-        code_layout.addWidget(self.code_editor, 1)
+        self.uds_panel = UdsFunctionPanel()
+        self.uds_panel.insert_requested.connect(self.code_editor.insert_snippet)
+        code_split = QSplitter(Qt.Horizontal)
+        code_split.addWidget(self.code_editor)
+        code_split.addWidget(self.uds_panel)
+        code_split.setStretchFactor(0, 1)
+        code_split.setSizes([640, 330])
+        code_layout.addWidget(code_split, 1)
         self.design_tabs = QTabWidget()
         self.design_tabs.addTab(self.canvas, "Form")
         self.design_tabs.addTab(code_page, "Python script")
@@ -1667,7 +1711,8 @@ class FormDesigner(QDialog):
         self.properties.setMinimumWidth(0)
         splitter.addWidget(SplitterPanel("Symbols & controls", left_widget, Qt.Horizontal))
         splitter.addWidget(SplitterPanel("Form / Code", self.design_tabs, Qt.Horizontal))
-        splitter.addWidget(SplitterPanel("Properties", self.properties, Qt.Horizontal))
+        self.properties_panel = SplitterPanel("Properties", self.properties, Qt.Horizontal)
+        splitter.addWidget(self.properties_panel)
         splitter.setSizes([230, 680, 300])
 
         top_layout = QHBoxLayout()
@@ -1745,6 +1790,8 @@ class FormDesigner(QDialog):
         return ok
 
     def _on_tab_changed(self, index):
+        # Control properties only make sense next to the form; the script gets the room instead.
+        self.properties_panel.setVisible(self.design_tabs.widget(index) is self.canvas)
         if self.design_tabs.widget(index) is not self.canvas:
             words = []
             for page in self.canvas.pages:

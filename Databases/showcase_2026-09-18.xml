@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='utf-8'?>
+<application_database name="Control showcase" dbc_path="../DBC/dummy_ecu.dbc">
+    <description>Every control type, bound to DBC/dummy_ecu.dbc. Run dummy_ecu.py or use Test panel.</description>
+    <pages>
+        <page name="Main">
+            <group_box type="group_box" id="1" x="10" y="10" variable="" binding_type="script" binding_value="" width="560" height="250" label="Engine" />
+            <gauge type="gauge" id="2" x="30" y="40" variable="EngineData.Temperature" binding_type="dbc" binding_value="EngineData.Temperature" min="0" max="100" unit="degC" decimals="1" warning="60" critical="80" width="200" height="200" label="Temperature" />
+            <display type="display" id="3" x="250" y="40" variable="EngineData.Pressure" binding_type="dbc" binding_value="EngineData.Pressure" unit="bar" digits="5" segment_color="#00e676" format="auto" decimals="2" width="190" height="70" label="Pressure" />
+            <trend type="trend" id="4" x="250" y="120" variable="EngineData.Temperature" binding_type="dbc" binding_value="EngineData.Temperature" window="20" unit="degC" line_color="#0f6cbd" min="" max="" width="300" height="120" label="Temperature trend" />
+            <group_box type="group_box" id="5" x="590" y="10" variable="" binding_type="script" binding_value="" width="350" height="250" label="Status" />
+            <led type="led" id="6" x="610" y="40" variable="EcuStatus.Running" binding_type="dbc" binding_value="EcuStatus.Running" on_text="Running" off_text="Stopped" on_color="#16c60c" off_color="#3a3a3a" blink="False" width="150" height="28" label="Running LED" />
+            <led type="led" id="7" x="780" y="40" variable="overheat" binding_type="script" binding_value="overheat" on_text="Overheat" off_text="Temp OK" on_color="#c62828" off_color="#3a3a3a" blink="True" width="140" height="28" label="Overheat" />
+            <indicator type="indicator" id="8" x="610" y="80" variable="EcuStatus.Session" binding_type="dbc" binding_value="EcuStatus.Session" states="" width="150" height="34" label="Session" />
+            <value type="value" id="9" x="780" y="80" variable="EcuStatus.Counter" binding_type="dbc" binding_value="EcuStatus.Counter" unit="" value_type="float" format="auto" decimals="" value_table="True" width="140" height="34" label="Counter value" />
+            <progress_bar type="progress_bar" id="10" x="610" y="130" variable="EcuStatus.Counter" binding_type="dbc" binding_value="EcuStatus.Counter" min="0" max="255" unit="" orientation="horizontal" bar_color="" width="310" height="24" label="Counter" />
+            <output type="output" id="11" x="610" y="170" variable="log" binding_type="script" binding_value="log" width="310" height="80" label="Log" />
+            <group_box type="group_box" id="12" x="10" y="270" variable="" binding_type="script" binding_value="" width="930" height="180" label="Controls" />
+            <switch type="switch" id="13" x="30" y="300" variable="run" binding_type="script" binding_value="run" on_color="#0f6cbd" width="140" height="28" label="Run" handler="on_run_changed" />
+            <checkbox type="checkbox" id="14" x="30" y="340" variable="logging" binding_type="script" binding_value="logging" width="140" height="28" label="Logging" handler="on_logging_changed" />
+            <button type="button" id="15" x="30" y="380" variable="hello" binding_type="script" binding_value="hello" width="140" height="32" label="Read VIN" handler="on_hello_clicked" />
+            <radio type="radio" id="16" x="200" y="300" variable="session" binding_type="script" binding_value="session" items="Default, Extended" orientation="horizontal" width="260" height="28" label="Session" handler="on_session_changed" />
+            <combo type="combo" id="17" x="200" y="340" variable="mode" binding_type="script" binding_value="mode" items="Eco, Normal, Sport" width="160" height="28" label="Mode" />
+            <slider type="slider" id="18" x="200" y="380" variable="fan" binding_type="script" binding_value="fan" min="0" max="100" orientation="horizontal" width="200" height="30" label="Fan" />
+            <knob type="knob" id="19" x="490" y="290" variable="limit" binding_type="script" binding_value="limit" min="20" max="100" unit="degC" width="100" height="120" label="Limit" handler="on_limit_changed" />
+            <spin type="spin" id="20" x="620" y="300" variable="setpoint" binding_type="script" binding_value="setpoint" min="0" max="100" step="0.5" decimals="1" unit="degC" width="130" height="28" label="Setpoint" />
+            <io_box type="io_box" id="21" x="620" y="340" variable="command" binding_type="script" binding_value="command" unit="" value_type="string" format="auto" decimals="" width="130" height="28" label="Command" />
+            <display type="display" id="22" x="780" y="300" variable="limit_display" binding_type="script" binding_value="limit_display" unit="degC" digits="4" segment_color="#00e676" format="auto" decimals="" width="140" height="60" label="Limit display" />
+            <label type="label" id="23" x="620" y="390" variable="" binding_type="script" binding_value="" text="Overheat LED uses the Limit knob" align="left" word_wrap="False" width="300" height="24" label="Hint" font_size="8" />
+        </page>
+    </pages>
+</application_database>

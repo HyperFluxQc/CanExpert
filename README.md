@@ -12,7 +12,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
 - **Channel Selection & Bitrate**: Configure CAN channel and speed per interface
 - **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, with follow, pause, fit, X/Y axis locks, measurement cursors, a hover crosshair with time/value readout and CSV export
-- **Firmware flashing**: While connected, the **Flashing** toolbar button sends an S-record or Intel HEX file to the database script's `Flashing(api, firmware)`; a sample ISO 14229 sequence is in `examples/`
+- **Firmware flashing**: While connected, the **Flashing** toolbar button asks for an S-record or Intel HEX file, asks for confirmation and runs the database script's `Flashing(api, firmware)` with a progress dialog; a sample ISO 14229 sequence and test images (`examples/firmware/demo_app.s19` / `.hex`) are in `examples/`, and the Form Designer's Test panel can flash the simulated ECU
 
 ## Requirements
 
@@ -109,6 +109,29 @@ def every_second(api):
     api.set_signal("EngineCmd.Speed", 1200)       # encode into the DBC message and send
 ```
 
+Every ISO 14229 service is a script function, listed with its documentation in the **UDS functions**
+panel beside the script editor (double-click to insert a call). `RDBI(0xFF99)` sends `22 FF 99`:
+
+```python
+result = RDBI(0xFF99)
+if result:                                        # positive response
+    api.ui.set_value("value", result.int)         # also .data, .text, .hex()
+else:
+    api.log(result.error)                         # "NRC 0x31 requestOutOfRange" or "no response"
+```
+
+| Functional unit (ISO 14229-1) | Functions |
+|---|---|
+| Diagnostic and communication management | `DSC` 0x10, `ER` 0x11, `SA` 0x27, `CC` 0x28, `TP` 0x3E, `ATP` 0x83, `CDTCS` 0x85, `ROE` 0x86, `LC` 0x87 |
+| Data transmission | `RDBI` 0x22, `RMBA` 0x23, `RSDBI` 0x24, `RDBPI` 0x2A, `DDDI_DefineById` / `DDDI_DefineByAddress` / `DDDI_Clear` 0x2C, `WDBI` 0x2E, `WMBA` 0x3D |
+| Stored data transmission | `CDTCI` 0x14, `RDTCI` 0x19 |
+| Input/output control | `IOCBI` 0x2F |
+| Remote activation of routine | `RC` 0x31 |
+| Upload/download | `RD` 0x34, `RU` 0x35, `TD` 0x36, `RTE` 0x37, `RFT` 0x38 |
+| Helpers | `UDS("22 F1 90")` (any request), `SecurityUnlock(level, compute_key)`, `ReadDTCs(mask)`, `StartRoutine` / `StopRoutine` / `RoutineResults`, `UdsLog(True)` |
+
+Authentication (0x29) and SecuredDataTransmission (0x84) are not included.
+
 See [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts) for the full API and [Firmware flashing](REQUIREMENTS_STATUS.md#firmware-flashing) for `Flashing(api, firmware)`.
 
 ## File structure
@@ -121,7 +144,9 @@ CanExpert/
 ├── panel_runtime.py        # Script API and runtime, CAN mailbox, config validation
 ├── uds_services.py         # ISO-TP transport, UDS services, S-record/Intel HEX loading
 ├── form_designer.py        # Form Designer (layout tools, undo/redo, Test mode)
-├── code_editor.py          # Python editor: highlighting, line numbers, completion
+├── code_editor.py          # Python editor: highlighting, line numbers, completion, UDS functions panel
+├── uds_library.py          # ISO 14229 service functions for scripts (RDBI, WDBI, DSC, ...)
+├── flashing_ui.py          # Firmware file, confirmation and progress dialogs for Flashing
 ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
 ├── diagnostic_window.py    # ODX Diagnostic Window
 ├── ui_common.py            # Settings, toolbar icons, collapsible panels
@@ -143,11 +168,13 @@ CanExpert/
 python dummy_ecu.py --interface kvaser --channel 1
 ```
 
-In CAN Expert, use a configuration with **SERVER ID** `7E0` and **ECU ID** `7E8`, select the receiver `[kvaser] Ch 0` and click **Connect**. ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
+In CAN Expert, choose the **Dummy ECU** configuration (SERVER ID `7E0`, ECU ID `7E8`, database family `showcase`, the showcase panel with every control and `Flashing()`), select the receiver `[kvaser] Ch 0` and click **Connect**. Run only one dummy ECU per channel: it refuses to start when another ECU already answers there (two answering ECUs break security access and flashing). ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
 
-The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime), WriteDataByIdentifier for `F190`, SecurityAccess level 1 (key = seed XOR `A5`, the same as the example `compute_key()`), ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: copy the example panel to `Databases/`, set the configuration's database family to `example`, connect, click **Flashing** and pick any S-record or Intel HEX file. Afterwards `F195` reports `APP-FLASHED-<crc32>`, and `--dump flashed.s19` writes the received image back to a file.
+The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime), WriteDataByIdentifier for `F190`, SecurityAccess level 1 (key = seed XOR `A5`, the same as the example `compute_key()`), ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: copy the example panel to `Databases/`, set the configuration's database family to `example`, connect, click **Flashing** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`, and `--dump flashed.s19` writes the received image back to a file.
 
 To see live graphs, open **CAN Logger**, load `DBC/dummy_ecu.dbc` and tick `EngineData.Temperature`, `EngineData.Pressure` or the `EcuStatus` signals.
+
+Segmented requests (TransferData blocks, VIN writes) get real ISO-TP flow control: by default the ECU asks for 8 consecutive frames per block with STmin 1 ms, so the CAN log shows a `30 08 01` flow control frame after every 8 frames. Change it with `--block-size` (0 = no limit) and `--stmin` (milliseconds, or `0xF1`-`0xF9` for 100-900 µs), and add `--fc-wait N` to send N flow control WAIT frames (`31 00 00`) before each ContinueToSend. A request longer than `--max-block` gets flow control overflow (`32 00 00`).
 
 Other options: `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--erase-seconds`, `--no-broadcast`. Run `python dummy_ecu.py --help` for details.
 

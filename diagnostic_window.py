@@ -36,7 +36,7 @@ except ImportError:
     HAS_ODXTOOLS = False
 
 from ui_common import SplitterPanel, enable_maximize
-from panel_runtime import ReceiveMailbox
+from panel_runtime import ReceiveMailbox, diagnostic_request_id
 from uds_services import uds_request
 
 
@@ -294,7 +294,7 @@ class DiagnosticWindow(QDialog):
             self._log(f"[Encode error] {e}")
             return
         transport = {
-            "request_id": cfg["request_id"],
+            "request_id": diagnostic_request_id(cfg),
             "response_id": cfg["response_id"],
             "timeout": cfg.get("timeout_ms", 2000) / 1000.0,
             "extended": not cfg.get("identifier_11_bit", True),
@@ -305,7 +305,7 @@ class DiagnosticWindow(QDialog):
         mailbox = ReceiveMailbox(bus, worker.message_sent.emit)
         worker.add_mailbox(mailbox)
         ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        self._log(f"{ts}  TX  ID=0x{cfg['request_id']:X}  {payload.hex(' ')}")
+        self._log(f"{ts}  TX  ID=0x{transport['request_id']:X}  {payload.hex(' ')}")
         if hasattr(self, "send_btn"):
             self.send_btn.setEnabled(False)
         threading.Thread(target=self._exchange, daemon=True,

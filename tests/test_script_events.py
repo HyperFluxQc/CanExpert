@@ -11,7 +11,7 @@ import can
 import cantools
 from PyQt5.QtWidgets import QApplication
 
-from panel_runtime import ReceiveMailbox, ScriptRuntime, validate_config
+from panel_runtime import ReceiveMailbox, ScriptRuntime, diagnostic_request_id, validate_config
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parent.parent / "DBC" / "dummy_ecu.dbc"
@@ -132,6 +132,16 @@ class ScriptEventsTest(unittest.TestCase):
         self.assertEqual((first.arbitration_id, bytes(first.data)), (0x300, engine(30.0, 2.5)))  # temperature kept
         self.assertEqual(second.arbitration_id, 0x301)
         self.assertEqual(bytes(second.data)[:4], bytes([1, 0, 0, 7]))
+
+    def test_functional_obd_request_id_is_mapped_to_the_physical_id(self):
+        self.assertEqual(diagnostic_request_id({"request_id": 0x7DF, "response_id": 0x7E8}), 0x7E0)
+        self.assertEqual(diagnostic_request_id({"request_id": 0x7DF, "response_id": 0x7EB}), 0x7E3)
+        self.assertEqual(diagnostic_request_id({"request_id": 0x7E1, "response_id": 0x7E9}), 0x7E1)
+        self.assertEqual(diagnostic_request_id({"request_id": 0x7DF, "response_id": 0x18DAF110,
+                                                "identifier_11_bit": False}), 0x7DF)
+        runtime = ScriptRuntime(self.mailbox, validate_config({"name": "obd", "request_id": 0x7DF,
+                                                               "response_id": 0x7E8}), {}, None)
+        self.assertEqual(runtime.api._request_id, 0x7E0)
 
     def test_on_stop_runs_while_the_bus_is_open(self):
         self.runtime.stop()

@@ -30,6 +30,8 @@ flowchart LR
     form_designer --> panel
     form_designer --> panel_runtime
     form_designer --> code_editor["code_editor.py"]
+    code_editor --> uds_library["uds_library.py"]
+    panel_runtime --> uds_library
     panel --> panel_controls["panel_controls.py"]
     form_designer --> panel_controls
     panel_runtime --> uds_services["uds_services.py"]
@@ -49,9 +51,11 @@ flowchart LR
 | **panel_runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.signal/set_signal/send_message`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators, timers, flashing, cancellation), `ReceiveMailbox` (bus facade fed by `CanWorker`), `validate_config()`. |
 | **uds_services.py** | ISO-TP transport (single, first, consecutive and flow-control frames), `uds_request()` and UDS helpers, `load_firmware()` for S-record/Intel HEX files, flashing helper. |
 | **form_designer.py** | Panel designer: palette, DBC symbol tree (drag signals onto the form), canvas with multi-select, align/distribute, grid snap, resize handle, z-order, clipboard, keyboard and undo/redo; schema-driven property editor; handler stubs; Test mode against the simulated ECU; saves XML + `_script.py`. |
-| **code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals), syntax check. |
+| **code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals, UDS functions), syntax check; `UdsFunctionPanel` lists the UDS functions by ISO 14229 functional unit and inserts calls. |
+| **uds_library.py** | ISO 14229-1 service functions for scripts (`RDBI`, `WDBI`, `DSC`, `SA`, `RC`, `RD`/`TD`/`RTE`, ... all services except 0x29 and 0x84) returning `UdsResult`; injected into script globals by `ScriptRuntime`; `NRC_NAMES`. |
 | **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, follow/pause/fit, Lock X / Lock Y for mouse zoom and pan, two measurement cursors with per-signal values and Δ, a dotted hover crosshair with a time/value readout, CSV export of all decoded data. |
 | **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors request/response IDs. |
+| **flashing_ui.py** | Flashing dialogs shared by the main window and the designer's Test panel: choose and load a firmware file, confirm with its address ranges, progress dialog with Cancel, result message. |
 | **dummy_ecu.py** | Stand-alone simulated UDS ECU (sessions, security, DIDs, DTCs, flashing, periodic frames) for Kvaser virtual channels or any python-can interface. |
 | **ui_common.py** | Shared Qt helpers: `app_settings()` (persistent QSettings, migrating the legacy `EZCan2/KvaserCAN` store once), `toolbar_icon()`, and `SplitterPanel` (collapsible titled panel). |
 
@@ -114,8 +118,9 @@ A mailbox acts as a bus for code running off the GUI thread: `send()` goes strai
 
 - flush the mailbox first, so a reply queued before the request cannot answer it;
 - run inside `mailbox.transaction()`; while any mailbox is in a transaction `CanWorker` defers its TesterPresent, because a single frame interleaved with a multi-frame request would abort it on the ECU;
-- send the request as ISO-TP (single frame, or first frame + consecutive frames honouring block size and STmin);
-- receive the reply, sending flow control for multi-frame replies;
+- send the request as ISO-TP (ISO 15765-2): a single frame, or a first frame and consecutive frames paced by the ECU's flow control. A new ContinueToSend is awaited after every block of BS frames, and consecutive frames are at least STmin apart (timed with `perf_counter`, since `time.sleep()` can overshoot a 1 ms STmin by ~15 ms on Windows). WAIT restarts the N_Bs timeout (1 s, at most 16 WAITs), and overflow, an invalid flow status or no flow control abort with `IsoTpError`;
+- receive the reply, answering a first frame with flow control (BS 0, STmin 0: the whole reply at once); a first frame that announces a length a single frame could carry is ignored, a new single or first frame replaces an unfinished message, and a wrong sequence number or more than N_Cr (1 s) between consecutive frames aborts;
+- messages longer than 4095 bytes use the ISO 15765-2:2016 escape sequence (first-frame length 0, then 32 bits) in both directions;
 - skip unrelated replies (e.g. TesterPresent) and extend the wait on NRC 0x78 (response pending).
 
 Identifier size (11/29-bit) and the optional extended-address byte come from the configuration and apply to every frame.
@@ -212,8 +217,8 @@ python -B -m unittest discover -s tests -v
 ```
 
 - `tests/test_requirements.py`: end-to-end sessions over python-can's virtual interface (configuration restore, heartbeat, node loss/recovery, database selection, scripts, designer round-trip, multi-frame Diagnostic Window exchange, Flashing button).
-- `tests/test_uds_services.py`: ISO-TP and UDS against a simulated ECU (stale-frame flush, multi-frame requests/replies, response pending, 29-bit IDs with address byte, RequestDownload encoding, heartbeat deferral flag), S-record/Intel HEX parsing, and the example `Flashing()` against a simulated bootloader.
+- `tests/test_uds_services.py`: ISO-TP flow control frame by frame (block size and STmin, WAIT, overflow, invalid flow status, N_Bs timeout, flow control after every received block, unexpected and invalid frames, the escape sequence), ISO-TP and UDS against a simulated ECU (stale-frame flush, multi-frame requests/replies, response pending, 29-bit IDs with address byte, RequestDownload encoding, heartbeat deferral flag), S-record/Intel HEX parsing, and the example `Flashing()` against a simulated bootloader.
 
-- `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC and flashing behaviour.
+- `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC, flow control (WAIT, block size, STmin, overflow) and flashing behaviour.
 
 No hardware is contacted. For a manual end-to-end check, run `python dummy_ecu.py --interface kvaser --channel 1` and connect CAN Expert to Kvaser virtual channel 0. Adapter drivers, bus electrical conditions and ECU timing still need a hardware acceptance run.

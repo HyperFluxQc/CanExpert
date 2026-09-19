@@ -48,7 +48,6 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
-    QProgressDialog,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -71,7 +70,8 @@ from diagnostic_window import DiagnosticWindow
 from panel_runtime import (DEFAULT_NODE_TIMEOUT, DEFAULT_TESTER_PRESENT_INTERVAL, ReceiveMailbox,
                            ScriptRuntime, validate_config)
 from ui_common import CaptionButton, app_settings, toolbar_icon
-from uds_services import FIRMWARE_FILE_FILTER, load_firmware
+from flashing_ui import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
+                         update_progress)
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -1251,67 +1251,34 @@ class MainWindow(QMainWindow):
         if self.script_runtime is None or self.script_runtime.flash_function is None:
             return
         settings = app_settings()
-        start_dir = settings.value("last_firmware_dir", str(APP_DIR), type=str)
-        path, _ = QFileDialog.getOpenFileName(self, "Select firmware file", start_dir, FIRMWARE_FILE_FILTER)
-        if not path:
+        firmware = choose_firmware(self, settings.value("last_firmware_dir", str(APP_DIR), type=str))
+        if firmware is None:
             return
-        settings.setValue("last_firmware_dir", str(Path(path).parent))
-        try:
-            firmware = load_firmware(path)
-        except (OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Flashing", f"Cannot read {Path(path).name}:\n{exc}")
-            return
-        ranges = "\n".join(f"0x{address:08X} - 0x{address + len(data) - 1:08X}  ({len(data)} bytes)"
-                           for address, data in firmware.segments[:8])
-        if len(firmware.segments) > 8:
-            ranges += f"\n... {len(firmware.segments) - 8} more segment(s)"
-        answer = QMessageBox.question(
-            self, "Flashing",
-            f"Flash {Path(path).name} ({firmware.size} bytes) to the ECU?\n\n{ranges}\n\n"
-            "Keep the CAN connection and ECU power stable until flashing finishes.")
-        if answer == QMessageBox.Yes:
+        settings.setValue("last_firmware_dir", str(Path(firmware.path).parent))
+        if confirm_flash(self, firmware):
             self.start_flashing(firmware)
 
     def start_flashing(self, firmware):
         if self.script_runtime is None:
             return
         self._toolbar_actions["flashing"].setEnabled(False)
-        dialog = QProgressDialog(f"Flashing {Path(firmware.path).name}...", "Cancel", 0, max(1, firmware.size), self)
-        dialog.setWindowTitle("Flashing")
-        dialog.setWindowModality(Qt.WindowModal)
-        dialog.setMinimumDuration(0)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
-        dialog.canceled.connect(self.script_runtime.cancel_flash)
-        dialog.show()
-        self.flash_dialog = dialog
+        self.flash_dialog = progress_dialog(self, firmware, self.script_runtime.cancel_flash)
         self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in {len(firmware.segments)} segment(s)")
         self.script_runtime.start_flash(firmware)
 
     def _on_flash_progress(self, done, total, text):
-        if self.flash_dialog is None:
-            return
-        self.flash_dialog.setMaximum(max(1, total))
-        self.flash_dialog.setValue(max(0, min(done, total)))
-        if text:
-            self.flash_dialog.setLabelText(text)
+        update_progress(self.flash_dialog, done, total, text)
 
     def _close_flash_dialog(self):
         dialog, self.flash_dialog = self.flash_dialog, None
-        if dialog is not None:
-            dialog.canceled.disconnect()
-            dialog.close()
-            dialog.deleteLater()
+        close_progress(dialog)
 
     def _on_flash_finished(self, ok, text):
         self._close_flash_dialog()
         self._set_flashing_available(self.script_runtime is not None and self.script_runtime.flash_function is not None)
         self.log_verbose(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
         self._set_status(f"Flashing {'complete' if ok else 'failed'}", "green" if ok else "red")
-        if ok:
-            QMessageBox.information(self, "Flashing", text)
-        else:
-            QMessageBox.critical(self, "Flashing", f"Flashing failed:\n{text}")
+        report_result(self, ok, text)
 
     def closeEvent(self, event):
         self.node_timer.stop()

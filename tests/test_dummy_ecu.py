@@ -8,9 +8,10 @@ from pathlib import Path
 
 import can
 
-from dummy_ecu import DummyEcu, EcuConfig
+from dummy_ecu import DummyEcu, EcuConfig, claim_channel, other_ecu_present
 from panel_runtime import DatabaseAPI, ReceiveMailbox
-from uds_services import Firmware, load_firmware, uds_rdbi, uds_request
+from uds_library import UdsFunctions
+from uds_services import Firmware, IsoTpError, load_firmware, uds_rdbi, uds_request
 
 EXAMPLE_SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "example_2026-09-18_script.py"
 PHYSICAL, FUNCTIONAL, RESPONSE = 0x7E0, 0x7DF, 0x7E8
@@ -18,7 +19,7 @@ PHYSICAL, FUNCTIONAL, RESPONSE = 0x7E0, 0x7DF, 0x7E8
 
 class DummyEcuTest(unittest.TestCase):
     def setUp(self):
-        channel = "dummy-" + str(uuid.uuid4())
+        channel = self.channel = "dummy-" + str(uuid.uuid4())
         self.temp = tempfile.TemporaryDirectory()
         self.dump = Path(self.temp.name) / "flashed.s19"
         self.ecu_bus = can.Bus(interface="virtual", channel=channel)
@@ -55,14 +56,17 @@ class DummyEcuTest(unittest.TestCase):
         return uds_request(self.mailbox, bytes(payload), request_id, RESPONSE, timeout)
 
     def test_example_flashing_updates_software_version(self):
-        namespace = {}
+        api = DatabaseAPI(self.mailbox, PHYSICAL, RESPONSE)
+        logs = []
+        api._log_cb = logs.append
+        namespace = UdsFunctions(lambda payload, timeout, wait: api.uds.request(payload, timeout, wait)).namespace()
         exec(compile(EXAMPLE_SCRIPT.read_text(encoding="utf-8"), str(EXAMPLE_SCRIPT), "exec"), namespace)
         image = bytes((i * 13) & 0xFF for i in range(3000))
         firmware = Firmware("app.s19", [(0x10000, image), (0x20000, b"calibration")])
         self.assertEqual(uds_rdbi(self.mailbox, 0xF195, PHYSICAL, RESPONSE), b"APP-1.0.0")
-        self.assertTrue(namespace["Flashing"](DatabaseAPI(self.mailbox, PHYSICAL, RESPONSE), firmware))
+        self.assertTrue(namespace["Flashing"](api, firmware))
         self.assertEqual(load_firmware(self.dump).segments, firmware.segments)
-        time.sleep(0.6)  # simulated reboot
+        self.assertTrue(logs[-1].startswith("Flashing complete, software version: APP-FLASHED-"), logs)
         self.assertTrue(uds_rdbi(self.mailbox, 0xF195, PHYSICAL, RESPONSE).startswith(b"APP-FLASHED-"))
         self.assertEqual(uds_rdbi(self.mailbox, 0xF186, PHYSICAL, RESPONSE), b"\x01")
 
@@ -94,6 +98,38 @@ class DummyEcuTest(unittest.TestCase):
         self.assertEqual(uds_rdbi(self.mailbox, 0xF186, PHYSICAL, RESPONSE), b"\x01")
         time.sleep(0.1)
         self.assertIn(0x300, self.broadcast_ids)                                 # default session restores it
+
+    def test_a_second_ecu_on_the_channel_is_detected(self):
+        channel = "lonely-" + str(uuid.uuid4())
+        with can.Bus(interface="virtual", channel=channel) as empty:
+            self.assertFalse(other_ecu_present(empty, EcuConfig(), listen=0.2))
+        self.assertTrue(other_ecu_present(self.app_bus, EcuConfig(), listen=0.4))  # the ECU of setUp answers
+
+    def test_one_dummy_ecu_per_channel_on_this_computer(self):
+        channel = "lock-" + str(uuid.uuid4())
+        first = claim_channel("kvaser", channel)
+        self.assertIsNotNone(first)
+        self.assertIsNone(claim_channel("kvaser", channel))                     # a second copy is refused
+        first.close()
+        again = claim_channel("kvaser", channel)
+        self.assertIsNotNone(again)
+        again.close()
+
+    def test_flow_control_on_segmented_requests(self):
+        self.ecu.config.block_size, self.ecu.config.st_min, self.ecu.config.flow_waits = 2, 0x05, 1
+        with can.Bus(interface="virtual", channel=self.channel) as sniffer:
+            dids = [0xF187, 0xF18C, 0xF190, 0xF195] * 4                          # 33 bytes: FF + 4 CFs
+            reply = self.request(bytes([0x22]) + b"".join(did.to_bytes(2, "big") for did in dids))
+            self.assertEqual(reply[:18], b"\x62\xF1\x87CANEXPERT-DUMMY")
+            flow, deadline = [], time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                message = sniffer.recv(0.05)
+                if message and message.arbitration_id == RESPONSE and message.data[0] >> 4 == 0x3:
+                    flow.append(bytes(message.data[:3]))
+        # WAIT, then ContinueToSend (BS 2, STmin 5 ms), after the first frame and again after 2 frames
+        self.assertEqual(flow, [b"\x31\x00\x00", b"\x30\x02\x05"] * 2)
+        with self.assertRaisesRegex(IsoTpError, "overflow"):                    # longer than maxNumberOfBlockLength
+            self.request(bytes([0x36, 0x01]) + bytes(0x402))
 
     def test_dtc_services(self):
         self.assertEqual(self.request([0x19, 0x02, 0xFF]), b"\x59\x02\xFF\x01\x01\x00\x09\xC1\x00\x00\x08")

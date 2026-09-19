@@ -1,14 +1,19 @@
 """
 Python code editor for panel scripts: syntax highlighting, line numbers, current-line highlight,
-auto-indent, and completion of Python keywords, the script API, control names and DBC signals.
+auto-indent, and completion of Python keywords, the script API, control names and DBC signals;
+plus the side panel listing the ISO 14229 UDS functions, which inserts calls into the script.
 """
 import builtins
+import html
 import keyword
 import re
 
-from PyQt5.QtCore import QRect, QRegularExpression, QSize, QStringListModel, Qt
+from PyQt5.QtCore import QRect, QRegularExpression, QSize, QStringListModel, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPalette, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat
-from PyQt5.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QWidget
+from PyQt5.QtWidgets import (QCompleter, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter,
+                             QTextBrowser, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+
+from uds_library import EXCLUDED_SERVICES, FUNCTIONS, GROUPS
 
 API_WORDS = [
     "api", "api.on", "api.on_can", "api.every", "api.sleep", "api.running", "api.log", "api.progress",
@@ -18,7 +23,8 @@ API_WORDS = [
     "api.uds.request_transfer_exit", "api.uds.transfer_data_from_file", "api.dll.load", "api.dll.call",
     "on_start", "on_stop", "on_timer", "on_message", "on_signal", "on_control", "DatabaseMainFunction",
     "Flashing", "frame.id", "frame.data", "frame.signals",
-]
+    ".ok", ".data", ".text", ".int", ".nrc", ".nrc_name", ".error", ".raw", ".max_block_length",
+] + [entry.name for entry in FUNCTIONS]
 
 
 def _format(colour, bold=False, italic=False):
@@ -242,6 +248,20 @@ class CodeEditor(QPlainTextEdit):
         elif popup.isVisible():
             popup.hide()
 
+    def insert_snippet(self, text):
+        """Insert a call: at the cursor on an empty line, else on a new line below (indented one level
+        deeper after a line ending in ':')."""
+        cursor = self.textCursor()
+        line = cursor.block().text()
+        if cursor.hasSelection() or not line.strip():
+            cursor.insertText(text)
+        else:
+            indent = re.match(r"\s*", line).group(0) + ("    " if line.rstrip().endswith(":") else "")
+            cursor.movePosition(QTextCursor.EndOfBlock)
+            cursor.insertText("\n" + indent + text)
+        self.setTextCursor(cursor)
+        self.setFocus()
+
     def check_syntax(self, filename="<script>"):
         """(ok, message, line) for the current code."""
         try:
@@ -257,3 +277,97 @@ class CodeEditor(QPlainTextEdit):
         self.setTextCursor(cursor)
         self.centerCursor()
         self.setFocus()
+
+
+class UdsFunctionPanel(QWidget):
+    """ISO 14229 service functions grouped by functional unit; double-click (or Insert) adds a call."""
+    insert_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("UDS functions (ISO 14229-1)")
+        title.setStyleSheet("font-weight: bold;")
+        layout.addWidget(title)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter: name, service or SID (e.g. 22)...")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        layout.addWidget(self.filter_edit)
+        splitter = QSplitter(Qt.Vertical)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Function", "SID", "Service"])
+        self.tree.setColumnWidth(0, 150)
+        self.tree.setColumnWidth(1, 44)
+        self.items = {}
+        for group in GROUPS:
+            parent = QTreeWidgetItem(self.tree, [group])
+            parent.setFirstColumnSpanned(True)
+            font = parent.font(0)
+            font.setBold(True)
+            parent.setFont(0, font)
+            parent.setFlags(Qt.ItemIsEnabled)
+            for entry in (e for e in FUNCTIONS if e.group == group):
+                item = QTreeWidgetItem(parent, [entry.name, f"{entry.sid:02X}" if entry.sid is not None else "",
+                                                entry.service])
+                item.setData(0, Qt.UserRole, entry.name)
+                item.setToolTip(0, entry.signature)
+                self.items[entry.name] = item
+            parent.setExpanded(True)
+        self.tree.currentItemChanged.connect(self._show_details)
+        self.tree.itemDoubleClicked.connect(lambda item, _column: self._insert(item))
+        splitter.addWidget(self.tree)
+        self.details = QTextBrowser()
+        self.details.setOpenLinks(False)
+        splitter.addWidget(self.details)
+        splitter.setSizes([420, 220])
+        layout.addWidget(splitter, 1)
+        row = QHBoxLayout()
+        self.insert_button = QPushButton("Insert")
+        self.insert_button.setToolTip("Insert the example call into the script (or double-click a function)")
+        self.insert_button.clicked.connect(lambda: self._insert(self.tree.currentItem()))
+        self.insert_button.setEnabled(False)
+        row.addWidget(self.insert_button)
+        excluded = ", ".join(f"0x{sid:02X} {name}" for sid, name in EXCLUDED_SERVICES.items())
+        note = QLabel(f"Not included: {excluded}")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray; font-size: 11px;")
+        row.addWidget(note, 1)
+        layout.addLayout(row)
+        self.details.setHtml("<p>Select a function to see its parameters.</p><p>Every function returns a result: "
+                             "<code>if result:</code> tests for a positive response; <code>result.data</code>, "
+                             "<code>.text</code>, <code>.int</code>, <code>.error</code>, <code>.nrc</code>.</p>")
+
+    def _entry(self, item):
+        name = item.data(0, Qt.UserRole) if item is not None else None
+        return next((e for e in FUNCTIONS if e.name == name), None)
+
+    def _show_details(self, item, _previous=None):
+        entry = self._entry(item)
+        self.insert_button.setEnabled(entry is not None)
+        if entry is None:
+            return
+        service = f"0x{entry.sid:02X} {entry.service}" if entry.sid is not None else entry.service
+        doc = html.escape(entry.doc).replace("\n", "<br>")
+        self.details.setHtml(f"<p><b>{html.escape(entry.signature)}</b><br><i>{html.escape(service)}</i></p>"
+                             f"<p>{doc}</p><p>Example:<br><code>{html.escape(entry.example)}</code></p>")
+
+    def _insert(self, item):
+        entry = self._entry(item)
+        if entry is not None:
+            self.insert_requested.emit(entry.example)
+
+    def _apply_filter(self, text):
+        text = text.strip().lower()
+        text = text[2:] if text.startswith("0x") else text
+        for index in range(self.tree.topLevelItemCount()):
+            parent = self.tree.topLevelItem(index)
+            visible = 0
+            for child_index in range(parent.childCount()):
+                child = parent.child(child_index)
+                haystack = " ".join(child.text(column) for column in range(3)).lower()
+                shown = not text or text in haystack
+                child.setHidden(not shown)
+                visible += shown
+            parent.setHidden(visible == 0)

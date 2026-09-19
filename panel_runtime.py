@@ -20,6 +20,7 @@ from typing import Any, Callable
 import can
 from PyQt5.QtCore import QObject, pyqtSignal
 
+from uds_library import UdsFunctions
 from uds_services import (
     uds_request,
     uds_tester_present,
@@ -86,9 +87,11 @@ class DatabaseAPI:
         self._runtime.timers.append([time.monotonic() + seconds, seconds, callback])
 
     def sleep(self, seconds):
-        """Cancellable sleep for legacy scripts; callbacks are preferred."""
+        """Cancellable sleep (returns early on disconnect); callbacks are preferred for waiting on events."""
         if self._stop_event:
             self._stop_event.wait(seconds)
+        else:
+            time.sleep(seconds)
 
     @property
     def running(self):
@@ -176,9 +179,10 @@ class _UDSApi:
             "address_byte": api._address_byte,
         }
 
-    def request(self, payload: bytes | list, timeout: float | None = None) -> bytes | None:
-        """Send any UDS request. Returns the reply (positive, or 0x7F negative) or None on timeout."""
-        return uds_request(self._api._bus, bytes(payload), **self._args(timeout))
+    def request(self, payload: bytes | list, timeout: float | None = None, wait: bool = True) -> bytes | None:
+        """Send any UDS request. Returns the reply (positive, or 0x7F negative) or None on timeout;
+        wait=False only sends it."""
+        return uds_request(self._api._bus, bytes(payload), wait=wait, **self._args(timeout))
 
     def tester_present(self, timeout: float | None = None) -> bool:
         return uds_tester_present(self._api._bus, **self._args(timeout))
@@ -290,6 +294,8 @@ Form Designer to create one). Decorators work like CAPL "on" procedures:
     @on_message(0x300) or ("EngineData")    a received frame: frame.id, frame.data, frame.signals
     @on_signal("EngineData.Temperature")    a DBC signal changed: value
     @on_control("start")                    a control named "start" was used: value
+UDS services are plain functions: RDBI(0xF190) sends 22 F1 90 and returns a result (true when
+positive; .data, .text, .int, .error). See the UDS functions panel beside the editor.
 Name a function's first parameter api to receive the script API: api.signal("Msg.Sig"),
 api.set_signal("Msg.Sig", value), api.send_message("Msg", Sig=value), api.can.send(id, data),
 api.ui.set_value(name, value), api.log(text), api.uds..., api.every(seconds, callback).
@@ -369,7 +375,7 @@ class ScriptRuntime(QObject):
         self.last_frames = {}
         self._messages = None
         self._stop_done = threading.Event()
-        self.api = DatabaseAPI(bus, config.get("request_id", 0x7DF),
+        self.api = DatabaseAPI(bus, diagnostic_request_id(config),
                                config.get("response_id", 0x7E8), log_cb=self.logged.emit)
         self.api._runtime = self
         self.api._extended = not config.get("identifier_11_bit", True)
@@ -464,8 +470,12 @@ class ScriptRuntime(QObject):
                 return fn
             return register
 
+        # ISO 14229 service functions (RDBI, WDBI, DSC, ...) over the session's UDS transport.
+        self.uds_functions = UdsFunctions(lambda payload, timeout, wait: runtime.api.uds.request(payload, timeout, wait),
+                                          runtime.logged.emit)
         return {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start, "on_stop": on_stop,
-                "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal, "on_control": on_control}
+                "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal, "on_control": on_control,
+                **self.uds_functions.namespace()}
 
     def _register_handlers(self, namespace):
         for control, name in self.handlers.items():
@@ -689,6 +699,22 @@ class ReceiveMailbox:
 # times per timeout window so one missed response does not cause a false loss.
 DEFAULT_TESTER_PRESENT_INTERVAL = 0.5
 DEFAULT_NODE_TIMEOUT = 2.0
+
+
+OBD_FUNCTIONAL_ID = 0x7DF
+
+
+def diagnostic_request_id(config):
+    """Request ID for UDS exchanges (scripts, flashing, Diagnostic Window).
+
+    The OBD functional ID 0x7DF may not carry multi-frame requests (ISO 15765-2), so when the ECU
+    answers on 0x7E8-0x7EF it is addressed physically at response ID - 8 (ISO 15765-4), e.g. 0x7E0.
+    TesterPresent monitoring keeps using the configured request ID.
+    """
+    request, response = config.get("request_id", OBD_FUNCTIONAL_ID), config.get("response_id", 0x7E8)
+    if config.get("identifier_11_bit", True) and request == OBD_FUNCTIONAL_ID and 0x7E8 <= response <= 0x7EF:
+        return response - 8
+    return request
 
 
 def validate_config(config):

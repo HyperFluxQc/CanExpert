@@ -164,6 +164,38 @@ class FormDesignerTest(unittest.TestCase):
         self.assertEqual([w["type"] for w in other.canvas._current_widgets()], ["group_box", "indicator", "led"])
         other.close()
 
+    def test_disabled_layout_icons_are_visible_and_properties_follow_the_tab(self):
+        from PyQt5.QtGui import QIcon
+        button = self.canvas._tool_buttons["align_left"]
+        self.assertFalse(button.isEnabled())                                   # nothing selected yet
+        image = button.icon().pixmap(24, 24, QIcon.Disabled).toImage()
+        painted = sum(image.pixelColor(x, y).alpha() > 0 for x in range(24) for y in range(24))
+        self.assertGreater(painted, 20)                                          # dimmed, not blank
+        self.designer.show()
+        self.designer.design_tabs.setCurrentIndex(1)
+        self.assertFalse(self.designer.properties_panel.isVisible())
+        self.designer.design_tabs.setCurrentIndex(0)
+        self.assertTrue(self.designer.properties_panel.isVisible())
+
+    def test_test_panel_flashes_firmware_into_the_simulated_ecu(self):
+        from uds_services import load_firmware
+        example = Path(__file__).resolve().parent.parent / "examples"
+        self.canvas.add_widget_at("label", 10, 10, text="Flash test")
+        self.designer.code_editor.setPlainText((example / "example_2026-09-18_script.py").read_text(encoding="utf-8"))
+        dialog = self.designer.test_panel()
+        try:
+            self.assertTrue(spin_until(dialog.flash_button.isEnabled))           # the script defines Flashing()
+            results = []
+            with patch("form_designer.report_result", lambda parent, ok, text: results.append((ok, text))):
+                dialog.start_flashing(load_firmware(example / "firmware" / "demo_app.s19"))
+                self.assertIsNotNone(dialog.flash_dialog)
+                self.assertTrue(spin_until(lambda: results, 15))
+            self.assertEqual(results, [(True, "Flashing complete")])
+            self.assertIn("software version: APP-FLASHED-", dialog.log_view.toPlainText())
+            self.assertIsNone(dialog.flash_dialog)
+        finally:
+            dialog.close()
+
     def test_test_mode_runs_panel_against_simulated_ecu(self):
         self.designer.symbol_list.load_dbc_path(str(DBC))
         self.designer.dbc_path_edit.setText(str(DBC))

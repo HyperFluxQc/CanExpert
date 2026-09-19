@@ -21,7 +21,7 @@ Configurations live beside `main.py` in `Configurations/`, independent of the wo
 
 - `tester_present_interval_seconds`: positive interval, default 0.5 seconds.
 - `node_timeout_seconds`: greater than the heartbeat interval, default 2 seconds. A node is shown as lost this long after its last frame; keep several heartbeats inside the window so one missed response is tolerated.
-- `request_id` and `response_id`: numeric CAN IDs, entered as hexadecimal in the dialog.
+- `request_id` and `response_id`: numeric CAN IDs, entered as hexadecimal in the dialog. With the OBD functional request ID `0x7DF` and an ECU response ID `0x7E8`-`0x7EF`, TesterPresent monitoring stays functional while UDS requests from scripts, flashing and the Diagnostic Window address the ECU physically at the response ID minus 8 (for example `0x7E0`), because multi-frame requests may not use a functional address (ISO 15765-2/-4).
 - `response_ids`: optional list of monitored ECU IDs. When omitted, use `response_id`; the default OBD request/response pair `0x7DF`/`0x7E8` monitors `0x7E8` through `0x7EF`.
 - `database_family`: optional database stem/family. Empty selects the newest database across the database directory.
 - `identifier_11_bit`: standard or extended CAN frames.
@@ -60,6 +60,7 @@ def DatabaseMainFunction(api):
 
 - **Handler property**: a control calls the script function named in its Handler (the Form Designer creates `def on_<name>_<event>(api, value):` when you double-click the control). A function whose first parameter is named `api` receives the script API; other parameters receive the event's values.
 - **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`.
+- **UDS service functions**: every ISO 14229-1 service except Authentication (0x29) and SecuredDataTransmission (0x84) is a script function, e.g. `RDBI(0xFF99)` sends `22 FF 99`, `WDBI(did, data)`, `DSC(session)`, `SA(sub_function, key)`, `RC(sub_function, routine_id, data)`, `RD/TD/RTE`, `RDTCI(sub_function, ...)`, plus `UDS("raw hex")` and helpers (`SecurityUnlock`, `ReadDTCs`, `StartRoutine`...). They use the session's UDS transport and return a result that is true for a positive response, with `data` (after the SID and echoed parameters), `text`, `int`, `raw`, `nrc`, `nrc_name` and `error`. Sub-function services accept `suppress=True` (suppressPosRspMsgIndicationBit; sent without waiting). The Form Designer's script tab lists them by ISO 14229 functional unit and inserts calls.
 - `api.signal("Message.Signal")`: latest received (or sent) physical value. `api.set_signal("Message.Signal", value)` and `api.send_message("Message", Signal=value, ...)`: encode with the panel's DBC and send; signals not given keep their last known values.
 - `api.on(name, callback)`: callback receives the control value. Buttons pass `True`, checkboxes a Boolean, sliders an integer, combo boxes their selected text. Editable fields submit when editing finishes; their selected value type controls conversion.
 - `api.on_can(callback)`: callback receives `(arbitration_id, bytes)`.
@@ -77,7 +78,7 @@ The connection already schedules TesterPresent; database scripts do not need to 
 
 ## Firmware flashing
 
-While connected, a **Flashing** button appears in the toolbar. It is enabled when the database script defines:
+While connected, a **Flashing** button appears in the toolbar (the Form Designer's **Test panel...** window has the same **Flashing...** button, against the simulated ECU). It is enabled when the database script defines:
 
 ```python
 def Flashing(api, firmware):
@@ -85,14 +86,16 @@ def Flashing(api, firmware):
     return True
 ```
 
-Clicking it asks for a Motorola S-record (`.s19`, `.s28`, `.s37`, `.srec`, `.mot`) or Intel HEX (`.hex`, `.ihex`) file. The file is checked (record checksums, overlapping data), contiguous records are merged into segments and, after confirmation, `Flashing(api, firmware)` runs on the script thread:
+Clicking it asks which Motorola S-record (`.s19`, `.s28`, `.s37`, `.srec`, `.mot`) or Intel HEX (`.hex`, `.ihex`) file to use. The file is checked (record checksums, overlapping data) and contiguous records are merged into segments. A confirmation ("Flash demo_app.hex (2112 bytes) to the ECU?", with the address ranges) follows, then `Flashing(api, firmware)` runs on the script thread with a progress dialog (Cancel requests a stop) and a final success or error message:
 
 - `firmware.path`, `firmware.size`, and `firmware.segments`: a list of `(address, bytes)` in ascending address order.
 - `api.progress(done, total, message)` updates the progress dialog.
 - `api.flash_cancelled` becomes true when the user presses Cancel; the script decides where it is safe to stop.
 - Returning `False` or raising an exception reports failure with that message; anything else reports success.
 
-`examples/example_2026-09-18_script.py` contains a complete ISO 14229-1 sequence: extended session (0x10 03), ControlDTCSetting off (0x85 02), CommunicationControl (0x28 03 01), programming session (0x10 02), SecurityAccess seed/key (0x27), then per segment RoutineControl eraseMemory (0x31 01 FF00), RequestDownload (0x34), TransferData blocks sized from maxNumberOfBlockLength (0x36), RequestTransferExit (0x37), and finally checkProgrammingDependencies (0x31 01 FF01) and ECUReset (0x11 01). Replace its `compute_key()` placeholder and routine identifiers with your bootloader's. The configuration must use the ECU's physical request/response IDs, because multi-frame requests are not allowed on the functional 0x7DF address. This sequence is tested against a simulated bootloader and against `dummy_ecu.py` over the Kvaser Virtual CAN Driver, not a real ECU.
+`examples/firmware/demo_app.s19` and `demo_app.hex` are the same two-segment test image (2 KB at 0x00010000, 64 bytes at 0x00020000). To try flashing without a vehicle: open `examples/example_2026-09-18.xml` (or the showcase) in the Form Designer, click **Test panel...** and then **Flashing...**; or connect the main window to `dummy_ecu.py` with the example database, click **Flashing** and pick either file (run `dummy_ecu.py --dump flashed.s19` to get the received image back).
+
+`examples/example_2026-09-18_script.py` (and the showcase script) contain a complete ISO 14229-1 sequence written with the UDS functions: extended session (0x10 03), ControlDTCSetting off (0x85 02), CommunicationControl (0x28 03 01), programming session (0x10 02), SecurityAccess seed/key (0x27), then per segment RoutineControl eraseMemory (0x31 01 FF00), RequestDownload (0x34), TransferData blocks sized from maxNumberOfBlockLength (0x36), RequestTransferExit (0x37), and finally checkProgrammingDependencies (0x31 01 FF01) and ECUReset (0x11 01). Replace its `compute_key()` placeholder and routine identifiers with your bootloader's. The configuration must use the ECU's physical request/response IDs, because multi-frame requests are not allowed on the functional 0x7DF address. This sequence is tested against a simulated bootloader and against `dummy_ecu.py` over the Kvaser Virtual CAN Driver, not a real ECU.
 
 ## Designer and bindings
 

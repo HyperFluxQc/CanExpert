@@ -9,115 +9,71 @@ def DatabaseMainFunction(api):
     api.on_can(lambda can_id, data: api.ui.set_value("rx", f"0x{can_id:X}: {data.hex(' ')}"))
 
 
-# --- Firmware flashing (ISO 14229-1 UDS over ISO 15765-2) ---------------------------
-# Defining Flashing() enables the Flashing toolbar button. It receives the selected
-# S-record / Intel HEX file as `firmware` (firmware.path, firmware.size and
-# firmware.segments: a list of (address, bytes) in ascending order).
+# --- Firmware flashing (ISO 14229-1) ---------------------------------------------------------
+# Defining Flashing() enables the Flashing toolbar button (and Flashing... in the Form Designer's
+# Test panel). The user picks an S-record or Intel HEX file (examples/firmware/demo_app.s19 or .hex),
+# confirms, and Flashing(api, firmware) runs with firmware.path, firmware.size and
+# firmware.segments = [(address, bytes), ...].
 #
-# Requests go to the configuration's request/response IDs, which must be the ECU's
-# *physical* addresses (e.g. 7E0/7E8): multi-frame requests are not allowed on the
-# functional 7DF address. Adjust the constants and compute_key() for your bootloader.
+# The UDS functions (DSC, SecurityUnlock, RD, TD, ...) use the configuration's request/response IDs,
+# which must be the ECU's physical addresses (e.g. 7E0/7E8). Adjust compute_key() and the routine
+# identifiers for your bootloader; this sequence matches dummy_ecu.py.
 
-ADDRESS_AND_LENGTH_FORMAT = 0x44       # 4-byte memoryAddress, 4-byte memorySize
-DATA_FORMAT = 0x00                     # no compression, no encryption
-SECURITY_LEVEL = 0x01                  # requestSeed sub-function; programming level is OEM specific
-ERASE_MEMORY_ROUTINE = 0xFF00          # RoutineControl: eraseMemory
-CHECK_DEPENDENCIES_ROUTINE = 0xFF01    # RoutineControl: checkProgrammingDependencies
-
-NRC_NAMES = {
-    0x10: "generalReject", 0x11: "serviceNotSupported", 0x12: "subFunctionNotSupported",
-    0x13: "incorrectMessageLengthOrInvalidFormat", 0x22: "conditionsNotCorrect",
-    0x24: "requestSequenceError", 0x31: "requestOutOfRange", 0x33: "securityAccessDenied",
-    0x35: "invalidKey", 0x36: "exceededNumberOfAttempts", 0x37: "requiredTimeDelayNotExpired",
-    0x70: "uploadDownloadNotAccepted", 0x71: "transferDataSuspended",
-    0x72: "generalProgrammingFailure", 0x73: "wrongBlockSequenceCounter",
-    0x7E: "subFunctionNotSupportedInActiveSession", 0x7F: "serviceNotSupportedInActiveSession",
-}
-
-
-class FlashingError(Exception):
-    pass
-
-
-def uds(api, step, request, timeout=None):
-    """Send one request; return the positive response or raise with the step name and NRC."""
-    reply = api.uds.request(bytes(request), timeout)
-    if reply is None:
-        raise FlashingError(f"{step}: no response from ECU")
-    if reply[0] == 0x7F:
-        nrc = reply[2] if len(reply) > 2 else 0
-        raise FlashingError(f"{step}: negative response 0x{nrc:02X} ({NRC_NAMES.get(nrc, 'unknown')})")
-    return reply
+ERASE_MEMORY = 0xFF00                   # RoutineControl: eraseMemory
+CHECK_PROGRAMMING_DEPENDENCIES = 0xFF01
 
 
 def compute_key(seed):
-    """Placeholder seed/key algorithm - replace with your ECU's (or call its DLL via api.dll.call)."""
+    """Placeholder seed/key algorithm (the dummy ECU's) - replace with your ECU's or call its DLL."""
     return bytes(b ^ 0xA5 for b in seed)
 
 
-def memory(address, size):
-    return [*address.to_bytes(ADDRESS_AND_LENGTH_FORMAT & 0x0F, "big"),
-            *size.to_bytes(ADDRESS_AND_LENGTH_FORMAT >> 4, "big")]
-
-
-def check_cancel(api):
-    if api.flash_cancelled:
-        raise FlashingError("Cancelled by user")
+def step(result, what):
+    """Stop the sequence with a clear message when a request fails."""
+    if not result:
+        raise RuntimeError(f"{what}: {result.error}")
+    return result
 
 
 def Flashing(api, firmware):
-    total = firmware.size
-    api.log(f"Flashing {firmware.path}: {total} bytes in {len(firmware.segments)} segment(s)")
+    total, written = firmware.size, 0
 
-    # 1. Pre-programming: extended session, stop DTC logging and normal communication.
-    api.progress(0, total, "Extended diagnostic session")
-    uds(api, "DiagnosticSessionControl (extended)", [0x10, 0x03])
-    uds(api, "ControlDTCSetting (off)", [0x85, 0x02])
-    uds(api, "CommunicationControl (disable normal communication)", [0x28, 0x03, 0x01])
+    # 1. Pre-programming: extended session, DTC setting off, normal communication off.
+    api.progress(0, total, "Pre-programming")
+    step(DSC(0x03), "DiagnosticSessionControl (extended)")
+    step(CDTCS(0x02), "ControlDTCSetting (off)")
+    step(CC(0x03, 0x01), "CommunicationControl (disable normal communication)")
 
     # 2. Programming session and security unlock.
-    api.progress(0, total, "Programming session")
-    uds(api, "DiagnosticSessionControl (programming)", [0x10, 0x02])
-    seed = uds(api, "SecurityAccess (requestSeed)", [0x27, SECURITY_LEVEL])[2:]
-    if any(seed):  # an all-zero seed means the ECU is already unlocked
-        uds(api, "SecurityAccess (sendKey)", [0x27, SECURITY_LEVEL + 1, *compute_key(seed)])
+    step(DSC(0x02), "DiagnosticSessionControl (programming)")
+    step(SecurityUnlock(0x01, compute_key), "SecurityAccess")
 
-    # 3. Erase, download and exit transfer for each contiguous segment.
-    written = 0
+    # 3. Per segment: erase, RequestDownload, TransferData blocks, RequestTransferExit.
     for address, data in firmware.segments:
-        check_cancel(api)
-        api.progress(written, total, f"Erasing 0x{address:08X} ({len(data)} bytes)")
-        uds(api, "RoutineControl (eraseMemory)",
-            [0x31, 0x01, *ERASE_MEMORY_ROUTINE.to_bytes(2, "big"), ADDRESS_AND_LENGTH_FORMAT,
-             *memory(address, len(data))])
-
-        reply = uds(api, "RequestDownload",
-                    [0x34, DATA_FORMAT, ADDRESS_AND_LENGTH_FORMAT, *memory(address, len(data))])
-        length_size = reply[1] >> 4
-        max_block = int.from_bytes(reply[2:2 + length_size], "big") or 4095
-        # maxNumberOfBlockLength counts the 0x36 SID and the block counter; ISO-TP caps a message at 4095 bytes.
-        chunk_size = max(1, min(max_block, 4095) - 2)
-
-        sequence = 1
-        for offset in range(0, len(data), chunk_size):
-            check_cancel(api)
-            block = data[offset:offset + chunk_size]
-            reply = uds(api, f"TransferData (block {sequence})", [0x36, sequence, *block])
-            if len(reply) < 2 or reply[1] != sequence:
-                raise FlashingError(f"TransferData: ECU acknowledged block {reply[1:2].hex()} instead of {sequence:02x}")
-            sequence = (sequence + 1) & 0xFF  # wraps 0xFF -> 0x00
-            written += len(block)
+        memory = [0x44, *address.to_bytes(4, "big"), *len(data).to_bytes(4, "big")]
+        api.progress(written, total, f"Erasing 0x{address:08X}")
+        step(StartRoutine(ERASE_MEMORY, memory), "RoutineControl (eraseMemory)")
+        download = step(RD(address, len(data)), "RequestDownload")
+        # maxNumberOfBlockLength counts the 0x36 SID and the block counter. Blocks stay within 4095 bytes,
+        # the longest message ISO-TP carries without the 2016 escape sequence older bootloaders lack.
+        block = min(download.max_block_length or 4095, 4095) - 2
+        for counter, offset in enumerate(range(0, len(data), block), start=1):
+            if api.flash_cancelled:
+                raise RuntimeError("Cancelled by user")
+            chunk = data[offset:offset + block]
+            step(TD(counter, chunk), f"TransferData (block {counter})")    # counter wraps 0xFF -> 0x00
+            written += len(chunk)
             api.progress(written, total, f"Writing 0x{address + offset:08X}")
-
-        uds(api, "RequestTransferExit", [0x37])
+        step(RTE(), "RequestTransferExit")
 
     # 4. Post-programming: verify, then reset into the new application.
     api.progress(written, total, "Checking programming dependencies")
-    reply = uds(api, "RoutineControl (checkProgrammingDependencies)",
-                [0x31, 0x01, *CHECK_DEPENDENCIES_ROUTINE.to_bytes(2, "big")])
-    if len(reply) > 4 and reply[4] != 0x00:
-        raise FlashingError(f"checkProgrammingDependencies failed (status 0x{reply[4]:02X})")
+    check = step(StartRoutine(CHECK_PROGRAMMING_DEPENDENCIES), "checkProgrammingDependencies")
+    if check.data[:1] not in (b"", b"\x00"):
+        raise RuntimeError(f"checkProgrammingDependencies failed (status 0x{check.data[0]:02X})")
     api.progress(written, total, "Resetting ECU")
-    uds(api, "ECUReset (hardReset)", [0x11, 0x01])
-    api.log("Flashing complete")
+    step(ER(0x01), "ECUReset (hardReset)")
+    api.sleep(1.0)                                         # let the ECU start the new application
+    version = RDBI(0xF195)
+    api.log(f"Flashing complete, software version: {version.text if version else version.error}")
     return True
