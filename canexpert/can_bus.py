@@ -30,8 +30,9 @@ def create_can_bus(interface: str, channel, bitrate: int, **options) -> can.BusA
 
 
 def open_channel(channel_config: dict, bitrate) -> can.BusABC:
-    """Open a channel as listed by can.detect_available_configs()."""
-    return create_can_bus(channel_config["interface"], channel_config.get("channel", 0), int(bitrate), **channel_config)
+    """Open a channel as listed by can.detect_available_configs(); its other keys (device name, ...) are dropped."""
+    options = {key: channel_config[key] for key in _ADAPTER_OPTIONS if key in channel_config}
+    return create_can_bus(channel_config["interface"], channel_config.get("channel", 0), int(bitrate), **options)
 
 
 class CanWorker(QThread):
