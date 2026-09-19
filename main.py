@@ -1162,6 +1162,8 @@ class MainWindow(QMainWindow):
             self.script_runtime = runtime
             worker.start()
             script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
+            runtime.dbc = self.panel.dbc
+            runtime.handlers = self.panel.handlers()
             runtime.start(script_path)
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
@@ -1190,10 +1192,7 @@ class MainWindow(QMainWindow):
         self._close_flash_dialog()
         self.flashing_toolbar_item.setVisible(False)
         if self.script_runtime:
-            for worker in self.workers.values():
-                for mailbox in worker.mailboxes:
-                    mailbox.close()
-            self.script_runtime.stop()
+            self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
             self.script_runtime = None
         for worker in self.workers.values():
             worker.stop()

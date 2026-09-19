@@ -58,13 +58,16 @@ def DatabaseMainFunction(api):
     api.every(1.0, lambda: api.log("Panel timer"))
 ```
 
+- **Handler property**: a control calls the script function named in its Handler (the Form Designer creates `def on_<name>_<event>(api, value):` when you double-click the control). A function whose first parameter is named `api` receives the script API; other parameters receive the event's values.
+- **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`.
+- `api.signal("Message.Signal")`: latest received (or sent) physical value. `api.set_signal("Message.Signal", value)` and `api.send_message("Message", Signal=value, ...)`: encode with the panel's DBC and send; signals not given keep their last known values.
 - `api.on(name, callback)`: callback receives the control value. Buttons pass `True`, checkboxes a Boolean, sliders an integer, combo boxes their selected text. Editable fields submit when editing finishes; their selected value type controls conversion.
 - `api.on_can(callback)`: callback receives `(arbitration_id, bytes)`.
 - `api.every(seconds, callback)`: periodic callback with no arguments.
 - `api.can.send(id, data)`: sends up to eight bytes using the active configuration's CAN identifier width; shorter script frames retain the legacy eight-byte padding behavior.
 - `api.can.get_latest_messages()`: recent received messages.
 - `api.uds.request(payload)`: sends any UDS request over ISO-TP (multi-frame requests and replies, flow control, NRC 0x78 response pending) and returns the positive or negative reply, or `None` on timeout. Helpers: `tester_present()`, `rdbi(did)` (data record without the DID echo), `request_download(format, address, size)`, `transfer_data(sequence, data)`, `request_transfer_exit()`, `transfer_data_from_file(path, packet_size)`. They use the configuration's request/response IDs, identifier size, extended-address byte and UDS response timeout. Frames received before a request are discarded, and the connection's TesterPresent is deferred while an exchange is in progress.
-- `api.ui.get_value(name)` and `api.ui.set_value(name, value)`: read a cached value or enqueue a GUI update. Scripts must not access Qt widgets directly.
+- `api.ui.get_value(name)` and `api.ui.set_value(name, value)`: read a cached value or enqueue a GUI update. Displays format numbers with their unit, decimals and DBC value-table text; an LED takes a Boolean; a multi-state indicator a state value; a trend graph appends a point; an output box appends a line (`None` clears it). Scripts must not access Qt widgets directly.
 - `api.log(text)`: application debug log.
 - `api.running` and `api.sleep(seconds)`: cooperative cancellation for older loop-based scripts. Prefer callbacks and return from `DatabaseMainFunction`; a startup loop prevents that script's queued callbacks from being processed.
 
@@ -97,7 +100,9 @@ New forms receive a date in their default filename. Preserve or supply that suff
 
 DBC bindings use `Message.Signal`. Relative DBC paths resolve against the XML directory. Numeric values are decoded for presentation; input controls encode their bound signal into the message while retaining other known values. Legacy checkbox/slider mappings retain other known bits/bytes in the same frame. Controls without a CAN/DBC mapping can operate entirely through scripts.
 
-An example panel and script live under `examples/`. Copy them to `Databases/` and select family `example` to try them. They do not replace existing user databases automatically.
+The designer offers 20 controls (input, display and decoration categories), multi-select (Ctrl+click or a rubber band), align/same size/distribute relative to the last-selected control, a 10 px grid with snap, a resize handle, bring to front/send to back (saved as document order, so group boxes stay behind their contents), copy/cut/paste/duplicate, arrow-key nudging, undo/redo (Ctrl+Z / Ctrl+Y), and DBC signal drag-and-drop (a display, or with Ctrl an input; value tables become indicators or combo boxes). **Test panel...** runs the unsaved form and script against the simulated ECU on a private virtual bus.
+
+Example panels and scripts live under `examples/`; `showcase_2026-09-18` uses every control with `DBC/dummy_ecu.dbc`. Copy them to `Databases/` and select family `example` to try them. They do not replace existing user databases automatically.
 
 ## Verification and limits
 

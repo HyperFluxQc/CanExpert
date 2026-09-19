@@ -12,6 +12,7 @@ import queue
 import sys
 import threading
 import time
+import inspect
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
@@ -43,6 +44,7 @@ class DatabaseAPI:
       api.uds.request_download(format, addr, size), api.uds.transfer_data_from_file(path, packet_size)
     - api.dll.load(path), api.dll.call(name, *args)
     - api.ui.get_value(name), api.ui.set_value(name, value), api.ui.get_widget(name)
+    - api.signal(name), api.set_signal(name, value), api.send_message(message, **signals)
     - api.log(msg), api.progress(done, total, message), api.flash_cancelled
     """
 
@@ -101,6 +103,30 @@ class DatabaseAPI:
     def flash_cancelled(self) -> bool:
         """True once the user pressed Cancel in the flashing progress dialog."""
         return self._runtime is not None and self._runtime.flash_cancel.is_set()
+
+    def signal(self, name: str):
+        """Latest physical value of a DBC signal ("Message.Signal"), or None before it was received."""
+        return self._runtime.signal_values.get(name) if self._runtime else None
+
+    def set_signal(self, name: str, value):
+        """Encode one DBC signal into its message (the other signals keep their last values) and send it."""
+        message_name, signal_name = name.split(".", 1)
+        self.send_message(message_name, **{signal_name: value})
+
+    def send_message(self, message_name: str, **signals):
+        """Send a DBC message; signals not given keep their last received/sent value (else their initial value)."""
+        runtime = self._runtime
+        if runtime is None or runtime.dbc is None:
+            raise RuntimeError("The panel has no DBC; set its DBC path in the Form Designer")
+        message = runtime.dbc.get_message_by_name(message_name)
+        values = runtime.message_values(message)
+        values.update(signals)
+        payload = message.encode(values, strict=False)
+        if self._bus is None:
+            return
+        self._bus.send(can.Message(arbitration_id=message.frame_id, data=payload,
+                                   is_extended_id=message.is_extended_frame))
+        runtime.remember_frame(message, payload)
 
     def set_bus(self, bus):
         self._bus = bus
@@ -255,18 +281,34 @@ class _UIApi:
 
 
 # Template for user script
-SCRIPT_TEMPLATE = '''"""Python panel script. Register callbacks and return from startup.
-Name controls with their script binding (e.g. start, status).
-Callbacks execute serially on a background thread and stop on disconnect.
+SCRIPT_TEMPLATE = '''"""Panel script: Python in place of CAPL.
+
+Controls call the function named in their Handler property (double-click a control in the
+Form Designer to create one). Decorators work like CAPL "on" procedures:
+    @on_start / @on_stop                    connect / disconnect
+    @on_timer(1.0)                          every second
+    @on_message(0x300) or ("EngineData")    a received frame: frame.id, frame.data, frame.signals
+    @on_signal("EngineData.Temperature")    a DBC signal changed: value
+    @on_control("start")                    a control named "start" was used: value
+Name a function's first parameter api to receive the script API: api.signal("Msg.Sig"),
+api.set_signal("Msg.Sig", value), api.send_message("Msg", Sig=value), api.can.send(id, data),
+api.ui.set_value(name, value), api.log(text), api.uds..., api.every(seconds, callback).
+Callbacks run one at a time on a background thread and stop on disconnect.
 """
 
 
 def DatabaseMainFunction(api):
     api.log("Panel loaded")
-    # api.on("start", lambda value: api.can.send(0x200, [1]))
-    # api.on("setpoint", lambda value: api.log(f"Setpoint: {value}"))
-    # api.on_can(lambda can_id, data: api.ui.set_value("status", data.hex()))
-    # api.every(1.0, lambda: api.ui.set_value("status", "Running"))
+
+
+# @on_timer(1.0)
+# def every_second(api):
+#     api.ui.set_value("status", "Running")
+
+
+# @on_signal("EngineData.Temperature")
+# def temperature_changed(api, value):
+#     api.ui.set_value("temperature", value)
 
 
 # Define Flashing to enable the Flashing toolbar button. firmware.segments is a list of
@@ -283,6 +325,20 @@ def DatabaseMainFunction(api):
 
 class ScriptStopped(BaseException):
     pass
+
+
+class Frame:
+    """A received CAN frame as passed to @on_message handlers."""
+    __slots__ = ("id", "data", "signals")
+
+    def __init__(self, can_id, data, signals):
+        self.id, self.data, self.signals = can_id, data, signals  # signals: DBC name -> value, or {}
+
+    def __repr__(self):
+        return f"Frame(0x{self.id:X}, {self.data.hex(' ')}, {self.signals})"
+
+
+_MISSING = object()
 
 
 class ScriptRuntime(QObject):
@@ -304,6 +360,15 @@ class ScriptRuntime(QObject):
         self.thread = None
         self.flash_function = None
         self.flash_cancel = threading.Event()
+        self.dbc = None                 # panel DBC: signal decoding, @on_signal, api.set_signal
+        self.handlers = {}              # control name -> handler function name (Form Designer)
+        self.start_handlers, self.stop_handlers = [], []
+        self.message_handlers = {}      # frame id -> [handler]
+        self.signal_handlers = {}       # "Message.Signal" -> [(handler, every_update)]
+        self.signal_values = {}
+        self.last_frames = {}
+        self._messages = None
+        self._stop_done = threading.Event()
         self.api = DatabaseAPI(bus, config.get("request_id", 0x7DF),
                                config.get("response_id", 0x7E8), log_cb=self.logged.emit)
         self.api._runtime = self
@@ -332,19 +397,146 @@ class ScriptRuntime(QObject):
         except Exception as exc:
             self.logged.emit(f"Script callback failed: {exc}")
 
+    def _adapt(self, fn):
+        """Call fn with the arguments it declares; a first parameter named api receives the script API."""
+        try:
+            parameters = list(inspect.signature(fn).parameters.values())
+        except (TypeError, ValueError):
+            return fn
+        positional = [p for p in parameters if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        count = None if any(p.kind == p.VAR_POSITIONAL for p in parameters) else len(positional)
+        wants_api = bool(positional) and positional[0].name == "api"
+        api = self.api
+
+        def call(*args):
+            arguments = (api, *args) if wants_api else args
+            return fn(*(arguments if count is None else arguments[:count]))
+        return call
+
+    def _frame_id(self, key):
+        if isinstance(key, int):
+            return key
+        text = str(key).strip()
+        if text.lower().startswith("0x"):
+            return int(text, 16)
+        if text.isdigit():
+            return int(text)
+        if self.dbc is None:
+            raise ValueError(f"on_message('{text}') needs the panel's DBC")
+        return self.dbc.get_message_by_name(text).frame_id
+
+    def _namespace(self, path):
+        """Script globals, including the CAPL-style event decorators."""
+        runtime = self
+
+        def on_start(fn):
+            runtime.start_handlers.append(runtime._adapt(fn))
+            return fn
+
+        def on_stop(fn):
+            runtime.stop_handlers.append(runtime._adapt(fn))
+            return fn
+
+        def on_timer(seconds):
+            def register(fn):
+                runtime.api.every(seconds, runtime._adapt(fn))
+                return fn
+            return register
+
+        def on_message(*messages):
+            def register(fn):
+                for key in messages:
+                    runtime.message_handlers.setdefault(runtime._frame_id(key), []).append(runtime._adapt(fn))
+                return fn
+            return register
+
+        def on_signal(*names, every_update=False):
+            def register(fn):
+                for name in names:
+                    runtime.signal_handlers.setdefault(name, []).append((runtime._adapt(fn), every_update))
+                return fn
+            return register
+
+        def on_control(*names):
+            def register(fn):
+                for name in names:
+                    runtime.callbacks.setdefault(name, []).append(runtime._adapt(fn))
+                return fn
+            return register
+
+        return {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start, "on_stop": on_stop,
+                "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal, "on_control": on_control}
+
+    def _register_handlers(self, namespace):
+        for control, name in self.handlers.items():
+            fn = namespace.get(name)
+            if callable(fn):
+                self.callbacks.setdefault(control, []).append(self._adapt(fn))
+            else:
+                self.logged.emit(f"Handler '{name}' for control '{control}' is not defined in the script")
+
+    def message_values(self, message):
+        """Current values of a DBC message's signals: last frame seen/sent, else the initial values."""
+        last = self.last_frames.get(message.frame_id)
+        if last is not None:
+            try:
+                return message.decode(last, decode_choices=False, allow_truncated=True)
+            except Exception:
+                pass
+        return {signal.name: signal.initial if signal.initial is not None else 0 for signal in message.signals}
+
+    def remember_frame(self, message, payload):
+        self.last_frames[message.frame_id] = bytes(payload)
+        try:
+            decoded = message.decode(bytes(payload), decode_choices=False)
+        except Exception:
+            return
+        self.signal_values.update({f"{message.name}.{name}": value for name, value in decoded.items()})
+
+    def _on_frame(self, can_id, data):
+        self.api.push_received_message(can_id, data)
+        message, signals = None, {}
+        if self.dbc is not None:
+            if self._messages is None:
+                self._messages = {m.frame_id: m for m in self.dbc.messages}
+            message = self._messages.get(can_id)
+            if message is not None:
+                try:
+                    signals = message.decode(bytes(data), decode_choices=False, allow_truncated=True)
+                    self.last_frames[can_id] = bytes(data)
+                except Exception:
+                    signals = {}
+        for callback in list(self.can_callbacks):
+            self._call(callback, can_id, data)
+        handlers = self.message_handlers.get(can_id)
+        if handlers:
+            frame = Frame(can_id, bytes(data), dict(signals))
+            for handler in list(handlers):
+                self._call(handler, frame)
+        for name, value in signals.items():
+            full_name = f"{message.name}.{name}"
+            previous = self.signal_values.get(full_name, _MISSING)
+            self.signal_values[full_name] = value
+            for handler, every_update in list(self.signal_handlers.get(full_name, ())):
+                if every_update or previous != value:
+                    self._call(handler, value)
+
     def _run(self, code, path):
         # A Python loop can be interrupted on disconnect. Blocking native calls
         # cannot be forcibly killed; the bus facade is revoked independently.
         sys.settrace(self._trace)
         try:
-            namespace = {"__file__": str(path), "__name__": "canexpert_panel"}
+            namespace = self._namespace(path)
             exec(code, namespace)
+            self._register_handlers(namespace)
             flashing = namespace.get("Flashing")
             self.flash_function = flashing if callable(flashing) else None
             self.flashing_available.emit(self.flash_function is not None)
             startup = namespace.get("DatabaseMainFunction")
             if startup:
                 startup(self.api)
+            for handler in list(self.start_handlers):
+                self._call(handler)
             while not self.stop_event.is_set():
                 try:
                     kind, name, value = self.events.get(timeout=0.02)
@@ -352,11 +544,13 @@ class ScriptRuntime(QObject):
                         for callback in list(self.callbacks.get(name, [])):
                             self._call(callback, value)
                     elif kind == "can":
-                        self.api.push_received_message(name, value)
-                        for callback in list(self.can_callbacks):
-                            self._call(callback, name, value)
+                        self._on_frame(name, value)
                     elif kind == "flash":
                         self._flash(value)
+                    elif kind == "stop":
+                        for handler in list(self.stop_handlers):
+                            self._call(handler)
+                        self._stop_done.set()
                 except queue.Empty:
                     pass
                 now = time.monotonic()
@@ -413,6 +607,11 @@ class ScriptRuntime(QObject):
             self.value_changed.emit(name, value)
 
     def stop(self):
+        # @on_stop handlers run first, while the bus is still usable (bounded wait for a busy script).
+        if self.stop_handlers and self.thread is not None and self.thread.is_alive() and not self.stop_event.is_set():
+            self._stop_done.clear()
+            self.post("stop", None, None)
+            self._stop_done.wait(1.0)
         self.stop_event.set()
         self.api.set_bus(None)
         if self.thread:

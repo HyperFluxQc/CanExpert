@@ -71,15 +71,15 @@ _COLORS = {
 }
 
 
-def toolbar_icon(name, dark=False):
+def _svg_icon(body, colours, stroke_width=1.8, sizes=(24, 32, 48, 64, 96)):
+    """Icon from an SVG path body drawn in a 24 x 24 box; colours: {QIcon mode: colour}."""
     icon = QIcon()
-    for mode in (QIcon.Normal, QIcon.Disabled):
-        color = ("#747b85" if dark else "#a7adb5") if mode == QIcon.Disabled else _COLORS[name][int(dark)]
+    for mode, color in colours.items():
         svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
-               f'<g fill="none" stroke="{color}" stroke-width="1.8" '
-               f'stroke-linecap="round" stroke-linejoin="round">{_PATHS[name]}</g></svg>')
+               f'<g fill="none" stroke="{color}" stroke-width="{stroke_width}" '
+               f'stroke-linecap="round" stroke-linejoin="round">{body}</g></svg>')
         renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
-        for size in (24, 32, 48, 64, 96):
+        for size in sizes:
             pixmap = QPixmap(size, size)
             pixmap.fill(Qt.transparent)
             painter = QPainter(pixmap)
@@ -87,6 +87,19 @@ def toolbar_icon(name, dark=False):
             painter.end()
             icon.addPixmap(pixmap, mode)
     return icon
+
+
+def toolbar_icon(name, dark=False):
+    return _svg_icon(_PATHS[name], {QIcon.Normal: _COLORS[name][int(dark)],
+                                    QIcon.Disabled: "#747b85" if dark else "#a7adb5"})
+
+
+def line_icon(body, color):
+    """Small monochrome line icon (e.g. the Form Designer's layout toolbar) in the given colour."""
+    disabled = QColor(color)
+    disabled.setAlpha(90)
+    return _svg_icon(body, {QIcon.Normal: QColor(color).name(), QIcon.Disabled: disabled.name(QColor.HexArgb)},
+                     stroke_width=1.6, sizes=(16, 20, 24, 32))
 
 
 # -----------------------------------------------------------------------------

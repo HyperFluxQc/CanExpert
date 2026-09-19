@@ -6,7 +6,8 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 
 - **Multiple interfaces**: Kvaser, Vector, IXXAT (via python-can)
 - **Node monitoring**: Sends configured periodic TesterPresent requests, lists responding nodes, and marks lost nodes with a red cross
-- **Application Database**: XML files define the UI (buttons, values, checkboxes, sliders) with CAN mappings
+- **Form Designer**: CANoe Panel Designer-style editor with 20 controls (gauges, LEDs, multi-state indicators, switches, knobs, trends...), DBC signal drag-and-drop, align/distribute, grid snap, undo/redo, a Python editor and a Test mode against the simulated ECU
+- **Python in place of CAPL**: per-control handler functions and `@on_message`, `@on_signal`, `@on_timer`, `@on_start`, `@on_stop` event procedures
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
 - **Channel Selection & Bitrate**: Configure CAN channel and speed per interface
@@ -70,15 +71,42 @@ Controls can be driven by a script binding (`binding_value`), a DBC signal (`bin
 | **checkbox** | `can_id`, `byte`, `bit` | Sends the bit state when toggled |
 | **slider** | `can_id`, `byte`, `min`, `max` | Sends the byte value when changed |
 
-Also available: `label`, `text_input`, `io_box`, `combo`, `gauge`, `progress_bar`, `led`.
+All control types:
+
+| Category | Controls |
+|---|---|
+| Input | Button, Toggle Switch, Checkbox, Radio Buttons, Combo Box, Slider (horizontal/vertical), Knob, Numeric Up/Down, I/O Box |
+| Display | Value Display (number format, decimals, DBC value-table text), 7-Segment Display, Gauge (warning/critical zones), Progress Bar (horizontal/vertical), LED (colours, blink), Multi-State Indicator (states from the DBC value table or `value=text:colour; ...`), Trend Graph, Output Box |
+| Decoration | Label, Group Box, Picture |
+
+Every control also has appearance properties (text colour, background, font size, bold, tooltip; inputs can be read-only).
+
+`examples/showcase_2026-09-18.xml` uses every control with `DBC/dummy_ecu.dbc`.
 
 ## Panel scripts
 
+Python replaces CAPL. A control calls the function named in its **Handler** property (double-click it in the
+Form Designer to create the function), and decorators work like CAPL `on` procedures:
+
 ```python
-def DatabaseMainFunction(api):
-    api.on("start", lambda value: api.can.send(0x200, [1]))
-    vin = api.uds.rdbi(0xF190)  # UDS over ISO-TP, multi-frame replies supported
+def on_start_clicked(api, value):                 # Handler of the "start" button
+    vin = api.uds.rdbi(0xF190)                    # UDS over ISO-TP, multi-frame replies supported
     api.ui.set_value("status", vin.decode(errors="replace") if vin else "No VIN")
+
+
+@on_signal("EngineData.Temperature")              # DBC signal changed
+def temperature(api, value):
+    api.ui.set_value("overheat", value > 80)
+
+
+@on_message(0x301)                                # any received frame: frame.id, frame.data, frame.signals
+def status(api, frame):
+    api.log(frame.signals)
+
+
+@on_timer(1.0)
+def every_second(api):
+    api.set_signal("EngineCmd.Speed", 1200)       # encode into the DBC message and send
 ```
 
 See [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts) for the full API and [Firmware flashing](REQUIREMENTS_STATUS.md#firmware-flashing) for `Flashing(api, firmware)`.
@@ -89,9 +117,11 @@ See [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts) for the 
 CanExpert/
 ├── main.py                 # Entry point
 ├── panel.py                # Panel database selection, parsing and rendering
+├── panel_controls.py       # Control library shared by the designer and running panels
 ├── panel_runtime.py        # Script API and runtime, CAN mailbox, config validation
 ├── uds_services.py         # ISO-TP transport, UDS services, S-record/Intel HEX loading
-├── form_designer.py        # Form Designer
+├── form_designer.py        # Form Designer (layout tools, undo/redo, Test mode)
+├── code_editor.py          # Python editor: highlighting, line numbers, completion
 ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
 ├── diagnostic_window.py    # ODX Diagnostic Window
 ├── ui_common.py            # Settings, toolbar icons, collapsible panels

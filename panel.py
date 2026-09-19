@@ -7,10 +7,10 @@ import xml.etree.ElementTree as ET
 from datetime import date
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal, QSignalBlocker
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTabWidget, QScrollArea,
-                             QPushButton, QLabel, QCheckBox, QSlider,
-                             QProgressBar, QComboBox, QLineEdit)
+from PyQt5.QtCore import pyqtSignal, QSignalBlocker
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QScrollArea, QLabel
+
+from panel_controls import CONTROLS, WIDGET_GROUPS, build, states_from_choices
 
 
 # -----------------------------------------------------------------------------
@@ -30,12 +30,11 @@ def _parse_can_id(val: str) -> int:
     return int(s)
 
 
-WIDGET_GROUPS = {
-    "button": "buttons", "value": "values", "checkbox": "checkboxes",
-    "slider": "sliders", "label": "labels", "text_input": "text_inputs",
-    "gauge": "gauges", "progress_bar": "progress_bars", "led": "leds",
-    "combo": "combos", "io_box": "io_boxes",
-}
+def _number(value):
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
 DATABASES_DIR = Path(__file__).resolve().parent / "Databases"
 
 
@@ -76,9 +75,11 @@ def parse_widget(elem):
         value_type = "string" if kind == "text_input" else "float"
     data.update(kind=kind, type=kind, value_type=value_type)
     for key, default in (("x", 0), ("y", 0), ("width", 100), ("height", 30),
-                         ("byte_start", 0), ("byte_length", 1), ("byte", 0),
-                         ("bit", 0), ("min", 0), ("max", 100)):
+                         ("byte_start", 0), ("byte_length", 1), ("byte", 0), ("bit", 0)):
         data[key] = int(data.get(key, default))
+    for key, default in (("min", 0), ("max", 100)):
+        raw = data.get(key, default)
+        data[key] = "" if raw == "" else _number(raw)  # blank = automatic (trend axes)
     for key, default in (("scale", 1.0), ("offset", 0.0)):
         data[key] = float(data.get(key, default))
     if "can_id" in data and str(data["can_id"]).strip():
@@ -91,7 +92,8 @@ def parse_widget(elem):
         raise ValueError("CAN byte and bit positions must be between 0 and 7")
     if data["byte_start"] < 0 or not 1 <= data["byte_length"] <= 8 or data["byte_start"] + data["byte_length"] > 8:
         raise ValueError("CAN value must fit within eight bytes")
-    if data["min"] > data["max"] or data["width"] <= 0 or data["height"] <= 0:
+    numeric_range = all(isinstance(data[k], (int, float)) for k in ("min", "max"))
+    if (numeric_range and data["min"] > data["max"]) or data["width"] <= 0 or data["height"] <= 0:
         raise ValueError("Invalid widget range or dimensions")
     data.setdefault("id", "")
     data.setdefault("label", data.get("text", kind.title()))
@@ -114,7 +116,7 @@ def parse_application_database(path):
               "source_path": str(path.resolve()), "dbc_path": root.get("dbc_path", ""), "pages": []}
     pages = root.find("pages")
     for source in list(pages) if pages is not None else [root]:
-        page = {"name": source.get("name", "Main")}
+        page = {"name": source.get("name", "Main"), "widgets": []}  # widgets: document (z) order
         page.update({group: [] for group in WIDGET_GROUPS.values()})
         widget_index = 0
         for elem in source.iter():
@@ -123,6 +125,7 @@ def parse_application_database(path):
                 if pages is None and "x" not in elem.attrib and "y" not in elem.attrib:
                     widget.update(x=20, y=20 + widget_index * 40)
                 page[WIDGET_GROUPS[elem.tag]].append(widget)
+                page["widgets"].append(widget)
                 widget_index += 1
         result["pages"].append(page)
     return result
@@ -150,6 +153,7 @@ def decode_value_from_can_data(data: list | bytes, byte_start: int, byte_length:
 # -----------------------------------------------------------------------------
 
 class PanelView(QWidget):
+    """Runs a panel: builds its controls, forwards user input to CAN/DBC/script, shows received values."""
     control_changed = pyqtSignal(str, object)
 
     def __init__(self, database, send, log, parent=None):
@@ -157,14 +161,17 @@ class PanelView(QWidget):
         self.send, self.log = send, log
         self.widgets = {}
         self.definitions = {}
+        self.controls = {}
         self.dbc = None
         self.frames = {}
+        source = database.get("source_path")
+        base_dir = Path(source).parent if source else None
         dbc_path = database.get("dbc_path")
         if dbc_path:
             import cantools
             path = Path(dbc_path)
-            if not path.is_absolute():
-                path = Path(database["source_path"]).parent / path
+            if not path.is_absolute() and base_dir is not None:
+                path = base_dir / path
             self.dbc = cantools.database.load_file(str(path))
         layout = QVBoxLayout(self)
         if database.get("description"):
@@ -174,97 +181,69 @@ class PanelView(QWidget):
         for page_index, page in enumerate(database.get("pages", [])):
             container = QWidget()
             right, bottom = 600, 400
-            for kind, group in WIDGET_GROUPS.items():
-                for index, definition in enumerate(page.get(group, [])):
-                    script_binding = definition.get("binding_type") == "script"
-                    explicit_name = (definition.get("binding_value") or definition.get("variable")) if script_binding else ""
-                    key = explicit_name or definition.get("label") or definition.get("id")
-                    key = key or f"{page_index}.{kind}.{index}"
-                    if key in self.widgets:
-                        if explicit_name:
-                            raise ValueError(f"Duplicate control name '{key}'; use unique script bindings")
-                        key = f"{page_index}.{kind}.{index}.{key}"
-                    widget = self._make_widget(kind, definition, container)
-                    widget.setGeometry(definition.get("x", 0), definition.get("y", 0),
-                                       definition.get("width", 100), definition.get("height", 30))
-                    self.widgets[key] = widget
-                    self.definitions[key] = definition
-                    right = max(right, widget.x() + widget.width() + 20)
-                    bottom = max(bottom, widget.y() + widget.height() + 20)
-                    if kind == "button":
-                        widget.clicked.connect(lambda checked, k=key: self._changed(k, True))
-                    elif kind == "checkbox":
-                        widget.toggled.connect(lambda value, k=key: self._changed(k, value))
-                    elif kind == "slider":
-                        widget.valueChanged.connect(lambda value, k=key: self._changed(k, value))
-                    elif kind == "combo":
-                        widget.currentTextChanged.connect(lambda value, k=key: self._changed(k, value))
-                    elif kind in ("io_box", "text_input"):
-                        widget.editingFinished.connect(lambda k=key, w=widget: self._changed(k, w.text()))
+            definitions = page.get("widgets") or [w for group in WIDGET_GROUPS.values() for w in page.get(group, [])]
+            for index, definition in enumerate(definitions):
+                kind = definition.get("kind") or definition.get("type") or "label"
+                script_binding = definition.get("binding_type", "script") == "script"
+                explicit_name = (definition.get("binding_value") or definition.get("variable")) if script_binding else ""
+                key = explicit_name or definition.get("label") or definition.get("id")
+                key = key or f"{page_index}.{kind}.{index}"
+                if key in self.widgets:
+                    if explicit_name:
+                        raise ValueError(f"Duplicate control name '{key}'; use unique script bindings")
+                    key = f"{page_index}.{kind}.{index}.{key}"
+                self._apply_dbc_metadata(kind, definition)
+                control, widget = build(kind, definition, {"base_dir": base_dir})
+                widget.setParent(container)
+                widget.setMinimumSize(1, 1)
+                widget.setGeometry(definition.get("x", 0), definition.get("y", 0),
+                                   definition.get("width", 100), definition.get("height", 30))
+                self.widgets[key] = widget
+                self.definitions[key] = definition
+                self.controls[key] = control
+                right = max(right, widget.x() + widget.width() + 20)
+                bottom = max(bottom, widget.y() + widget.height() + 20)
+                control.connect(widget, lambda value, k=key: self._changed(k, value))
             container.setMinimumSize(right, bottom)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setWidget(container)
             tabs.addTab(scroll, page.get("name", "Main"))
 
-    def _make_widget(self, kind, data, parent):
-        if kind == "button":
-            return QPushButton(data.get("label", "Button"), parent)
-        if kind == "checkbox":
-            return QCheckBox(data.get("label", ""), parent)
-        if kind == "slider":
-            widget = QSlider(Qt.Horizontal, parent)
-            widget.setRange(data.get("min", 0), data.get("max", 100))
-            return widget
-        if kind in ("gauge", "progress_bar"):
-            widget = QProgressBar(parent)
-            widget.setRange(data.get("min", 0), data.get("max", 100))
-            widget.setValue(widget.minimum())
-            widget.setFormat("%v " + data.get("unit", ""))
-            return widget
-        if kind == "combo":
-            widget = QComboBox(parent)
-            widget.addItems([s.strip() for s in data.get("items", "").split(",") if s.strip()])
-            return widget
-        if kind in ("io_box", "text_input"):
-            widget = QLineEdit(parent)
-            widget.setPlaceholderText(data.get("label", ""))
-            return widget
-        widget = QLabel(data.get("text", "--"), parent)
-        if kind == "led":
-            widget.setText(data.get("off_text", "OFF"))
-            widget.setStyleSheet("background: #444; color: white;")
-        return widget
+    def _apply_dbc_metadata(self, kind, definition):
+        """DBC-bound controls take the signal's unit and value table (text for values, states for indicators)."""
+        if self.dbc is None or definition.get("binding_type") != "dbc" or "." not in str(definition.get("binding_value")):
+            return
+        message_name, signal_name = str(definition["binding_value"]).split(".", 1)
+        try:
+            signal = self.dbc.get_message_by_name(message_name).get_signal_by_name(signal_name)
+        except KeyError:
+            self.log(f"Unknown DBC signal {definition['binding_value']}")
+            return
+        if signal.unit and not definition.get("unit"):
+            definition["unit"] = signal.unit
+        if signal.choices:
+            choices = {int(value): str(label) for value, label in signal.choices.items()}
+            definition["_choices"] = choices
+            default_states = CONTROLS["indicator"].defaults()["states"]
+            if kind == "indicator" and definition.get("states", "") in ("", default_states):
+                definition["states"] = states_from_choices(choices)
+
+    def handlers(self):
+        """Control name -> handler function name, for the script runtime."""
+        return {key: str(d["handler"]).strip() for key, d in self.definitions.items() if str(d.get("handler", "")).strip()}
 
     def values(self):
-        result = {}
-        for key, widget in self.widgets.items():
-            for method in ("isChecked", "value", "currentText", "text"):
-                if hasattr(widget, method):
-                    result[key] = getattr(widget, method)()
-                    break
-        return result
+        return {key: self.controls[key].get_value(widget) for key, widget in self.widgets.items()}
 
     def set_value(self, name, value):
         widget = self.widgets.get(name)
         if widget is None:
             self.log(f"Unknown panel control: {name}")
             return
-        data = self.definitions[name]
         blocker = QSignalBlocker(widget)
         try:
-            if data["kind"] == "led":
-                on = bool(value)
-                widget.setText(data.get("on_text", "ON") if on else data.get("off_text", "OFF"))
-                widget.setStyleSheet(f"background: {'green' if on else '#444'}; color: white;")
-            elif isinstance(widget, QCheckBox):
-                widget.setChecked(bool(value))
-            elif isinstance(widget, (QSlider, QProgressBar)):
-                widget.setValue(int(float(value)))
-            elif isinstance(widget, QComboBox):
-                widget.setCurrentText(str(value))
-            else:
-                widget.setText(str(value))
+            self.controls[name].set_value(widget, self.definitions[name], value)
         except (ValueError, TypeError, OverflowError) as exc:
             self.log(f"Invalid value for {name}: {exc}")
         finally:
@@ -273,7 +252,8 @@ class PanelView(QWidget):
     def _changed(self, name, value):
         definition = self.definitions[name]
         try:
-            if definition["kind"] in ("io_box", "text_input"):
+            kind = definition["kind"]
+            if kind in ("io_box", "text_input"):
                 typ = definition.get("value_type", "string")
                 if typ == "integer":
                     value = int(value, 0)
@@ -292,13 +272,12 @@ class PanelView(QWidget):
             elif definition.get("can_id") is not None:
                 can_id = definition["can_id"]
                 payload = bytearray(self.frames.get(can_id, bytes(8)).ljust(8, b"\x00"))
-                kind = definition["kind"]
                 if kind == "button":
                     payload = bytes(definition["data_bytes"])
-                elif kind == "checkbox":
+                elif kind in ("checkbox", "switch"):
                     byte, bit = definition["byte"], definition["bit"]
                     payload[byte] = (payload[byte] & ~(1 << bit)) | (int(bool(value)) << bit)
-                elif kind == "slider":
+                elif kind in ("slider", "knob", "spin"):
                     payload[definition["byte"]] = max(0, min(255, int(value)))
                 self.send(can_id, payload)
                 self.frames[can_id] = bytes(payload)
@@ -319,7 +298,7 @@ class PanelView(QWidget):
             binding = definition.get("binding_value")
             if definition.get("binding_type") == "dbc" and binding in decoded:
                 self.set_value(name, decoded[binding])
-            elif definition.get("can_id") == can_id and definition["kind"] == "value":
+            elif definition.get("can_id") == can_id and self.controls[name].category == "Display":
                 value = decode_value_from_can_data(data, definition["byte_start"], definition["byte_length"],
                                                    definition["scale"], definition["offset"], definition["value_type"])
-                self.set_value(name, f"{value} {definition.get('unit', '')}".strip())
+                self.set_value(name, value)

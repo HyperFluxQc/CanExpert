@@ -29,6 +29,9 @@ flowchart LR
     main --> ui_common["ui_common.py"]
     form_designer --> panel
     form_designer --> panel_runtime
+    form_designer --> code_editor["code_editor.py"]
+    panel --> panel_controls["panel_controls.py"]
+    form_designer --> panel_controls
     panel_runtime --> uds_services["uds_services.py"]
     diagnostic_window --> panel_runtime
     diagnostic_window --> uds_services
@@ -42,9 +45,11 @@ flowchart LR
 |--------|------|
 | **main.py** | Main window, configuration list and dialog, receiver/node tree, Connect/Disconnect, Flashing button and progress dialog, `CanWorker` (hardware reader + TesterPresent), `ChannelActivityScanner`, CAN and debug logs, theme. |
 | **panel.py** | Panel databases: `select_database()` (newest dated file per family), XML → dict parsing (`parse_widget()`), `decode_value_from_can_data()`, and `PanelView`, which renders pages and controls, decodes raw/DBC-bound values and emits `control_changed(name, value)`. |
-| **panel_runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, callbacks, timers, flashing, cancellation), `ReceiveMailbox` (bus facade fed by `CanWorker`), `validate_config()`. |
+| **panel_controls.py** | Control registry shared by the designer preview and running panels: per control its palette entry, properties, construction, value display and input events; painted controls (gauge, LED, multi-state indicator, toggle switch, knob, 7-segment display, trend); `format_value()` and appearance handling. |
+| **panel_runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.signal/set_signal/send_message`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators, timers, flashing, cancellation), `ReceiveMailbox` (bus facade fed by `CanWorker`), `validate_config()`. |
 | **uds_services.py** | ISO-TP transport (single, first, consecutive and flow-control frames), `uds_request()` and UDS helpers, `load_firmware()` for S-record/Intel HEX files, flashing helper. |
-| **form_designer.py** | Drag-and-drop designer: pages, controls, script and DBC bindings, script editor; saves XML + `_script.py`. |
+| **form_designer.py** | Panel designer: palette, DBC symbol tree (drag signals onto the form), canvas with multi-select, align/distribute, grid snap, resize handle, z-order, clipboard, keyboard and undo/redo; schema-driven property editor; handler stubs; Test mode against the simulated ECU; saves XML + `_script.py`. |
+| **code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals), syntax check. |
 | **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, follow/pause/fit, Lock X / Lock Y for mouse zoom and pan, two measurement cursors with per-signal values and Δ, a dotted hover crosshair with a time/value readout, CSV export of all decoded data. |
 | **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors request/response IDs. |
 | **dummy_ecu.py** | Stand-alone simulated UDS ECU (sessions, security, DIDs, DTCs, flashing, periodic frames) for Kvaser virtual channels or any python-can interface. |
@@ -190,7 +195,7 @@ The button is visible only while connected and enabled only when the script defi
 </application_database>
 ```
 
-Control types: `button`, `value`, `checkbox`, `slider`, `label`, `text_input`, `gauge`, `progress_bar`, `led`, `combo`, `io_box`. Controls may be driven by a script binding, a DBC `Message.Signal` binding, or legacy raw `can_id`/byte/bit mappings. `panel.parse_widget()` is the authority for attribute names; the Form Designer round-trips all of them.
+Control types (see `panel_controls.CONTROLS`): `button`, `switch`, `checkbox`, `radio`, `combo`, `slider`, `knob`, `spin`, `io_box`, `text_input`, `value`, `display`, `gauge`, `progress_bar`, `led`, `indicator`, `trend`, `output`, `label`, `group_box`, `picture`. Controls may be driven by a script binding, a DBC `Message.Signal` binding (the panel takes the signal's unit and value table), or legacy raw `can_id`/byte/bit mappings. A `handler` attribute names the script function an input calls. Element order within a page is the z-order. `panel.parse_widget()` parses the common attributes; control-specific attributes are kept as-is and interpreted by `panel_controls`.
 
 ---
 
