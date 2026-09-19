@@ -31,12 +31,13 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. The application lists configurations and restores the last selected one.
-2. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
-3. Select a CAN receiver and click **Connect**. The newest matching database is loaded before communication starts.
-4. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again. After **Disconnect** the ECUs are still checked: CAN Expert keeps sending TesterPresent at the configuration's interval (the channel shows **[Checking ECUs]**), so each ECU stays **Responding** while it answers and shows **Lost connection** when it stops. Right-click the channel to stop, or to **Check ECUs** with the selected configuration without connecting; unchecked ECUs show **Not checked**. Connecting again hands the channel back to the session.
-5. Use the panel's controls; their named Python callbacks handle CAN sends and UI updates.
-6. Click **Disconnect** to stop reception, periodic requests and the panel script.
+1. The application lists configurations and restores the last selected one. The CAN receiver used last is selected again and shown in **bold** (as is every receiver connected before), and CAN Expert starts checking it with TesterPresent straight away.
+2. An ECU that answers appears under its receiver, together with the database that configuration can load: **double-click that entry** (or the receiver) to load it, exactly as **Connect** does.
+3. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
+4. Or select a CAN receiver yourself and click **Connect**. The newest matching database is loaded before communication starts.
+5. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again. After **Disconnect** the ECUs are still checked: CAN Expert keeps sending TesterPresent at the configuration's interval (the channel shows **[Checking ECUs]**), so each ECU stays **Responding** while it answers and shows **Lost connection** when it stops. Right-click the channel to stop, or to **Check ECUs** with the selected configuration without connecting; unchecked ECUs show **Not checked**. Connecting again hands the channel back to the session.
+6. Use the panel's controls; their named Python callbacks handle CAN sends and UI updates.
+7. Click **Disconnect** to stop reception, periodic requests and the panel script.
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 

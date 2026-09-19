@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import can
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from canexpert import can_bus
@@ -223,6 +223,52 @@ class RequirementsTest(unittest.TestCase):
         self.assertEqual(saved['response_ids'], [0x7e8, 0x7e9])
         self.assertEqual(saved['database_family'], 'new_family')
         self.assertEqual(self.window.config_list.count(), 3)
+
+    def channels(self, *channels):
+        """Make can.detect_available_configs() report these channels, and list them in the window."""
+        def detect(interfaces=None, timeout=None):
+            return [dict(cfg) for cfg in channels if cfg["interface"] in (interfaces or [])]
+
+        patcher = patch.object(main.can, "detect_available_configs", side_effect=detect)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.window.refresh_channel_list()
+        return [self.window.channel_items[can_bus.channel_key(cfg)] for cfg in channels]
+
+    def test_the_channel_used_last_is_remembered_shown_in_bold_and_checked_at_startup(self):
+        first, second = self.channels({"interface": "kvaser", "channel": 0}, {"interface": "kvaser", "channel": 1})
+        self.assertFalse(first.font(0).bold())
+        self.window.on_channel_selected(second)
+        self.window.on_connect_clicked()                                     # channel 1 is now the one used
+        self.assertIsNotNone(self.window.can_bus)
+        self.window.on_disconnect_clicked()
+        self.window.close()
+
+        self.window = main.MainWindow()                                      # as if the application restarted
+        items = self.window.channel_items
+        self.assertEqual(self.window.selected_channel_config["channel"], 1)
+        self.assertTrue(items[("kvaser", 1, "", "")].font(0).bold())
+        self.assertFalse(items[("kvaser", 0, "", "")].font(0).bold())
+        self.assertIsNotNone(self.window.ecu_monitor, "TesterPresent should start on the remembered channel")
+        heartbeat = self.ecu.recv(1.0)
+        self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, b"\x02\x3E\x00"))
+
+    def test_a_responding_ecu_offers_its_database_for_a_double_click(self):
+        channel = self.channels({"interface": "kvaser", "channel": 0})[0]
+        key = can_bus.channel_key(channel.data(0, Qt.UserRole))
+        self.window.check_ecus(channel.data(0, Qt.UserRole))
+        self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))
+        self.assertTrue(spin_until(lambda: self.window.database_items))
+        entry = next(iter(self.window.database_items.values()))
+        self.assertIn("panel_2026-09-18", entry.text(0))
+        self.assertIn("double-click to load", entry.text(0))
+
+        self.window.on_channel_double_clicked(entry)                         # the same as clicking Connect
+        self.assertIsNotNone(self.window.can_bus, self.window.status_label.text())
+        self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-09-18.xml"))
+        self.assertIsNone(self.window.ecu_monitor, "the session takes the channel over")
+        self.assertTrue(spin_until(lambda: "loaded" in self.window.database_items[key].text(0)))
+        self.assertIs(self.window.database_items[key].parent(), self.window.channel_items[key])  # the tree was rebuilt
 
     def test_configuration_import_and_export(self):
         source = self.root / "external.json"
