@@ -43,6 +43,24 @@ class CanLoggerTest(unittest.TestCase):
         for _ in range(VALUE_REFRESH_TICKS):
             self.logger._redraw()
 
+    def test_the_toolbar_is_small_symbol_buttons(self):
+        buttons = self.logger._tool_buttons
+        self.assertEqual(list(buttons), ["clear", "pause", "follow", "fit", "lock_x", "lock_y", "cursors"])
+        for button in buttons.values():
+            self.assertEqual(button.text(), "")                                  # the symbol carries the meaning
+            self.assertFalse(button.icon().isNull())
+            self.assertTrue(button.toolTip().startswith(button.accessibleName()))  # "Fit: show all recorded data"
+        self.assertEqual([button.isCheckable() for button in buttons.values()],
+                         [False, True, True, False, True, True, True])
+        pause = self.logger.pause_btn
+        symbol = pause.icon().pixmap(18, 18).toImage()
+        pause.setChecked(True)                                                   # Pause becomes Resume
+        self.assertEqual(pause.accessibleName(), "Resume")
+        self.assertTrue(pause.toolTip().startswith("Resume"))
+        self.assertNotEqual(pause.icon().pixmap(18, 18).toImage(), symbol)
+        pause.setChecked(False)
+        self.assertEqual(pause.accessibleName(), "Pause")
+
     def test_each_ticked_signal_gets_its_own_graph(self):
         self.assertEqual(self.logger.graph_stack.currentIndex(), 0)            # placeholder
         self.logger.set_signal_plotted(TEMP)

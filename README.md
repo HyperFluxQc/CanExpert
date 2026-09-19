@@ -11,7 +11,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
 - **Channel Selection & Bitrate**: Configure CAN channel and speed per interface
-- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, with follow, pause, fit, X/Y axis locks, measurement cursors, a hover crosshair with time/value readout and CSV export
+- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, with small symbol buttons for clear, pause, follow, fit, the X/Y axis locks and the measurement cursors, a hover crosshair with time/value readout and CSV export
 - **Firmware flashing**: While connected, the **Flashing** toolbar button asks for an S-record or Intel HEX file, asks for confirmation and runs the database script's `Flashing(api, firmware)` with a progress dialog; a sample ISO 14229 sequence and test images (`examples/firmware/demo_app.s19` / `.hex`) are in `examples/`, and the Form Designer's Test panel can flash the simulated ECU
 
 ## Requirements

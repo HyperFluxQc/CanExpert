@@ -8,14 +8,15 @@ import csv
 import time
 from pathlib import Path
 
-from PyQt5.QtCore import QEvent, Qt, QTimer
-from PyQt5.QtGui import QColor, QIcon, QPixmap
+from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
+from PyQt5.QtGui import QColor, QIcon, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,6 +24,7 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QSplitter,
     QStackedWidget,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -30,7 +32,7 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.paths import DBC_DIR
-from canexpert.ui_common import SplitterPanel, app_settings, enable_maximize
+from canexpert.ui_common import SplitterPanel, app_settings, enable_maximize, line_icon
 
 try:
     import numpy as np
@@ -49,6 +51,21 @@ except ImportError:
 # Curve colors: light mode (readable on white), dark mode (bright on dark)
 _CURVE_COLORS_LIGHT = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
 _CURVE_COLORS_DARK = ["#5eb3f6", "#ff6b6b", "#51cf66", "#ffd43b", "#cc92e2", "#e599b3", "#ffa8c5", "#adb5bd", "#d8e057", "#45b5d9"]
+
+# Symbols of the small tool buttons, drawn in a 24 x 24 box (see ui_common.line_icon).
+TOOL_ICONS = {
+    "clear": '<path d="M5 7h14M10 4h4"/><path d="M7 7l1 13h8l1-13"/><path d="M10.5 10.5v6M13.5 10.5v6"/>',
+    "pause": '<path d="M9.5 5v14M14.5 5v14" stroke-width="2.6"/>',
+    "play": '<path d="M8 5l11 7-11 7z"/>',
+    "follow": '<path d="M3 12h12"/><path d="M11 7l5 5-5 5"/><path d="M20 4v16"/>',
+    "fit": '<path d="M4 10V4h6M14 4h6v6M20 14v6h-6M10 20H4v-6"/>',
+    "lock_x": '<path d="M10 7V6a2 2 0 0 1 4 0v1"/><rect x="8.5" y="7" width="7" height="5.5" rx="1.2"/>'
+              '<path d="M3 18h18"/><path d="M6.5 15.5 4 18l2.5 2.5"/><path d="M17.5 15.5 20 18l-2.5 2.5"/>',
+    "lock_y": '<path d="M13 9V8a2 2 0 0 1 4 0v1"/><rect x="11.5" y="9" width="7" height="5.5" rx="1.2"/>'
+              '<path d="M6 3v18"/><path d="M3.5 5.5 6 3l2.5 2.5"/><path d="M3.5 18.5 6 21l2.5-2.5"/>',
+    "cursors": '<path d="M8 7v14M16 7v14"/><path d="M5.5 4h5l-2.5 3z" fill="currentColor"/>'
+               '<path d="M13.5 4h5l-2.5 3z" fill="currentColor"/>',
+}
 
 STRIP_MIN_HEIGHT = 110      # px per signal graph; more strips than fit make the graph area scroll
 REDRAW_INTERVAL_MS = 50     # curves; the value column refreshes every VALUE_REFRESH_TICKS redraws
@@ -176,6 +193,36 @@ class CANLoggerWindow(QDialog):
 
     # --- UI -----------------------------------------------------------------------------
 
+    def _tool_button(self, name, tip, checkable=False, checked=False, clicked=None, toggled=None):
+        """A small CANoe-style tool button; its symbol follows the theme (see _refresh_tool_icons)."""
+        button = QToolButton()
+        button.setAutoRaise(True)
+        button.setIconSize(QSize(18, 18))
+        button.setToolTip(tip)
+        button.setAccessibleName(tip.split(":")[0])
+        button.setCheckable(checkable)
+        button.setChecked(checked)
+        if clicked is not None:
+            button.clicked.connect(clicked)
+        if toggled is not None:
+            button.toggled.connect(toggled)
+        self._tool_buttons[name] = button
+        return button
+
+    @staticmethod
+    def _separator():
+        line = QFrame()
+        line.setFrameShape(QFrame.VLine)
+        line.setFrameShadow(QFrame.Sunken)
+        return line
+
+    def _refresh_tool_icons(self):
+        colour = self.palette().color(QPalette.WindowText)
+        for name, button in self._tool_buttons.items():
+            symbol = "play" if name == "pause" and button.isChecked() else name
+            body = TOOL_ICONS[symbol].replace('fill="currentColor"', f'fill="{colour.name()}"')
+            button.setIcon(line_icon(body, colour))
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
@@ -186,41 +233,34 @@ class CANLoggerWindow(QDialog):
         save_btn = QPushButton("Save CSV...")
         save_btn.clicked.connect(self._save_csv)
         bar.addWidget(save_btn)
-        clear_btn = QPushButton("Clear")
-        clear_btn.setToolTip("Discard recorded data and restart the time axis at 0")
-        clear_btn.clicked.connect(self.clear_data)
-        bar.addWidget(clear_btn)
-        bar.addSpacing(12)
-        self.pause_btn = QPushButton("Pause")
-        self.pause_btn.setCheckable(True)
-        self.pause_btn.setToolTip("Freeze the display; recording continues")
-        self.pause_btn.toggled.connect(self._on_pause_toggled)
+        self._tool_buttons = {}
+        self.clear_btn = self._tool_button("clear", "Clear: discard recorded data and restart the time axis at 0",
+                                           clicked=self.clear_data)
+        bar.addWidget(self.clear_btn)
+        bar.addWidget(self._separator())
+        self.pause_btn = self._tool_button("pause", "Pause: freeze the display; recording continues",
+                                           checkable=True, toggled=self._on_pause_toggled)
         bar.addWidget(self.pause_btn)
-        self.follow_btn = QPushButton("Follow")
-        self.follow_btn.setCheckable(True)
-        self.follow_btn.setChecked(True)
-        self.follow_btn.setToolTip("Scroll with the newest data (time window in Graph options)")
+        self.follow_btn = self._tool_button("follow", "Follow: scroll with the newest data (time window in "
+                                            "Graph options)", checkable=True, checked=True)
         bar.addWidget(self.follow_btn)
-        fit_btn = QPushButton("Fit")
-        fit_btn.setToolTip("Show all recorded data")
-        fit_btn.clicked.connect(self.fit_all)
-        bar.addWidget(fit_btn)
-        self.lock_x_btn = QPushButton("Lock X")
-        self.lock_x_btn.setCheckable(True)
-        self.lock_x_btn.setToolTip("Mouse zoom and pan leave the time axis alone (Follow still scrolls)")
-        self.lock_x_btn.toggled.connect(self._apply_axis_locks)
+        self.fit_btn = self._tool_button("fit", "Fit: show all recorded data", clicked=self.fit_all)
+        bar.addWidget(self.fit_btn)
+        bar.addWidget(self._separator())
+        self.lock_x_btn = self._tool_button("lock_x", "Lock X: mouse zoom and pan leave the time axis alone "
+                                            "(Follow still scrolls)", checkable=True,
+                                            toggled=self._apply_axis_locks)
         bar.addWidget(self.lock_x_btn)
-        self.lock_y_btn = QPushButton("Lock Y")
-        self.lock_y_btn.setCheckable(True)
-        self.lock_y_btn.setChecked(True)
-        self.lock_y_btn.setToolTip("Mouse zoom and pan leave the value axes alone (autoscale keeps them fitted)")
-        self.lock_y_btn.toggled.connect(self._apply_axis_locks)
+        self.lock_y_btn = self._tool_button("lock_y", "Lock Y: mouse zoom and pan leave the value axes alone "
+                                            "(autoscale keeps them fitted)", checkable=True, checked=True,
+                                            toggled=self._apply_axis_locks)
         bar.addWidget(self.lock_y_btn)
-        self.cursors_btn = QPushButton("Cursors")
-        self.cursors_btn.setCheckable(True)
-        self.cursors_btn.setToolTip("Two measurement cursors across all graphs")
-        self.cursors_btn.toggled.connect(self._on_cursors_toggled)
+        bar.addWidget(self._separator())
+        self.cursors_btn = self._tool_button("cursors", "Cursors: two measurement cursors across all graphs",
+                                             checkable=True, toggled=self._on_cursors_toggled)
         bar.addWidget(self.cursors_btn)
+        self._refresh_tool_icons()
+        bar.addWidget(self._separator())
         options_btn = QPushButton("Graph options...")
         options_btn.clicked.connect(self._show_graph_options)
         bar.addWidget(options_btn)
@@ -323,6 +363,12 @@ class CANLoggerWindow(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self._apply_graph_theme()
+        self._refresh_tool_icons()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange) and self._tool_buttons:
+            self._refresh_tool_icons()
 
     # --- DBC ------------------------------------------------------------------------------
 
@@ -607,7 +653,10 @@ class CANLoggerWindow(QDialog):
                                 padding=0)
 
     def _on_pause_toggled(self, paused):
-        self.pause_btn.setText("Resume" if paused else "Pause")
+        self.pause_btn.setToolTip("Resume: show what was recorded meanwhile" if paused
+                                  else "Pause: freeze the display; recording continues")
+        self.pause_btn.setAccessibleName("Resume" if paused else "Pause")
+        self._refresh_tool_icons()
         if not paused:  # catch up with what was recorded while paused
             self._new_curve_data.update(self._series)
             self._new_values.update(self._series)
