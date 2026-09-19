@@ -29,7 +29,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from ui_common import SplitterPanel, app_settings, enable_maximize
+from canexpert.paths import DBC_DIR
+from canexpert.ui_common import SplitterPanel, app_settings, enable_maximize
 
 try:
     import numpy as np
@@ -326,7 +327,7 @@ class CANLoggerWindow(QDialog):
     # --- DBC ------------------------------------------------------------------------------
 
     def _load_dbc(self):
-        default_dir = Path(__file__).parent / "DBC"
+        default_dir = DBC_DIR
         path, _ = QFileDialog.getOpenFileName(
             self, "Load DBC file", str(default_dir),
             "DBC files (*.dbc);;All files (*.*)",

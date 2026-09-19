@@ -7,9 +7,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
-from uds_services import FIRMWARE_FILE_FILTER, load_firmware
-
-EXAMPLE_FIRMWARE_DIR = Path(__file__).resolve().parent / "examples" / "firmware"
+from canexpert.uds.isotp import FIRMWARE_FILE_FILTER, load_firmware
 
 
 def choose_firmware(parent, start_dir):

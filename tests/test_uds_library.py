@@ -11,9 +11,9 @@ from pathlib import Path
 import can
 from PyQt5.QtWidgets import QApplication
 
-from dummy_ecu import DummyEcu, EcuConfig
-from panel_runtime import ReceiveMailbox, ScriptRuntime, validate_config
-from uds_library import EXCLUDED_SERVICES, FUNCTIONS, UdsFunctions
+from canexpert.simulator.ecu import DummyEcu, EcuConfig
+from canexpert.panel.runtime import ReceiveMailbox, ScriptRuntime, validate_config
+from canexpert.uds.client import EXCLUDED_SERVICES, FUNCTIONS, UdsFunctions
 
 APP = QApplication.instance() or QApplication([])
 ISO_14229_SERVICES = {0x10, 0x11, 0x14, 0x19, 0x22, 0x23, 0x24, 0x27, 0x28, 0x29, 0x2A, 0x2C, 0x2E, 0x2F, 0x31,
@@ -183,7 +183,7 @@ def DatabaseMainFunction(api):
 
 class FunctionPanelTest(unittest.TestCase):
     def test_panel_lists_functions_and_inserts_calls(self):
-        from form_designer import FormDesigner
+        from canexpert.designer.form_designer import FormDesigner
         designer = FormDesigner()
         panel, editor = designer.uds_panel, designer.code_editor
         self.assertEqual(set(panel.items), {entry.name for entry in FUNCTIONS})

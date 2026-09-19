@@ -20,8 +20,8 @@ from typing import Any, Callable
 import can
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from uds_library import UdsFunctions
-from uds_services import (
+from canexpert.uds.client import UdsFunctions
+from canexpert.uds.isotp import (
     uds_request,
     uds_tester_present,
     uds_rdbi,

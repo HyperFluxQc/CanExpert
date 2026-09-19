@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 
 import can
 
-from uds_services import FC_OVERFLOW, FC_WAIT, N_CR_TIMEOUT, flow_control_frame, isotp_send, parse_first_frame
+from canexpert.uds.isotp import FC_OVERFLOW, FC_WAIT, N_CR_TIMEOUT, flow_control_frame, isotp_send, parse_first_frame
 
 DEFAULT_SESSION, PROGRAMMING_SESSION, EXTENDED_SESSION = 0x01, 0x02, 0x03
 SESSION_NAMES = {DEFAULT_SESSION: "default", PROGRAMMING_SESSION: "programming", EXTENDED_SESSION: "extended"}
@@ -757,7 +757,7 @@ def main(argv=None):
     connection.update({key: value for key, value in (("interface", args.interface), ("channel", args.channel),
                                                      ("bitrate", args.bitrate)) if value is not None})
     if not args.console:
-        from dummy_ecu_window import run_window
+        from canexpert.simulator.window import run_window
         return run_window(config, overrides, connection)
 
     config = replace(config or EcuConfig(), **overrides)

@@ -7,8 +7,8 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication
 
-from panel import PanelView, parse_application_database
-from panel_controls import CONTROLS, build, format_value, parse_states, states_from_choices
+from canexpert.panel.database import PanelView, parse_application_database
+from canexpert.panel.controls import CONTROLS, build, format_value, parse_states, states_from_choices
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parent.parent / "DBC" / "dummy_ecu.dbc"

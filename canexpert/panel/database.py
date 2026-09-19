@@ -10,7 +10,8 @@ from pathlib import Path
 from PyQt5.QtCore import pyqtSignal, QSignalBlocker
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QScrollArea, QLabel
 
-from panel_controls import CONTROLS, WIDGET_GROUPS, build, states_from_choices
+from canexpert.panel.controls import CONTROLS, WIDGET_GROUPS, build, states_from_choices
+from canexpert.paths import DATABASES_DIR
 
 
 # -----------------------------------------------------------------------------
@@ -33,9 +34,6 @@ def _parse_can_id(val: str) -> int:
 def _number(value):
     number = float(value)
     return int(number) if number.is_integer() else number
-
-
-DATABASES_DIR = Path(__file__).resolve().parent / "Databases"
 
 
 def select_database(databases_dir=DATABASES_DIR, family=""):

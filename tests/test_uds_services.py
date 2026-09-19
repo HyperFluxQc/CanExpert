@@ -9,10 +9,10 @@ from unittest.mock import patch
 
 import can
 
-import uds_services
-from panel_runtime import DatabaseAPI, ReceiveMailbox
-from uds_library import UdsFunctions
-from uds_services import (
+from canexpert.uds import isotp as uds_services
+from canexpert.panel.runtime import DatabaseAPI, ReceiveMailbox
+from canexpert.uds.client import UdsFunctions
+from canexpert.uds.isotp import (
     IsoTpError, isotp_recv, isotp_send, load_firmware, uds_rdbi, uds_request, uds_request_download,
     uds_tester_present,
 )

@@ -35,9 +35,10 @@ try:
 except ImportError:
     HAS_ODXTOOLS = False
 
-from ui_common import SplitterPanel, enable_maximize
-from panel_runtime import ReceiveMailbox, diagnostic_request_id
-from uds_services import uds_request
+from canexpert.paths import ODX_DIR
+from canexpert.ui_common import SplitterPanel, enable_maximize
+from canexpert.panel.runtime import ReceiveMailbox, diagnostic_request_id
+from canexpert.uds.isotp import uds_request
 
 
 def _get_services_from_db(db):
@@ -165,7 +166,7 @@ class DiagnosticWindow(QDialog):
         menu.exec_(self.services_tree.header().mapToGlobal(pos))
 
     def _load_odx(self):
-        default_dir = Path(__file__).parent / "ODX"
+        default_dir = ODX_DIR
         path, _ = QFileDialog.getOpenFileName(
             self, "Load ODX / CDD / PDX", str(default_dir),
             "ODX/PDX/CDD (*.odx *.pdx *-cdd.xml *.xml);;All files (*.*)",

@@ -63,14 +63,15 @@ from PyQt5.QtWidgets import (
     QCheckBox,
 )
 
-from panel import PanelView, load_application_database
-from form_designer import FormDesigner
-from can_logger import CANLoggerWindow
-from diagnostic_window import DiagnosticWindow
-from panel_runtime import (DEFAULT_NODE_TIMEOUT, DEFAULT_TESTER_PRESENT_INTERVAL, ReceiveMailbox,
+from canexpert.panel.database import PanelView, load_application_database
+from canexpert.designer.form_designer import FormDesigner
+from canexpert.can_logger import CANLoggerWindow
+from canexpert.diagnostic_window import DiagnosticWindow
+from canexpert.panel.runtime import (DEFAULT_NODE_TIMEOUT, DEFAULT_TESTER_PRESENT_INTERVAL, ReceiveMailbox,
                            ScriptRuntime, validate_config)
-from ui_common import CaptionButton, app_settings, toolbar_icon
-from flashing_ui import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
+from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
+from canexpert.ui_common import CaptionButton, app_settings, toolbar_icon
+from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
                          update_progress)
 
 # -----------------------------------------------------------------------------
@@ -78,9 +79,6 @@ from flashing_ui import (choose_firmware, close_progress, confirm_flash, progres
 # -----------------------------------------------------------------------------
 
 DEFAULT_BITRATE = 500000
-APP_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = APP_DIR / "Configurations"
-DATABASES_DIR = APP_DIR / "Databases"
 
 SUPPORTED_INTERFACES = [
     ("kvaser", "Kvaser"),
@@ -1469,22 +1467,16 @@ class MainWindow(QMainWindow):
                 break
                 
 def main():
-    """Main application entry point"""
+    """Start CAN Expert; with --smoke-test only build the main window."""
     app = QApplication(sys.argv)
-    
-    # Set application style
-    app.setStyle('Fusion')
-    
-    # Create and show main window
+    app.setStyle("Fusion")
     window = MainWindow()
+    if "--smoke-test" in sys.argv:
+        print("startup ok")
+        return 0
     window.show()
-    
-    sys.exit(app.exec_())
+    return app.exec_()
+
 
 if __name__ == "__main__":
-    if "--smoke-test" in sys.argv:
-        app = QApplication(sys.argv)
-        MainWindow()
-        print("startup ok")
-        sys.exit(0)
-    main()
+    sys.exit(main())

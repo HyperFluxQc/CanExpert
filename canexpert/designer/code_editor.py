@@ -13,7 +13,7 @@ from PyQt5.QtGui import QColor, QFont, QPainter, QPalette, QSyntaxHighlighter, Q
 from PyQt5.QtWidgets import (QCompleter, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter,
                              QTextBrowser, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from uds_library import EXCLUDED_SERVICES, FUNCTIONS, GROUPS
+from canexpert.uds.client import EXCLUDED_SERVICES, FUNCTIONS, GROUPS
 
 API_WORDS = [
     "api", "api.on", "api.on_can", "api.every", "api.sleep", "api.running", "api.log", "api.progress",

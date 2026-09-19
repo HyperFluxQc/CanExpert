@@ -11,9 +11,9 @@ from PyQt5.QtCore import QEvent, QRectF, Qt
 from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-from form_designer import DraggablePaletteItem, FormDesigner, default_handler_name
-from panel import parse_application_database
-from panel_controls import CONTROLS
+from canexpert.designer.form_designer import DraggablePaletteItem, FormDesigner, default_handler_name
+from canexpert.panel.database import parse_application_database
+from canexpert.panel.controls import CONTROLS
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parent.parent / "DBC" / "dummy_ecu.dbc"
@@ -158,7 +158,7 @@ class FormDesignerTest(unittest.TestCase):
         self.assertEqual(page["widgets"][1]["states"], "0=Off:#111111; 1=On:#22aa22")
         self.assertEqual((page["widgets"][2]["on_color"], page["widgets"][2]["blink"]), ("#ff0000", "True"))
         other = FormDesigner()
-        with patch("form_designer.QFileDialog.getOpenFileName",
+        with patch("canexpert.designer.form_designer.QFileDialog.getOpenFileName",
                    return_value=(str(self.folder / "layout_2026-09-18.xml"), "")):
             other.load()
         self.assertEqual([w["type"] for w in other.canvas._current_widgets()], ["group_box", "indicator", "led"])
@@ -178,7 +178,7 @@ class FormDesignerTest(unittest.TestCase):
         self.assertTrue(self.designer.properties_panel.isVisible())
 
     def test_test_panel_flashes_firmware_into_the_simulated_ecu(self):
-        from uds_services import load_firmware
+        from canexpert.uds.isotp import load_firmware
         example = Path(__file__).resolve().parent.parent / "examples"
         self.canvas.add_widget_at("label", 10, 10, text="Flash test")
         self.designer.code_editor.setPlainText((example / "example_2026-09-18_script.py").read_text(encoding="utf-8"))
@@ -186,7 +186,7 @@ class FormDesignerTest(unittest.TestCase):
         try:
             self.assertTrue(spin_until(dialog.flash_button.isEnabled))           # the script defines Flashing()
             results = []
-            with patch("form_designer.report_result", lambda parent, ok, text: results.append((ok, text))):
+            with patch("canexpert.designer.form_designer.report_result", lambda parent, ok, text: results.append((ok, text))):
                 dialog.start_flashing(load_firmware(example / "firmware" / "demo_app.s19"))
                 self.assertIsNotNone(dialog.flash_dialog)
                 self.assertTrue(spin_until(lambda: results, 15))

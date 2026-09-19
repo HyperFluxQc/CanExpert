@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from dummy_ecu import (
+from canexpert.simulator.ecu import (
     DEFAULT_CONNECTION,
     SESSION_NAMES,
     DummyEcu,
@@ -48,8 +48,8 @@ from dummy_ecu import (
     parse_channel,
     save_profile,
 )
-from uds_services import flow_control_frame
-from ui_common import app_settings, toolbar_icon
+from canexpert.uds.isotp import flow_control_frame
+from canexpert.ui_common import app_settings, toolbar_icon
 
 INTERFACES = ("kvaser", "virtual", "vector", "ixxat", "pcan", "socketcan")
 BITRATES = ("125000", "250000", "500000", "1000000")

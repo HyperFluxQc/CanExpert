@@ -27,13 +27,14 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from code_editor import CodeEditor, UdsFunctionPanel
-from flashing_ui import (EXAMPLE_FIRMWARE_DIR, choose_firmware, close_progress, confirm_flash, progress_dialog,
+from canexpert.designer.code_editor import CodeEditor, UdsFunctionPanel
+from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog,
                          report_result, update_progress)
-from panel import DATABASES_DIR, parse_widget, parse_application_database
-from panel_controls import APPEARANCE, CATEGORIES, CONTROLS, READ_ONLY, WIDGET_GROUPS, build
-from panel_runtime import SCRIPT_TEMPLATE
-from ui_common import SplitterPanel, enable_maximize, line_icon
+from canexpert.panel.database import DATABASES_DIR, parse_widget, parse_application_database
+from canexpert.panel.controls import APPEARANCE, CATEGORIES, CONTROLS, READ_ONLY, WIDGET_GROUPS, build
+from canexpert.panel.runtime import SCRIPT_TEMPLATE
+from canexpert.paths import DBC_DIR, EXAMPLE_FIRMWARE_DIR
+from canexpert.ui_common import SplitterPanel, enable_maximize, line_icon
 
 try:
     import cantools
@@ -183,7 +184,7 @@ class SymbolListPanel(QGroupBox):
         self._dbc_path = None
 
     def _load_dbc(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load DBC", str(Path(__file__).parent / "DBC"),
+        path, _ = QFileDialog.getOpenFileName(self, "Load DBC", str(DBC_DIR),
                                               "DBC (*.dbc);;All (*.*)")
         if path:
             self.load_dbc_path(path)
@@ -1506,8 +1507,8 @@ class TestPanelDialog(QDialog):
     def __init__(self, database, script_text, simulate_ecu=True, parent=None):
         super().__init__(parent)
         import can
-        from panel import PanelView
-        from panel_runtime import ReceiveMailbox, ScriptRuntime, validate_config
+        from canexpert.panel.database import PanelView
+        from canexpert.panel.runtime import ReceiveMailbox, ScriptRuntime, validate_config
         self.setWindowTitle(f"Test panel - {database.get('name', '')}")
         enable_maximize(self)
         self.resize(1000, 720)
@@ -1527,7 +1528,7 @@ class TestPanelDialog(QDialog):
         self.show_traffic = QCheckBox("Show CAN traffic")
         self.ecu_log.connect(self._log)
         if simulate_ecu:
-            from dummy_ecu import DummyEcu, EcuConfig
+            from canexpert.simulator.ecu import DummyEcu, EcuConfig
             self.ecu_bus = can.Bus(interface="virtual", channel=channel)
             self.ecu = DummyEcu(self.ecu_bus, EcuConfig(), log=lambda text: self.ecu_log.emit(f"ECU: {text}"))
             threading.Thread(target=self.ecu.serve, args=(self._stop,), daemon=True).start()

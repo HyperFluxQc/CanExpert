@@ -11,7 +11,7 @@ import can
 import cantools
 from PyQt5.QtWidgets import QApplication
 
-from panel_runtime import ReceiveMailbox, ScriptRuntime, diagnostic_request_id, validate_config
+from canexpert.panel.runtime import ReceiveMailbox, ScriptRuntime, diagnostic_request_id, validate_config
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parent.parent / "DBC" / "dummy_ecu.dbc"

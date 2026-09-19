@@ -13,10 +13,10 @@ import can
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-import main
-from panel import PanelView, select_database, parse_application_database
-from form_designer import FormDesigner, PropertyEditor
-from panel_runtime import validate_config
+from canexpert import main_window as main
+from canexpert.panel.database import PanelView, select_database, parse_application_database
+from canexpert.designer.form_designer import FormDesigner, PropertyEditor
+from canexpert.panel.runtime import validate_config
 
 APP = QApplication.instance() or QApplication([])
 
@@ -338,7 +338,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
 
     def test_diagnostic_multi_frame_exchange(self):
         from types import SimpleNamespace
-        from diagnostic_window import DiagnosticWindow
+        from canexpert.diagnostic_window import DiagnosticWindow
         self.window.on_connect_clicked()
         dialog = DiagnosticWindow(self.window)
         request = bytes([0x2E, 0xF1, 0x90]) + b"WVWZZZ1KZAW000001"
@@ -373,7 +373,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertEqual(self.window.workers["main"].mailboxes[1:], [])
 
     def test_flashing_button_calls_database_flashing(self):
-        from uds_services import Firmware
+        from canexpert.uds.isotp import Firmware
         item, action = self.window.flashing_toolbar_item, self.window._toolbar_actions["flashing"]
         self.assertFalse(item.isVisible())
         (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + FLASH_SCRIPT)
@@ -393,7 +393,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
 
     def test_ecus_are_still_checked_after_disconnect(self):
         import threading
-        from dummy_ecu import DummyEcu, EcuConfig
+        from canexpert.simulator.ecu import DummyEcu, EcuConfig
         ecu = DummyEcu(self.ecu, EcuConfig(broadcast_interval=0), log=lambda text: None)
 
         def run_ecu():
@@ -436,8 +436,8 @@ VAL_ 256 Enable 0 "Off" 1 "On";
 
     def test_flashing_the_dummy_ecu_with_a_functional_request_id(self):
         import threading
-        from dummy_ecu import DummyEcu, EcuConfig
-        from uds_services import load_firmware
+        from canexpert.simulator.ecu import DummyEcu, EcuConfig
+        from canexpert.uds.isotp import load_firmware
         examples = Path(__file__).resolve().parent.parent / "examples"
         (self.databases/'panel_2026-09-18_script.py').write_text(
             (examples / "example_2026-09-18_script.py").read_text(encoding="utf-8"))
@@ -488,7 +488,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
 
     def test_windows11_caption_buttons(self):
         from PyQt5.QtCore import Qt
-        from ui_common import CaptionButton, SplitterPanel
+        from canexpert.ui_common import CaptionButton, SplitterPanel
         bar = self.window.channels_dock.titleBarWidget()
         self.assertIsInstance(bar.min_btn, CaptionButton)
         self.assertEqual((bar.min_btn.kind, bar.close_btn.kind), (CaptionButton.MINIMIZE, CaptionButton.CLOSE))
@@ -517,8 +517,8 @@ VAL_ 256 Enable 0 "Off" 1 "On";
 
     def test_tool_windows_can_be_maximized(self):
         from PyQt5.QtCore import Qt
-        from can_logger import CANLoggerWindow
-        from diagnostic_window import DiagnosticWindow
+        from canexpert.can_logger import CANLoggerWindow
+        from canexpert.diagnostic_window import DiagnosticWindow
         for window in (FormDesigner(self.window), CANLoggerWindow(self.window), DiagnosticWindow(self.window)):
             flags = window.windowFlags()
             self.assertTrue(flags & Qt.WindowMaximizeButtonHint, type(window).__name__)

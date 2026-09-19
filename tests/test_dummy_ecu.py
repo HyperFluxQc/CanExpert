@@ -8,10 +8,10 @@ from pathlib import Path
 
 import can
 
-from dummy_ecu import DummyEcu, EcuConfig, claim_channel, other_ecu_present
-from panel_runtime import DatabaseAPI, ReceiveMailbox
-from uds_library import UdsFunctions
-from uds_services import Firmware, IsoTpError, load_firmware, uds_rdbi, uds_request
+from canexpert.simulator.ecu import DummyEcu, EcuConfig, claim_channel, other_ecu_present
+from canexpert.panel.runtime import DatabaseAPI, ReceiveMailbox
+from canexpert.uds.client import UdsFunctions
+from canexpert.uds.isotp import Firmware, IsoTpError, load_firmware, uds_rdbi, uds_request
 
 EXAMPLE_SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "example_2026-09-18_script.py"
 PHYSICAL, FUNCTIONAL, RESPONSE = 0x7E0, 0x7DF, 0x7E8
