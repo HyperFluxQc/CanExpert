@@ -25,8 +25,6 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QLineEdit,
-    QComboBox,
-    QFrame,
     QSplitter,
     QMenu,
 )
@@ -37,7 +35,7 @@ try:
 except ImportError:
     HAS_ODXTOOLS = False
 
-from splitter_panel import SplitterPanel
+from ui_common import SplitterPanel
 from panel_runtime import ReceiveMailbox
 from uds_services import uds_request
 

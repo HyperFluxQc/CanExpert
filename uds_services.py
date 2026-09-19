@@ -1,80 +1,114 @@
 """
 UDS (Unified Diagnostic Services) over ISO-TP - TesterPresent, RDBI, RequestDownload,
-TransferData, RequestTransferExit. S19/S28 file parsing for flashing.
+TransferData, RequestTransferExit. S-record / Intel HEX firmware loading for flashing.
 """
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-# Optional: can is passed in by caller
-try:
-    import can
-except ImportError:
-    can = None
+import can
+
+# --- Firmware images (Motorola S-record, Intel HEX) ---
+
+FIRMWARE_FILE_FILTER = ("Firmware (*.s19 *.s28 *.s37 *.srec *.mot *.hex *.ihex);;"
+                        "Motorola S-record (*.s19 *.s28 *.s37 *.srec *.mot);;Intel HEX (*.hex *.ihex);;All files (*.*)")
 
 
-def _bytes_to_hex(data: list | bytes) -> str:
-    data = list(data) if isinstance(data, (bytes, str)) else list(data)
-    return " ".join(f"{b:02X}" for b in data[:8])
+@dataclass
+class Firmware:
+    """A firmware image: contiguous (address, data) segments in ascending address order."""
+    path: str
+    segments: list[tuple[int, bytes]]
+
+    @property
+    def size(self) -> int:
+        return sum(len(data) for _, data in self.segments)
 
 
-# --- S19 / S28 / S37 parser (Motorola S-record) ---
+def _srecord_data(lines: list[str]) -> list[tuple[int, bytes]]:
+    records = []
+    for number, line in enumerate(lines, 1):
+        if not line.startswith("S") or len(line) < 4:
+            raise ValueError(f"Line {number}: not an S-record")
+        kind = line[1]
+        try:
+            raw = bytes.fromhex(line[2:])
+        except ValueError:
+            raise ValueError(f"Line {number}: invalid hexadecimal") from None
+        if raw[0] != len(raw) - 1:
+            raise ValueError(f"Line {number}: byte count does not match record length")
+        if (sum(raw[:-1]) + raw[-1]) & 0xFF != 0xFF:
+            raise ValueError(f"Line {number}: checksum error")
+        address_length = {"1": 2, "2": 3, "3": 4}.get(kind)
+        if address_length is None:
+            continue  # S0 header, S5/S6 count, S7-S9 start address
+        address = int.from_bytes(raw[1:1 + address_length], "big")
+        data = raw[1 + address_length:-1]
+        if data:
+            records.append((address, data))
+    return records
 
-def _parse_s_record_line(line: str) -> tuple[str, int, int, bytes] | None:
-    """Parse one S-record. Returns (type, address, length, data) or None."""
-    line = line.strip()
-    if not line or line[0] != "S":
-        return None
-    try:
-        typ = line[1]
-        byte_count = int(line[2:4], 16)
-        if typ == "0":
-            # S0: header, address is 0
-            return ("S0", 0, byte_count - 3, bytes.fromhex(line[8 : 8 + (byte_count - 3) * 2]))
-        if typ == "1":
-            # S1: 16-bit address, 2 addr bytes
-            addr = int(line[4:8], 16)
-            data_len = byte_count - 3
-            data = bytes.fromhex(line[8 : 8 + data_len * 2])
-            return ("S1", addr, data_len, data)
-        if typ == "2":
-            # S2: 24-bit address
-            addr = int(line[4:10], 16)
-            data_len = byte_count - 4
-            data = bytes.fromhex(line[10 : 10 + data_len * 2])
-            return ("S2", addr, data_len, data)
-        if typ == "3":
-            # S3: 32-bit address
-            addr = int(line[4:12], 16)
-            data_len = byte_count - 5
-            data = bytes.fromhex(line[12 : 12 + data_len * 2])
-            return ("S3", addr, data_len, data)
-        if typ in "789":
-            # S7/S8/S9: termination, no data
-            return (f"S{typ}", 0, 0, b"")
-    except (ValueError, IndexError):
-        pass
-    return None
+
+def _intel_hex_data(lines: list[str]) -> list[tuple[int, bytes]]:
+    records, base = [], 0
+    for number, line in enumerate(lines, 1):
+        if not line.startswith(":"):
+            raise ValueError(f"Line {number}: not an Intel HEX record")
+        try:
+            raw = bytes.fromhex(line[1:])
+        except ValueError:
+            raise ValueError(f"Line {number}: invalid hexadecimal") from None
+        if len(raw) < 5 or len(raw) != raw[0] + 5:
+            raise ValueError(f"Line {number}: byte count does not match record length")
+        if sum(raw) & 0xFF:
+            raise ValueError(f"Line {number}: checksum error")
+        kind, data = raw[3], raw[4:-1]
+        if kind == 0x00:
+            if data:
+                records.append((base + int.from_bytes(raw[1:3], "big"), data))
+        elif kind == 0x01:
+            break
+        elif kind == 0x02:
+            base = int.from_bytes(data, "big") << 4
+        elif kind == 0x04:
+            base = int.from_bytes(data, "big") << 16
+    return records
+
+
+def _read_lines(path: str | Path) -> list[str]:
+    return [line.strip() for line in Path(path).read_text(encoding="ascii", errors="replace").splitlines()
+            if line.strip()]
 
 
 def parse_s19_s28_file(path: str | Path) -> list[tuple[int, bytes]]:
-    """
-    Parse S19 or S28 (or S37) file. Returns list of (address, data) chunks.
-    """
-    path = Path(path)
-    if not path.exists():
-        return []
-    blocks = []
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            r = _parse_s_record_line(line)
-            if r is None:
-                continue
-            typ, addr, _len, data = r
-            if typ in ("S1", "S2", "S3") and data:
-                blocks.append((addr, data))
-    return blocks
+    """(address, data) of every S1/S2/S3 record, unmerged; [] if the file is missing. Bad records raise ValueError."""
+    return _srecord_data(_read_lines(path)) if Path(path).exists() else []
+
+
+def load_firmware(path: str | Path) -> Firmware:
+    """Read an S-record (S19/S28/S37) or Intel HEX file, verifying checksums and merging contiguous records."""
+    lines = _read_lines(path)
+    if not lines:
+        raise ValueError("Firmware file is empty")
+    if lines[0].startswith(":"):
+        records = _intel_hex_data(lines)
+    elif lines[0].startswith("S"):
+        records = _srecord_data(lines)
+    else:
+        raise ValueError("Unrecognised format; expected Motorola S-record or Intel HEX")
+    if not records:
+        raise ValueError("Firmware file contains no data records")
+    segments: list[tuple[int, bytearray]] = []
+    for address, data in sorted(records, key=lambda record: record[0]):
+        if segments and address < segments[-1][0] + len(segments[-1][1]):
+            raise ValueError(f"Overlapping data at 0x{address:X}")
+        if segments and address == segments[-1][0] + len(segments[-1][1]):
+            segments[-1][1].extend(data)
+        else:
+            segments.append((address, bytearray(data)))
+    return Firmware(str(path), [(address, bytes(data)) for address, data in segments])
 
 
 # --- ISO-TP transport (ISO 15765-2, classic CAN) ---
@@ -338,16 +372,17 @@ def uds_flash_from_file(
     **transport,
 ) -> tuple[bool, str]:
     """
-    Flash an S19/S28 file: RequestDownload, TransferData blocks and RequestTransferExit per record block.
+    Flash an S-record or Intel HEX file: RequestDownload, TransferData blocks and RequestTransferExit per segment.
     packet_size = data bytes per TransferData, capped by the ECU's maxNumberOfBlockLength.
     Returns (success, error_message).
     """
-    blocks = parse_s19_s28_file(s19_path)
-    if not blocks:
-        return False, "No data records in file or file not found"
+    try:
+        firmware = load_firmware(s19_path)
+    except (OSError, ValueError) as exc:
+        return False, str(exc)
     total_sent = 0
-    total_size = sum(len(d) for _, d in blocks)
-    for addr, data in blocks:
+    total_size = firmware.size
+    for addr, data in firmware.segments:
         size = len(data)
         max_block = _request_download(bus, 0x44, addr, size, request_id, response_id, timeout, **transport)
         if max_block is None:

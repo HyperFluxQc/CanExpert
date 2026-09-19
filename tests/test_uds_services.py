@@ -1,14 +1,75 @@
 """UDS/ISO-TP transport tests over python-can's virtual interface; no hardware is contacted."""
+import tempfile
 import threading
 import unittest
 import uuid
+from pathlib import Path
 
 import can
 
-from panel_runtime import ReceiveMailbox
+from panel_runtime import DatabaseAPI, ReceiveMailbox
 from uds_services import (
-    isotp_recv, isotp_send, uds_rdbi, uds_request, uds_request_download, uds_tester_present,
+    isotp_recv, isotp_send, load_firmware, uds_rdbi, uds_request, uds_request_download, uds_tester_present,
 )
+
+EXAMPLE_SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "example_2026-09-18_script.py"
+
+
+def srecord(address, data):
+    """S3 record (4-byte address) with checksum."""
+    body = bytes([len(data) + 5]) + address.to_bytes(4, "big") + data
+    return "S3" + (body + bytes([~sum(body) & 0xFF])).hex().upper()
+
+
+def intel_hex(kind, address, data):
+    body = bytes([len(data)]) + address.to_bytes(2, "big") + bytes([kind]) + data
+    return ":" + (body + bytes([-sum(body) & 0xFF])).hex().upper()
+
+
+def write_file(lines, suffix):
+    handle = tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False)
+    handle.write("\n".join(lines) + "\n")
+    handle.close()
+    return handle.name
+
+
+class FakeBootloader:
+    """ISO 14229 programming sequence as the example Flashing() expects it."""
+
+    def __init__(self):
+        self.memory, self.log, self.unlocked, self.download = {}, [], False, None
+
+    def __call__(self, request):
+        sid = request[0]
+        self.log.append(sid)
+        if sid == 0x10:
+            return [bytes([0x50, request[1], 0x00, 0x32, 0x01, 0xF4])]
+        if sid in (0x85, 0x28, 0x11):
+            return [bytes([sid + 0x40, request[1]])]
+        if sid == 0x27 and request[1] == 0x01:
+            return [b"\x67\x01\x12\x34"]
+        if sid == 0x27 and request[1] == 0x02:
+            self.unlocked = request[2:] == bytes([0x12 ^ 0xA5, 0x34 ^ 0xA5])
+            return [b"\x67\x02" if self.unlocked else b"\x7F\x27\x35"]
+        if not self.unlocked:
+            return [bytes([0x7F, sid, 0x33])]
+        if sid == 0x31:
+            return [b"\x7F\x31\x78", bytes([0x71, 0x01, request[2], request[3], 0x00])]
+        if sid == 0x34:
+            self.download = [int.from_bytes(request[3:7], "big"), 1]
+            return [b"\x74\x20\x01\x02"]  # maxNumberOfBlockLength 0x0102
+        if sid == 0x36:
+            address, expected = self.download
+            if request[1] != expected:
+                return [b"\x7F\x36\x73"]
+            for offset, value in enumerate(request[2:]):
+                self.memory[address + offset] = value
+            self.download = [address + len(request) - 2, (expected + 1) & 0xFF]
+            return [bytes([0x76, request[1]])]
+        if sid == 0x37:
+            return [b"\x77"]
+        return [bytes([0x7F, sid, 0x11])]
+
 
 TESTER_ID, ECU_ID = 0x7E0, 0x7E8
 
@@ -110,6 +171,44 @@ class UdsTransportTest(unittest.TestCase):
         self.assertTrue(uds_tester_present(self.mailbox, TESTER_ID, ECU_ID))
         self.assertEqual(seen, [True])
         self.assertFalse(self.mailbox.in_transaction)
+
+    def test_example_flashing_sequence(self):
+        firmware_data = {0x8000: bytes(range(256)) * 2 + b"tail", 0x9000: b"second segment"}
+        lines = ["S0030000FC"]
+        for base, data in firmware_data.items():
+            lines += [srecord(base + offset, data[offset:offset + 32]) for offset in range(0, len(data), 32)]
+        firmware = load_firmware(write_file(lines, ".s37"))
+        self.assertEqual(firmware.segments, sorted(firmware_data.items()))
+        bootloader = FakeBootloader()
+        self.start_ecu(bootloader)
+        namespace = {}
+        exec(compile(EXAMPLE_SCRIPT.read_text(encoding="utf-8"), str(EXAMPLE_SCRIPT), "exec"), namespace)
+        api = DatabaseAPI(self.mailbox, TESTER_ID, ECU_ID)
+        self.assertTrue(namespace["Flashing"](api, firmware))
+        for base, data in firmware_data.items():
+            self.assertEqual(bytes(bootloader.memory[base + i] for i in range(len(data))), data)
+        self.assertEqual(bootloader.log[:6], [0x10, 0x85, 0x28, 0x10, 0x27, 0x27])
+        self.assertEqual(bootloader.log[-2:], [0x31, 0x11])
+
+
+class FirmwareFileTest(unittest.TestCase):
+    def test_intel_hex_with_extended_linear_address(self):
+        path = write_file([intel_hex(4, 0, b"\x08\x00"), intel_hex(0, 0x0010, b"\x01\x02"),
+                           intel_hex(0, 0x0012, b"\x03"), intel_hex(0, 0x0100, b"\xFF"),
+                           intel_hex(1, 0, b"")], ".hex")
+        firmware = load_firmware(path)
+        self.assertEqual(firmware.segments, [(0x08000010, b"\x01\x02\x03"), (0x08000100, b"\xFF")])
+        self.assertEqual(firmware.size, 4)
+
+    def test_bad_checksum_and_overlap_are_rejected(self):
+        bad = srecord(0x100, b"\x01\x02")
+        bad = bad[:-2] + ("00" if bad[-2:] != "00" else "01")
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            load_firmware(write_file([bad], ".s19"))
+        with self.assertRaisesRegex(ValueError, "Overlapping"):
+            load_firmware(write_file([srecord(0x100, b"\x01\x02"), srecord(0x101, b"\x03")], ".s19"))
+        with self.assertRaisesRegex(ValueError, "Unrecognised"):
+            load_firmware(write_file(["hello"], ".hex"))
 
 
 if __name__ == "__main__":

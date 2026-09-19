@@ -14,7 +14,7 @@ from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 import main
-from database_loader import select_database, parse_application_database
+from panel import PanelView, select_database, parse_application_database
 from form_designer import FormDesigner, PropertyEditor
 from panel_runtime import validate_config
 
@@ -43,6 +43,13 @@ SCRIPT = '''def DatabaseMainFunction(api):
     api.on("input", lambda value: api.ui.set_value("status", value))
     api.on("enable", lambda value: api.can.send(0x201, [int(value)]))
     api.on_can(lambda can_id, data: api.ui.set_value("status", "response") if can_id == 0x7E8 else None)
+'''
+
+FLASH_SCRIPT = '''
+def Flashing(api, firmware):
+    api.progress(firmware.size, firmware.size, "done")
+    api.ui.set_value("status", f"{firmware.segments[0][0]:X}:{firmware.size}")
+    return True
 '''
 
 
@@ -283,7 +290,6 @@ class RequirementsTest(unittest.TestCase):
         self.assertIsNone(self.ecu.recv(.15))
 
     def test_raw_controls_preserve_shared_frame_bits_and_can_id_zero(self):
-        from panel_view import PanelView
         path = self.databases/'raw.xml'
         path.write_text('''<application_database><pages><page>
 <checkbox label="one" can_id="0" byte="0" bit="0"/>
@@ -299,7 +305,6 @@ class RequirementsTest(unittest.TestCase):
         self.assertEqual(sent[-1][1][0], 2)
 
     def test_dbc_binding_receives_and_encodes_without_feedback(self):
-        from panel_view import PanelView
         (self.databases/'test.dbc').write_text('''VERSION ""
 NS_ :
 BS_:
@@ -367,8 +372,34 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertTrue(dialog.send_btn.isEnabled())
         self.assertEqual(self.window.workers["main"].mailboxes[1:], [])
 
+    def test_flashing_button_calls_database_flashing(self):
+        from uds_services import Firmware
+        item, action = self.window.flashing_toolbar_item, self.window._toolbar_actions["flashing"]
+        self.assertFalse(item.isVisible())
+        (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + FLASH_SCRIPT)
+        self.window.on_connect_clicked()
+        self.assertTrue(item.isVisible())
+        self.assertTrue(spin_until(action.isEnabled))
+        firmware = Firmware("app.s19", [(0x1000, b"\x01\x02\x03"), (0x2000, b"\x04")])
+        with patch.object(main.QMessageBox, "information") as information:
+            self.window.start_flashing(firmware)
+            self.assertFalse(action.isEnabled())
+            self.assertTrue(spin_until(lambda: information.called))
+        self.assertEqual(self.window.panel.widgets["status"].text(), "1000:4")
+        self.assertIsNone(self.window.flash_dialog)
+        self.assertTrue(action.isEnabled())
+        self.window.on_disconnect_clicked()
+        self.assertFalse(item.isVisible())
+
+    def test_flashing_button_disabled_without_flashing_function(self):
+        self.window.on_connect_clicked()
+        action = self.window._toolbar_actions["flashing"]
+        self.assertTrue(self.window.flashing_toolbar_item.isVisible())
+        self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
+        self.assertFalse(action.isEnabled())
+        self.assertIn("does not define Flashing", action.toolTip())
+
     def test_all_display_and_input_widget_types(self):
-        from panel_view import PanelView
         path = self.databases/'controls.xml'
         path.write_text('''<application_database><pages><page>
 <gauge label="gauge" min="0" max="100"/>

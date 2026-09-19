@@ -72,6 +72,25 @@ Callbacks run serially off the GUI thread. Exceptions are logged. Disconnect can
 
 The connection already schedules TesterPresent; database scripts do not need to run their own TesterPresent loop. The UDS/firmware helpers are not the connection scheduler and are outside the requirements acceptance scope. ISO-TP is implemented for classic CAN (payloads up to 4095 bytes) and is tested against a simulated ECU; firmware programming against a real ECU is not certified. The Diagnostic Window sends ODX-encoded requests of any length on a background thread and shows the complete reply.
 
+## Firmware flashing
+
+While connected, a **Flashing** button appears in the toolbar. It is enabled when the database script defines:
+
+```python
+def Flashing(api, firmware):
+    ...
+    return True
+```
+
+Clicking it asks for a Motorola S-record (`.s19`, `.s28`, `.s37`, `.srec`, `.mot`) or Intel HEX (`.hex`, `.ihex`) file. The file is checked (record checksums, overlapping data), contiguous records are merged into segments and, after confirmation, `Flashing(api, firmware)` runs on the script thread:
+
+- `firmware.path`, `firmware.size`, and `firmware.segments`: a list of `(address, bytes)` in ascending address order.
+- `api.progress(done, total, message)` updates the progress dialog.
+- `api.flash_cancelled` becomes true when the user presses Cancel; the script decides where it is safe to stop.
+- Returning `False` or raising an exception reports failure with that message; anything else reports success.
+
+`examples/example_2026-09-18_script.py` contains a complete ISO 14229-1 sequence: extended session (0x10 03), ControlDTCSetting off (0x85 02), CommunicationControl (0x28 03 01), programming session (0x10 02), SecurityAccess seed/key (0x27), then per segment RoutineControl eraseMemory (0x31 01 FF00), RequestDownload (0x34), TransferData blocks sized from maxNumberOfBlockLength (0x36), RequestTransferExit (0x37), and finally checkProgrammingDependencies (0x31 01 FF01) and ECUReset (0x11 01). Replace its `compute_key()` placeholder and routine identifiers with your bootloader's. The configuration must use the ECU's physical request/response IDs, because multi-frame requests are not allowed on the functional 0x7DF address. This sequence is tested against a simulated bootloader and against `dummy_ecu.py` over the Kvaser Virtual CAN Driver, not a real ECU.
+
 ## Designer and bindings
 
 New forms receive a date in their default filename. Preserve or supply that suffix when naming a version. Switching between Form and Database code preserves the code buffer. Saving validates widget fields and Python syntax. Widget kind and value type are separate, so value controls no longer disappear on save. Existing raw CAN IDs, payloads, scales, offsets and byte/bit positions are retained.

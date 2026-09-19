@@ -9,23 +9,18 @@ import xml.etree.ElementTree as ET
 from datetime import date
 from pathlib import Path
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton,
-    QGroupBox, QFormLayout, QLineEdit, QSpinBox, QScrollArea, QFrame,
-    QSplitter, QMessageBox, QFileDialog, QCheckBox, QSlider, QComboBox,
-    QDoubleSpinBox, QGraphicsScene, QGraphicsView, QGraphicsProxyWidget,
-    QPlainTextEdit, QTabWidget, QMenu, QAction, QInputDialog, QApplication,
-    QGraphicsItem, QTreeWidget, QTreeWidgetItem, QProgressBar,
+    QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, QGroupBox,
+    QFormLayout, QLineEdit, QSpinBox, QSplitter, QMessageBox, QFileDialog, QCheckBox,
+    QSlider, QComboBox, QGraphicsScene, QGraphicsView, QGraphicsProxyWidget,
+    QPlainTextEdit, QTabWidget, QMenu, QInputDialog, QGraphicsItem, QTreeWidget,
+    QTreeWidgetItem, QProgressBar,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QMimeData, QTimer
 from PyQt5.QtGui import QFont, QColor, QDrag, QCursor
 
-try:
-    from database_api import SCRIPT_TEMPLATE
-except ImportError:
-    SCRIPT_TEMPLATE = '"""Database script - define DatabaseMainFunction(api)."""\n\ndef DatabaseMainFunction(api):\n    pass\n'
-
-from splitter_panel import SplitterPanel
-from database_loader import DATABASES_DIR, parse_widget, WIDGET_GROUPS
+from ui_common import SplitterPanel
+from panel import DATABASES_DIR, parse_widget, WIDGET_GROUPS
+from panel_runtime import SCRIPT_TEMPLATE
 
 try:
     import cantools
@@ -139,7 +134,6 @@ class SymbolListPanel(QGroupBox):
     def load_dbc_path(self, path: str):
         if not HAS_CANTOOLS:
             return
-        from pathlib import Path
         try:
             self._dbc_db = cantools.database.load_file(path)
             self._dbc_path = path
@@ -179,9 +173,6 @@ class SymbolListPanel(QGroupBox):
             act.setChecked(not self.symbol_tree.isColumnHidden(col))
             act.triggered.connect(lambda checked, c=col: self.symbol_tree.setColumnHidden(c, not checked))
         menu.exec_(self.symbol_tree.header().mapToGlobal(pos))
-
-    def get_dbc_path(self) -> str:
-        return self._dbc_path or ""
 
     def get_dbc_signals(self) -> list:
         """Return list of 'Message.Signal' strings for property panel combo."""
@@ -301,9 +292,6 @@ class PropertyEditor(QGroupBox):
         self.controls.clear()
         self.widget_data = None
 
-    def set_symbol_panel(self, panel):
-        self.symbol_panel = panel
-
     def load_widget(self, data: dict):
         self.clear()
         self.widget_data = data
@@ -387,14 +375,6 @@ class PropertyEditor(QGroupBox):
         self.controls[key] = ("int", ctrl)
         self.layout.addRow(label, ctrl)
 
-    def _add_double(self, key: str, label: str, value: float):
-        ctrl = QDoubleSpinBox()
-        ctrl.setRange(-1e9, 1e9)
-        ctrl.setValue(value)
-        ctrl.valueChanged.connect(lambda v, k=key: self._on_change(k, v))
-        self.controls[key] = ("float", ctrl)
-        self.layout.addRow(label, ctrl)
-
     def _add_combo(self, key: str, label: str, options: list, value: str):
         ctrl = QComboBox()
         ctrl.addItems(options)
@@ -419,9 +399,6 @@ class PropertyEditor(QGroupBox):
         else:
             self.widget_data[key] = value
         self.properties_changed.emit(self.widget_data)
-
-    def _bytes_to_hex(self, data: list) -> str:
-        return " ".join(f"{b:02X}" for b in (data or [0] * 8)[:8])
 
     def get_data(self) -> dict:
         return self.widget_data
@@ -574,20 +551,6 @@ class FormCanvas(QGroupBox):
             self.selected_index = -1
             self._rebuild()
 
-    def move_up(self, index: int):
-        w = self._current_widgets()
-        if index > 0:
-            w[index], w[index - 1] = w[index - 1], w[index]
-            self.selected_index = index - 1
-            self._rebuild()
-
-    def move_down(self, index: int):
-        w = self._current_widgets()
-        if 0 <= index < len(w) - 1:
-            w[index], w[index + 1] = w[index + 1], w[index]
-            self.selected_index = index + 1
-            self._rebuild()
-
     def _rebuild(self):
         self.scene.clear()
         widgets = self._current_widgets()
@@ -680,30 +643,6 @@ class FormCanvas(QGroupBox):
         lbl.setStyleSheet(base_style)
         return lbl
 
-    def _preview_label(self, data: dict) -> str:
-        t = data.get("type", "")
-        if t == "button":
-            return f"[Button] {data.get('label', '')}"
-        if t == "value":
-            return f"[Value] {data.get('label', '')} ({data.get('unit', '')})"
-        if t == "checkbox":
-            return f"[Checkbox] {data.get('label', '')}"
-        if t == "slider":
-            return f"[Slider] {data.get('label', '')}"
-        if t == "label":
-            return f"[Label] {data.get('text', '')}"
-        if t == "gauge":
-            return f"[Gauge] {data.get('label', '')}"
-        if t == "progress_bar":
-            return f"[Progress] {data.get('label', '')}"
-        if t == "led":
-            return f"[LED] {data.get('label', '')}"
-        if t == "combo":
-            return f"[Combo] {data.get('label', '')}"
-        if t == "io_box":
-            return f"[I/O] {data.get('label', '')}"
-        return str(data.get("label", ""))
-
     def _on_select(self, index: int):
         self.selected_index = index
         # Defer rebuild so we don't delete the proxy while it's still in mousePressEvent
@@ -711,21 +650,6 @@ class FormCanvas(QGroupBox):
         w = self._current_widgets()
         if 0 <= index < len(w):
             self.widget_selected.emit(index, w[index])
-
-    def _on_move_up(self, index: int):
-        self.move_up(index)
-        w = self._current_widgets()
-        if 0 <= self.selected_index < len(w):
-            self.widget_selected.emit(self.selected_index, w[self.selected_index])
-
-    def _on_move_down(self, index: int):
-        self.move_down(index)
-        w = self._current_widgets()
-        if 0 <= self.selected_index < len(w):
-            self.widget_selected.emit(self.selected_index, w[self.selected_index])
-
-    def _on_delete(self, index: int):
-        self.remove_widget(index)
 
     def _on_widget_moved(self, index: int, x: float, y: float):
         """Update stored x,y when user drags a widget on the scene (no rebuild to avoid interrupting drag)."""

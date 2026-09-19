@@ -10,6 +10,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
 - **Channel Selection & Bitrate**: Configure CAN channel and speed per interface
+- **Firmware flashing**: While connected, the **Flashing** toolbar button sends an S-record or Intel HEX file to the database script's `Flashing(api, firmware)`; a sample ISO 14229 sequence is in `examples/`
 
 ## Requirements
 
@@ -79,29 +80,43 @@ def DatabaseMainFunction(api):
     api.ui.set_value("status", vin.decode(errors="replace") if vin else "No VIN")
 ```
 
-See [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts) for the full API.
+See [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts) for the full API and [Firmware flashing](REQUIREMENTS_STATUS.md#firmware-flashing) for `Flashing(api, firmware)`.
 
 ## File structure
 
 ```
 CanExpert/
 ├── main.py                 # Entry point
-├── database_loader.py      # Panel database selection and parsing
-├── panel_view.py           # Panel rendering
-├── panel_runtime.py        # Script runtime, CAN mailbox, config validation
-├── database_api.py         # Script API (CAN, UDS, DLL, UI)
-├── uds_services.py         # ISO-TP transport, UDS services, S19/S28 flashing
+├── panel.py                # Panel database selection, parsing and rendering
+├── panel_runtime.py        # Script API and runtime, CAN mailbox, config validation
+├── uds_services.py         # ISO-TP transport, UDS services, S-record/Intel HEX loading
 ├── form_designer.py        # Form Designer
 ├── can_logger.py           # CAN Logger (DBC decoding, graphs)
 ├── diagnostic_window.py    # ODX Diagnostic Window
-├── settings_store.py       # Persistent settings
+├── ui_common.py            # Settings, toolbar icons, collapsible panels
+├── dummy_ecu.py            # Simulated UDS ECU for testing without a vehicle
 ├── Databases/              # family_YYYY-MM-DD.xml + _script.py
+├── DBC/                    # Sample DBC files
 ├── Configurations/         # config_*.json
 ├── examples/
 ├── tests/
 ├── DOCUMENTATION.md        # Developer docs + architecture diagrams
 └── requirements.txt
 ```
+
+## Dummy ECU (no vehicle needed)
+
+`dummy_ecu.py` simulates a UDS ECU on any python-can interface. With the Kvaser Virtual CAN Driver, channels 0 and 1 are connected to each other, so run the ECU on one channel and CAN Expert on the other:
+
+```bash
+python dummy_ecu.py --interface kvaser --channel 1
+```
+
+In CAN Expert, use a configuration with **SERVER ID** `7E0` and **ECU ID** `7E8`, select the receiver `[kvaser] Ch 0` and click **Connect**. ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
+
+The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime), WriteDataByIdentifier for `F190`, SecurityAccess level 1 (key = seed XOR `A5`, the same as the example `compute_key()`), ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: copy the example panel to `Databases/`, set the configuration's database family to `example`, connect, click **Flashing** and pick any S-record or Intel HEX file. Afterwards `F195` reports `APP-FLASHED-<crc32>`, and `--dump flashed.s19` writes the received image back to a file.
+
+Other options: `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--erase-seconds`, `--no-broadcast`. Run `python dummy_ecu.py --help` for details.
 
 ## Tests
 

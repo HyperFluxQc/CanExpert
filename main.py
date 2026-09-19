@@ -29,7 +29,7 @@ except ImportError:
     print("Missing dependency: PyQt5")
     print("Install with: pip install -r requirements.txt")
     sys.exit(1)
-from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter, QPen, QBrush, QFont, QPainterPath
+from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -38,7 +38,6 @@ from PyQt5.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -49,11 +48,9 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
-    QSlider,
-    QSplitter,
     QStyle,
     QTabWidget,
     QToolBar,
@@ -64,24 +61,23 @@ from PyQt5.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QDoubleSpinBox,
+    QSpinBox,
+    QCheckBox,
 )
-from PyQt5.QtWidgets import QSpinBox, QCheckBox  # noqa: F401 - used by config
 
-from database_loader import load_application_database, decode_value_from_can_data
+from panel import PanelView, load_application_database
 from form_designer import FormDesigner
 from can_logger import CANLoggerWindow
 from diagnostic_window import DiagnosticWindow
 from panel_runtime import ScriptRuntime, ReceiveMailbox, validate_config
-from panel_view import PanelView
-from toolbar_icons import toolbar_icon
-from settings_store import app_settings
+from ui_common import app_settings, toolbar_icon
+from uds_services import FIRMWARE_FILE_FILTER, load_firmware
 
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
 
 DEFAULT_BITRATE = 500000
-DEFAULT_REQUEST_ID = 0x7DF
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = APP_DIR / "Configurations"
 DATABASES_DIR = APP_DIR / "Databases"
@@ -595,7 +591,6 @@ class MainWindow(QMainWindow):
         self.workers = {}
         self.can_bus = None
         self.app_database = None
-        self.value_widgets = {}
         self.uds_worker = None
         self.channel_activity = []
         self.connected_channel_config = None
@@ -604,6 +599,7 @@ class MainWindow(QMainWindow):
         self.message_count = 0
         self.activity_scanner = None
         self.script_runtime = None
+        self.flash_dialog = None
         self.panel = None
         self.session_config = None
         self.node_states = {}
@@ -644,6 +640,7 @@ class MainWindow(QMainWindow):
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
             ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
+            ("flashing", "Flashing", "Flash ECU firmware using the database's Flashing() function", self.open_flashing),
         ]
         for name, label, hint, callback in entries:
             if name == "designer":
@@ -657,8 +654,12 @@ class MainWindow(QMainWindow):
             button.setIconSize(QSize(28, 28))
             button.setMinimumSize(96, 66)
             button.setAccessibleName(label)
-            toolbar.addWidget(button)
+            toolbar_item = toolbar.addWidget(button)
             self._toolbar_actions[name] = action
+            if name == "flashing":
+                # Shown only while connected to a database.
+                self.flashing_toolbar_item = toolbar_item
+                toolbar_item.setVisible(False)
             if name == "connect":
                 self.connect_btn = button
             elif name == "disconnect":
@@ -815,9 +816,6 @@ class MainWindow(QMainWindow):
         if not self.can_channels:
             self.channel_list.addTopLevelItem(QTreeWidgetItem(["No CAN receivers found"]))
         self._update_nodes()
-
-    def _channel_config_match(self, a, b):
-        return _channel_key(a) == _channel_key(b)
 
     def _update_nodes(self):
         now = time.monotonic()
@@ -1156,6 +1154,9 @@ class MainWindow(QMainWindow):
             runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
             runtime.logged.connect(self.log_verbose)
+            runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
+            runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
+            runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
             self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
             self.script_runtime = runtime
             worker.start()
@@ -1163,6 +1164,8 @@ class MainWindow(QMainWindow):
             runtime.start(script_path)
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
+            self._set_flashing_available(False)
+            self.flashing_toolbar_item.setVisible(True)
             self.config_list.setEnabled(False)
             self.database_dock.show()
             self.channels_dock.show()
@@ -1182,6 +1185,8 @@ class MainWindow(QMainWindow):
 
     def on_disconnect_clicked(self):
         self.session_generation += 1
+        self._close_flash_dialog()
+        self.flashing_toolbar_item.setVisible(False)
         if self.script_runtime:
             for worker in self.workers.values():
                 for mailbox in worker.mailboxes:
@@ -1212,6 +1217,81 @@ class MainWindow(QMainWindow):
         self.clear_application_ui()
         self._update_nodes()
 
+    # --- Flashing ---
+
+    def _set_flashing_available(self, available):
+        action = self._toolbar_actions["flashing"]
+        action.setEnabled(available and self.flash_dialog is None)
+        action.setToolTip("Flash ECU firmware using the database's Flashing() function" if available
+                          else "The database script does not define Flashing(api, firmware)")
+
+    def open_flashing(self):
+        """Choose an S-record / Intel HEX file and pass it to the database script's Flashing()."""
+        if self.script_runtime is None or self.script_runtime.flash_function is None:
+            return
+        settings = app_settings()
+        start_dir = settings.value("last_firmware_dir", str(APP_DIR), type=str)
+        path, _ = QFileDialog.getOpenFileName(self, "Select firmware file", start_dir, FIRMWARE_FILE_FILTER)
+        if not path:
+            return
+        settings.setValue("last_firmware_dir", str(Path(path).parent))
+        try:
+            firmware = load_firmware(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Flashing", f"Cannot read {Path(path).name}:\n{exc}")
+            return
+        ranges = "\n".join(f"0x{address:08X} - 0x{address + len(data) - 1:08X}  ({len(data)} bytes)"
+                           for address, data in firmware.segments[:8])
+        if len(firmware.segments) > 8:
+            ranges += f"\n... {len(firmware.segments) - 8} more segment(s)"
+        answer = QMessageBox.question(
+            self, "Flashing",
+            f"Flash {Path(path).name} ({firmware.size} bytes) to the ECU?\n\n{ranges}\n\n"
+            "Keep the CAN connection and ECU power stable until flashing finishes.")
+        if answer == QMessageBox.Yes:
+            self.start_flashing(firmware)
+
+    def start_flashing(self, firmware):
+        if self.script_runtime is None:
+            return
+        self._toolbar_actions["flashing"].setEnabled(False)
+        dialog = QProgressDialog(f"Flashing {Path(firmware.path).name}...", "Cancel", 0, max(1, firmware.size), self)
+        dialog.setWindowTitle("Flashing")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(self.script_runtime.cancel_flash)
+        dialog.show()
+        self.flash_dialog = dialog
+        self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in {len(firmware.segments)} segment(s)")
+        self.script_runtime.start_flash(firmware)
+
+    def _on_flash_progress(self, done, total, text):
+        if self.flash_dialog is None:
+            return
+        self.flash_dialog.setMaximum(max(1, total))
+        self.flash_dialog.setValue(max(0, min(done, total)))
+        if text:
+            self.flash_dialog.setLabelText(text)
+
+    def _close_flash_dialog(self):
+        dialog, self.flash_dialog = self.flash_dialog, None
+        if dialog is not None:
+            dialog.canceled.disconnect()
+            dialog.close()
+            dialog.deleteLater()
+
+    def _on_flash_finished(self, ok, text):
+        self._close_flash_dialog()
+        self._set_flashing_available(self.script_runtime is not None and self.script_runtime.flash_function is not None)
+        self.log_verbose(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
+        self._set_status(f"Flashing {'complete' if ok else 'failed'}", "green" if ok else "red")
+        if ok:
+            QMessageBox.information(self, "Flashing", text)
+        else:
+            QMessageBox.critical(self, "Flashing", f"Flashing failed:\n{text}")
+
     def closeEvent(self, event):
         self.node_timer.stop()
         self.on_disconnect_clicked()
@@ -1226,15 +1306,8 @@ class MainWindow(QMainWindow):
             item = self.app_db_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.value_widgets.clear()
         self.app_database = None
         self.panel = None
-
-    @staticmethod
-    def _get_can_id(w: dict) -> int:
-        """Return CAN ID from a widget dict, or 0 if not set."""
-        cid = w.get("can_id")
-        return int(cid) if cid else 0
 
     # --- Application database UI ---
 

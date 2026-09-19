@@ -21,35 +21,34 @@ This document describes the architecture, threads and data flows of **CAN Expert
 ```mermaid
 flowchart LR
     main["main.py"]
-    main --> database_loader["database_loader.py"]
-    main --> panel_view["panel_view.py"]
+    main --> panel["panel.py"]
     main --> panel_runtime["panel_runtime.py"]
     main --> form_designer["form_designer.py"]
     main --> can_logger["can_logger.py"]
     main --> diagnostic_window["diagnostic_window.py"]
-    main --> settings_store["settings_store.py"]
-    panel_view --> database_loader
-    form_designer --> database_loader
-    panel_runtime --> database_api["database_api.py"]
-    database_api --> uds_services["uds_services.py"]
+    main --> ui_common["ui_common.py"]
+    form_designer --> panel
+    form_designer --> panel_runtime
+    panel_runtime --> uds_services["uds_services.py"]
     diagnostic_window --> panel_runtime
     diagnostic_window --> uds_services
-    can_logger --> settings_store
+    can_logger --> ui_common
+    form_designer --> ui_common
+    diagnostic_window --> ui_common
+    dummy_ecu["dummy_ecu.py"] --> uds_services
 ```
 
 | Module | Role |
 |--------|------|
-| **main.py** | Main window, configuration list and dialog, receiver/node tree, Connect/Disconnect, `CanWorker` (hardware reader + TesterPresent), `ChannelActivityScanner`, CAN and debug logs, theme. |
-| **database_loader.py** | `select_database()` (newest dated file per family), XML → dict parsing, `decode_value_from_can_data()`. |
-| **panel_view.py** | `PanelView`: renders pages and controls, decodes raw/DBC-bound values from received frames, emits `control_changed(name, value)`. |
-| **panel_runtime.py** | `ScriptRuntime` (script thread, callbacks, timers, cancellation), `ReceiveMailbox` (bus facade fed by `CanWorker`), `validate_config()`. |
-| **database_api.py** | `DatabaseAPI` given to scripts: `api.on/on_can/every`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`. |
-| **uds_services.py** | ISO-TP transport (single, first, consecutive and flow-control frames), `uds_request()` and UDS helpers, S19/S28 parsing and flashing. |
+| **main.py** | Main window, configuration list and dialog, receiver/node tree, Connect/Disconnect, Flashing button and progress dialog, `CanWorker` (hardware reader + TesterPresent), `ChannelActivityScanner`, CAN and debug logs, theme. |
+| **panel.py** | Panel databases: `select_database()` (newest dated file per family), XML → dict parsing (`parse_widget()`), `decode_value_from_can_data()`, and `PanelView`, which renders pages and controls, decodes raw/DBC-bound values and emits `control_changed(name, value)`. |
+| **panel_runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, callbacks, timers, flashing, cancellation), `ReceiveMailbox` (bus facade fed by `CanWorker`), `validate_config()`. |
+| **uds_services.py** | ISO-TP transport (single, first, consecutive and flow-control frames), `uds_request()` and UDS helpers, `load_firmware()` for S-record/Intel HEX files, flashing helper. |
 | **form_designer.py** | Drag-and-drop designer: pages, controls, script and DBC bindings, script editor; saves XML + `_script.py`. |
 | **can_logger.py** | DBC-decoded message table, signal graphs (pyqtgraph), CSV export. |
 | **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors request/response IDs. |
-| **settings_store.py** | `app_settings()`: persistent QSettings (theme, last configuration), migrating the legacy `EZCan2/KvaserCAN` store once. |
-| **splitter_panel.py**, **toolbar_icons.py**, **can_analysis_window.py**, **diagnostic_odx_window.py** | Supporting widgets and windows. |
+| **dummy_ecu.py** | Stand-alone simulated UDS ECU (sessions, security, DIDs, DTCs, flashing, periodic frames) for Kvaser virtual channels or any python-can interface. |
+| **ui_common.py** | Shared Qt helpers: `app_settings()` (persistent QSettings, migrating the legacy `EZCan2/KvaserCAN` store once), `toolbar_icon()`, and `SplitterPanel` (collapsible titled panel). |
 
 ---
 
@@ -61,7 +60,7 @@ CanExpert/
 ├── Configurations/         # config_<name>.json, one per configuration
 ├── Databases/              # <family>_<YYYY-MM-DD>.xml and matching _script.py
 ├── examples/               # Runnable panel + script pair (copy to Databases/)
-├── DBC/, ODX/              # Default folders for DBC and ODX/PDX files
+├── DBC/, ODX/              # Default folders for DBC and ODX/PDX files (sample DBCs in DBC/)
 ├── tests/                  # Hardware-free acceptance and UDS transport tests
 └── *.py                    # Modules listed above
 ```
@@ -74,7 +73,7 @@ CanExpert/
 sequenceDiagram
     participant User
     participant MainWindow
-    participant Loader as database_loader
+    participant Loader as panel
     participant Worker as CanWorker
     participant Runtime as ScriptRuntime
 
@@ -145,6 +144,7 @@ Script API summary (see [Requirements implementation](REQUIREMENTS_STATUS.md#pan
 | `api.uds.request(payload)` | Any UDS request; returns positive or negative reply, or `None` |
 | `api.uds.tester_present()`, `api.uds.rdbi(did)` | Common services (`rdbi` returns the data record without the DID echo) |
 | `api.uds.request_download(fmt, addr, size)`, `api.uds.transfer_data(seq, data)`, `api.uds.request_transfer_exit()`, `api.uds.transfer_data_from_file(path, packet_size)` | Flashing |
+| `api.progress(done, total, message)`, `api.flash_cancelled` | Flashing progress and cancellation |
 | `api.dll.load(path)`, `api.dll.call(path, name, *args)` | Native libraries |
 | `api.ui.get_value(name)`, `api.ui.set_value(name, value)`, `api.log(text)` | UI and logging |
 
@@ -152,7 +152,29 @@ UDS calls use the configuration's request/response IDs and its **UDS response ti
 
 ---
 
-## 7. Panel Database Format
+## 7. Firmware Flashing
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant MainWindow
+    participant Runtime as ScriptRuntime (script thread)
+    participant ECU
+
+    Runtime-->>MainWindow: flashing_available(True) after exec if Flashing() exists
+    User->>MainWindow: Flashing button, choose .s19/.hex
+    MainWindow->>MainWindow: load_firmware() (checksums, merged segments), confirm
+    MainWindow->>Runtime: start_flash(firmware) → "flash" event
+    Runtime->>ECU: Flashing(api, firmware): UDS over ISO-TP
+    Runtime-->>MainWindow: flash_progress(done, total, text)
+    Runtime-->>MainWindow: flash_finished(ok, message)
+```
+
+The button is visible only while connected and enabled only when the script defines `Flashing`. Flashing runs on the script thread, so other script callbacks wait until it finishes. Cancel sets `api.flash_cancelled`; disconnecting stops the script. The TesterPresent heartbeat keeps running between requests, which keeps the programming session alive. See [Firmware flashing](REQUIREMENTS_STATUS.md#firmware-flashing) for the sample ISO 14229 sequence.
+
+---
+
+## 8. Panel Database Format
 
 ```xml
 <application_database name="engine" dbc_path="../DBC/engine.dbc">
@@ -168,23 +190,25 @@ UDS calls use the configuration's request/response IDs and its **UDS response ti
 </application_database>
 ```
 
-Control types: `button`, `value`, `checkbox`, `slider`, `label`, `text_input`, `gauge`, `progress_bar`, `led`, `combo`, `io_box`. Controls may be driven by a script binding, a DBC `Message.Signal` binding, or legacy raw `can_id`/byte/bit mappings. `database_loader.parse_widget()` is the authority for attribute names; the Form Designer round-trips all of them.
+Control types: `button`, `value`, `checkbox`, `slider`, `label`, `text_input`, `gauge`, `progress_bar`, `led`, `combo`, `io_box`. Controls may be driven by a script binding, a DBC `Message.Signal` binding, or legacy raw `can_id`/byte/bit mappings. `panel.parse_widget()` is the authority for attribute names; the Form Designer round-trips all of them.
 
 ---
 
-## 8. Settings
+## 9. Settings
 
-`settings_store.app_settings()` returns `QSettings("CanExpert", "CanExpert")`. On first use it copies any keys saved under the previous `EZCan2/KvaserCAN` name, so existing theme and last-configuration choices survive the rename.
+`ui_common.app_settings()` returns `QSettings("CanExpert", "CanExpert")`. On first use it copies any keys saved under the previous `EZCan2/KvaserCAN` name, so existing theme and last-configuration choices survive the rename.
 
 ---
 
-## 9. Testing
+## 10. Testing
 
 ```
 python -B -m unittest discover -s tests -v
 ```
 
-- `tests/test_requirements.py`: end-to-end sessions over python-can's virtual interface (configuration restore, heartbeat, node loss/recovery, database selection, scripts, designer round-trip, multi-frame Diagnostic Window exchange).
-- `tests/test_uds_services.py`: ISO-TP and UDS against a simulated ECU (stale-frame flush, multi-frame requests/replies, response pending, 29-bit IDs with address byte, RequestDownload encoding, heartbeat deferral flag).
+- `tests/test_requirements.py`: end-to-end sessions over python-can's virtual interface (configuration restore, heartbeat, node loss/recovery, database selection, scripts, designer round-trip, multi-frame Diagnostic Window exchange, Flashing button).
+- `tests/test_uds_services.py`: ISO-TP and UDS against a simulated ECU (stale-frame flush, multi-frame requests/replies, response pending, 29-bit IDs with address byte, RequestDownload encoding, heartbeat deferral flag), S-record/Intel HEX parsing, and the example `Flashing()` against a simulated bootloader.
 
-No hardware is contacted. Adapter drivers, bus electrical conditions and ECU timing still need a hardware acceptance run.
+- `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC and flashing behaviour.
+
+No hardware is contacted. For a manual end-to-end check, run `python dummy_ecu.py --interface kvaser --channel 1` and connect CAN Expert to Kvaser virtual channel 0. Adapter drivers, bus electrical conditions and ECU timing still need a hardware acceptance run.

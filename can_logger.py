@@ -19,13 +19,11 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QWidget,
     QCheckBox,
-    QGroupBox,
     QFormLayout,
     QDoubleSpinBox,
 )
 
-from splitter_panel import SplitterPanel
-from settings_store import app_settings
+from ui_common import SplitterPanel, app_settings
 
 # Optional: pyqtgraph for plotting
 try:
