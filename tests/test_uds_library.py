@@ -12,7 +12,9 @@ import can
 from PyQt5.QtWidgets import QApplication
 
 from canexpert.simulator.ecu import DummyEcu, EcuConfig
-from canexpert.panel.runtime import ReceiveMailbox, ScriptRuntime, validate_config
+from canexpert.can_bus import ReceiveMailbox
+from canexpert.config import validate_config
+from canexpert.panel.runtime import ScriptRuntime
 from canexpert.uds.client import EXCLUDED_SERVICES, FUNCTIONS, UdsFunctions
 
 APP = QApplication.instance() or QApplication([])

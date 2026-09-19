@@ -447,7 +447,8 @@ class DummyEcuWindow(QMainWindow):
         status = QGroupBox("ECU status")
         form = QFormLayout(status)
         self.status_labels = {}
-        for name in ("Session", "Security", "Transfer", "Memory", "Software version"):
+        for name in ("Session", "Security", "DTC setting", "Normal messages", "Transfer", "Memory",
+                     "Software version"):
             label = QLabel("-")
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             form.addRow(name, label)
@@ -749,6 +750,8 @@ class DummyEcuWindow(QMainWindow):
             labels["Security"].setText(f"locked out for {state.locked_until - now:.0f} s")
         else:
             labels["Security"].setText("unlocked" if state.unlocked else "locked")
+        labels["DTC setting"].setText("on" if state.dtc_setting_on else "off (ControlDTCSetting)")
+        labels["Normal messages"].setText("on" if state.communication_enabled else "off (CommunicationControl)")
         transfer = state.transfer
         if transfer:
             labels["Transfer"].setText(f"{transfer['direction'].capitalize()} at 0x{transfer['address']:08X}: "

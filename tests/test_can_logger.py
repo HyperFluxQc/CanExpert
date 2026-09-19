@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from PyQt5.QtWidgets import QApplication
 
-from canexpert import can_logger as can_logger
+from canexpert import can_logger
 from canexpert.can_logger import CANLoggerWindow, COL_C1, COL_C2, COL_DELTA, COL_VALUE, VALUE_REFRESH_TICKS
 
 APP = QApplication.instance() or QApplication([])

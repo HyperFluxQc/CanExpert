@@ -11,7 +11,8 @@ from PyQt5.QtCore import QEvent, QRectF, Qt
 from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-from canexpert.designer.form_designer import DraggablePaletteItem, FormDesigner, default_handler_name
+from canexpert.designer.form_designer import FormDesigner
+from canexpert.designer.side_panels import DraggablePaletteItem, default_handler_name
 from canexpert.panel.database import parse_application_database
 from canexpert.panel.controls import CONTROLS
 
@@ -178,7 +179,7 @@ class FormDesignerTest(unittest.TestCase):
         self.assertTrue(self.designer.properties_panel.isVisible())
 
     def test_test_panel_flashes_firmware_into_the_simulated_ecu(self):
-        from canexpert.uds.isotp import load_firmware
+        from canexpert.flashing import load_firmware
         example = Path(__file__).resolve().parent.parent / "examples"
         self.canvas.add_widget_at("label", 10, 10, text="Flash test")
         self.designer.code_editor.setPlainText((example / "example_2026-09-18_script.py").read_text(encoding="utf-8"))

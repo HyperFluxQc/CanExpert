@@ -9,13 +9,12 @@ from unittest.mock import patch
 
 import can
 
+from canexpert.can_bus import ReceiveMailbox
+from canexpert.panel.runtime import DatabaseAPI
 from canexpert.uds import isotp as uds_services
-from canexpert.panel.runtime import DatabaseAPI, ReceiveMailbox
-from canexpert.uds.client import UdsFunctions
-from canexpert.uds.isotp import (
-    IsoTpError, isotp_recv, isotp_send, load_firmware, uds_rdbi, uds_request, uds_request_download,
-    uds_tester_present,
-)
+from canexpert.uds.client import UdsFunctions, uds_rdbi, uds_request, uds_tester_present
+from canexpert.flashing import load_firmware
+from canexpert.uds.isotp import IsoTpError, isotp_recv, isotp_send
 
 EXAMPLE_SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "example_2026-09-18_script.py"
 
@@ -167,7 +166,10 @@ class UdsTransportTest(unittest.TestCase):
 
     def test_request_download_frames(self):
         ecu = self.start_ecu(lambda req: [b"\x74\x20\x01\x02"])
-        self.assertTrue(uds_request_download(self.mailbox, 0x44, 0x1000, 0x200, TESTER_ID, ECU_ID))
+        uds = UdsFunctions(lambda payload, timeout, wait: uds_request(self.mailbox, payload, TESTER_ID, ECU_ID))
+        download = uds.RD(0x1000, 0x200)
+        self.assertTrue(download)
+        self.assertEqual(download.max_block_length, 0x102)
         self.assertEqual(ecu.requests[0], bytes([0x34, 0x00, 0x44, 0, 0, 0x10, 0, 0, 0, 0x02, 0]))
 
     def test_mailbox_marks_transaction(self):

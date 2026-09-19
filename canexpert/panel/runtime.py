@@ -1,36 +1,26 @@
 """
 Panel script runtime: runs a database's Python script on a background thread and gives it the
-DatabaseAPI (CAN, UDS over ISO-TP, DLL calls, UI values, flashing progress). Only the GUI thread
-touches Qt widgets. Also holds ReceiveMailbox (the bus facade fed by the CAN worker) and
-validate_config().
+DatabaseAPI (CAN, DBC signals, UDS over ISO-TP, DLL calls, UI values, flashing progress). Only the GUI
+thread touches Qt widgets.
 """
 from __future__ import annotations
 
 import ctypes
+import inspect
 import math
 import queue
 import sys
 import threading
 import time
-import inspect
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
 import can
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from canexpert.uds.client import UdsFunctions
-from canexpert.uds.isotp import (
-    uds_request,
-    uds_tester_present,
-    uds_rdbi,
-    uds_request_download,
-    uds_transfer_data,
-    uds_request_transfer_exit,
-    uds_flash_from_file,
-    parse_s19_s28_file,
-)
+from canexpert.config import uds_transport
+from canexpert.flashing import load_firmware, parse_s19_s28_file
+from canexpert.uds.client import UdsFunctions, uds_request
 
 
 # -----------------------------------------------------------------------------
@@ -39,29 +29,27 @@ from canexpert.uds.isotp import (
 
 class DatabaseAPI:
     """
-    API injected into the user's DatabaseMainFunction(api).
+    API passed to the script's DatabaseMainFunction(api), handlers and Flashing(api, firmware).
     - api.can.send(id, data), api.can.get_latest_messages()
-    - api.uds.request(payload), api.uds.tester_present(), api.uds.rdbi(did),
-      api.uds.request_download(format, addr, size), api.uds.transfer_data_from_file(path, packet_size)
-    - api.dll.load(path), api.dll.call(name, *args)
-    - api.ui.get_value(name), api.ui.set_value(name, value), api.ui.get_widget(name)
+    - api.uds.request(payload); api.uds.tester_present(), rdbi(did), request_download(format, addr, size),
+      transfer_data(counter, data), request_transfer_exit(), transfer_data_from_file(path, packet_size)
+      (the ISO 14229 functions RDBI, RD, TD, ... are also plain functions in the script)
+    - api.dll.load(path), api.dll.call(path, name, *args)
+    - api.ui.get_value(name), api.ui.set_value(name, value)
     - api.signal(name), api.set_signal(name, value), api.send_message(message, **signals)
-    - api.log(msg), api.progress(done, total, message), api.flash_cancelled
+    - api.log(msg), api.progress(done, total, message), api.flash_cancelled, api.sleep(seconds)
     """
 
-    def __init__(self, can_bus=None, request_id: int = 0x7DF, response_id: int = 0x7E8, widget_map=None, log_cb=None):
+    def __init__(self, can_bus=None, request_id: int = 0x7DF, response_id: int = 0x7E8, log_cb=None):
         self._bus = can_bus
-        self._request_id = request_id
-        self._response_id = response_id
-        self._widget_map = widget_map or {}
+        # uds_request() keyword arguments; the runtime sets them from the configuration (uds_transport)
+        self._transport = {"request_id": request_id, "response_id": response_id, "timeout": 2.0,
+                           "extended": False, "address_byte": None}
         self._log_cb = log_cb or (lambda s: None)
         self._latest_messages = []
         self._max_latest = 100
         self._dll_handles = {}
         self._runtime = None
-        self._extended = False
-        self._address_byte = None
-        self._uds_timeout = 2.0
         self._stop_event = None
 
         self.can = _CANApi(self)
@@ -155,7 +143,7 @@ class _CANApi:
         if len(data) > 8:
             raise ValueError("Classic CAN payload exceeds eight bytes")
         data.extend([0] * (8 - len(data)))
-        msg = can.Message(arbitration_id=can_id, data=data, is_extended_id=self._api._extended)
+        msg = can.Message(arbitration_id=can_id, data=data, is_extended_id=self._api._transport["extended"])
         self._api._bus.send(msg)
 
     def get_latest_messages(self) -> list[dict]:
@@ -164,59 +152,76 @@ class _CANApi:
 
 
 class _UDSApi:
-    """UDS over ISO-TP using the session's request/response IDs, identifier size and address byte."""
+    """UDS over ISO-TP with the session's transport. The methods besides request() are kept for older
+    scripts; the ISO 14229 functions (RDBI, RD, TD, ...) cover every service."""
 
     def __init__(self, parent: DatabaseAPI):
         self._api = parent
-
-    def _args(self, timeout):
-        api = self._api
-        return {
-            "request_id": api._request_id,
-            "response_id": api._response_id,
-            "timeout": api._uds_timeout if timeout is None else timeout,
-            "extended": api._extended,
-            "address_byte": api._address_byte,
-        }
+        self.functions = UdsFunctions(self.request, parent.log)
 
     def request(self, payload: bytes | list, timeout: float | None = None, wait: bool = True) -> bytes | None:
         """Send any UDS request. Returns the reply (positive, or 0x7F negative) or None on timeout;
         wait=False only sends it."""
-        return uds_request(self._api._bus, bytes(payload), wait=wait, **self._args(timeout))
+        transport = dict(self._api._transport)
+        if timeout is not None:
+            transport["timeout"] = timeout
+        return uds_request(self._api._bus, bytes(payload), wait=wait, **transport)
 
     def tester_present(self, timeout: float | None = None) -> bool:
-        return uds_tester_present(self._api._bus, **self._args(timeout))
+        return bool(self.functions.TP(timeout=timeout))
 
     def rdbi(self, did: int, timeout: float | None = None) -> bytes | None:
         """ReadDataByIdentifier. Returns the data record (without SID/DID echo) or None."""
-        return uds_rdbi(self._api._bus, did, **self._args(timeout))
+        result = self.functions.RDBI(did, timeout=timeout)
+        return result.data if result else None
 
     def request_download(self, format: int, address: int, size: int, timeout: float | None = None) -> bool:
         """RequestDownload (0x34). format is the address/length format, e.g. 0x44."""
-        return uds_request_download(self._api._bus, format, address, size, **self._args(timeout))
+        return bool(self.functions.RD(address, size, format, timeout=timeout))
 
     def transfer_data(self, sequence: int, data: bytes, timeout: float | None = None) -> bool:
         """TransferData (0x36). sequence is the block counter (0-255); data may span several frames."""
-        return uds_transfer_data(self._api._bus, sequence, data, **self._args(timeout))
+        return _acknowledged(self.functions.TD(sequence, data, timeout=timeout), sequence)
 
     def request_transfer_exit(self, timeout: float | None = None) -> bool:
         """RequestTransferExit (0x37)."""
-        return uds_request_transfer_exit(self._api._bus, **self._args(timeout))
+        return bool(self.functions.RTE(timeout=timeout))
 
-    def transfer_data_from_file(
-        self,
-        s19_or_s28_path: str | Path,
-        packet_size: int,
-        progress_cb: Callable[[int, int], None] | None = None,
-    ) -> tuple[bool, str]:
-        """Flash an S19/S28 file in TransferData blocks of packet_size bytes. Returns (success, error_msg)."""
-        return uds_flash_from_file(self._api._bus, s19_or_s28_path, packet_size,
-                                   progress_cb=progress_cb, **self._args(None))
+    def transfer_data_from_file(self, s19_or_s28_path: str | Path, packet_size: int,
+                                progress_cb: Callable[[int, int], None] | None = None) -> tuple[bool, str]:
+        """Download an S-record or Intel HEX file: per segment RequestDownload, TransferData blocks of
+        packet_size bytes (at most the ECU's maxNumberOfBlockLength - 2) and RequestTransferExit.
+        Returns (success, error message)."""
+        try:
+            firmware = load_firmware(s19_or_s28_path)
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
+        uds, sent = self.functions, 0
+        for address, data in firmware.segments:
+            download = uds.RD(address, len(data))
+            if not download:
+                return False, f"RequestDownload failed at 0x{address:X}: {download.error}"
+            block = max(1, min(packet_size, (download.max_block_length or packet_size + 2) - 2))
+            for counter, offset in enumerate(range(0, len(data), block), start=1):
+                chunk = data[offset:offset + block]
+                if not _acknowledged(uds.TD(counter, chunk), counter):
+                    return False, f"TransferData failed at 0x{address + offset:X} (block {counter & 0xFF})"
+                sent += len(chunk)
+                if progress_cb:
+                    progress_cb(sent, firmware.size)
+            if not uds.RTE():
+                return False, f"RequestTransferExit failed at 0x{address:X}"
+        return True, ""
 
     @staticmethod
     def parse_s19_s28(path: str | Path) -> list[tuple[int, bytes]]:
-        """Parse S19/S28 file; returns list of (address, data) blocks."""
+        """(address, data) of every record of an S-record file."""
         return parse_s19_s28_file(path)
+
+
+def _acknowledged(result, counter):
+    """A positive TransferData response that echoes the block counter."""
+    return bool(result) and result.raw[1:2] == bytes([counter & 0xFF])
 
 
 class _DLLApi:
@@ -253,38 +258,24 @@ class _DLLApi:
 
 
 class _UIApi:
+    """Panel control values; set_value() changes are shown by the GUI thread."""
+
     def __init__(self, parent: DatabaseAPI):
         self._api = parent
 
     def get_value(self, name: str):
-        if self._api._runtime:
-            return self._api._runtime.get_value(name)
-        w = self._api._widget_map.get(name)
-        if w is None:
-            return None
-        for method in ("isChecked", "value", "currentText", "text"):
-            if hasattr(w, method):
-                return getattr(w, method)()
-        return None
+        runtime = self._api._runtime
+        return runtime.get_value(name) if runtime else None
 
     def set_value(self, name: str, value):
         if self._api._runtime:
             self._api._runtime.set_value(name, value)
-            return
-        w = self._api._widget_map.get(name)
-        if w is not None:
-            if hasattr(w, "setText"):
-                w.setText(str(value))
-            elif hasattr(w, "setValue"):
-                w.setValue(value)
 
     def get_widget(self, name: str):
-        if self._api._runtime:
-            raise RuntimeError("Use ui.get_value/set_value; Qt widgets belong to the GUI thread")
-        return self._api._widget_map.get(name)
+        raise RuntimeError("Qt widgets belong to the GUI thread; use api.ui.get_value / set_value")
 
 
-# Template for user script
+# Script of a new panel
 SCRIPT_TEMPLATE = '''"""Panel script: Python in place of CAPL.
 
 Controls call the function named in their Handler property (double-click a control in the
@@ -326,7 +317,7 @@ def DatabaseMainFunction(api):
 
 
 # -----------------------------------------------------------------------------
-# Script runtime, CAN mailbox and configuration validation
+# Script runtime
 # -----------------------------------------------------------------------------
 
 class ScriptStopped(BaseException):
@@ -375,12 +366,9 @@ class ScriptRuntime(QObject):
         self.last_frames = {}
         self._messages = None
         self._stop_done = threading.Event()
-        self.api = DatabaseAPI(bus, diagnostic_request_id(config),
-                               config.get("response_id", 0x7E8), log_cb=self.logged.emit)
+        self.api = DatabaseAPI(bus, log_cb=self.logged.emit)
+        self.api._transport = uds_transport(config)
         self.api._runtime = self
-        self.api._extended = not config.get("identifier_11_bit", True)
-        self.api._address_byte = config.get("extended_id_byte") if config.get("extended_id") else None
-        self.api._uds_timeout = config.get("timeout_ms", 2000) / 1000.0
         self.api._stop_event = self.stop_event
 
     def start(self, path):
@@ -471,11 +459,9 @@ class ScriptRuntime(QObject):
             return register
 
         # ISO 14229 service functions (RDBI, WDBI, DSC, ...) over the session's UDS transport.
-        self.uds_functions = UdsFunctions(lambda payload, timeout, wait: runtime.api.uds.request(payload, timeout, wait),
-                                          runtime.logged.emit)
         return {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start, "on_stop": on_stop,
                 "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal, "on_control": on_control,
-                **self.uds_functions.namespace()}
+                **self.api.uds.functions.namespace()}
 
     def _register_handlers(self, namespace):
         for control, name in self.handlers.items():
@@ -626,131 +612,3 @@ class ScriptRuntime(QObject):
         self.api.set_bus(None)
         if self.thread:
             self.thread.join(timeout=1.0)
-
-
-class ReceiveMailbox:
-    """Bus facade for scripts; the CAN worker remains the sole hardware reader."""
-    def __init__(self, bus, sent=None):
-        self.bus = bus
-        self.sent = sent
-        self.messages = queue.Queue(maxsize=2048)
-        self.lock = threading.Lock()
-        self.closed = False
-        self._transactions = 0
-
-    @contextmanager
-    def transaction(self):
-        """Mark a request/response exchange; the CAN worker defers TesterPresent meanwhile."""
-        with self.lock:
-            self._transactions += 1
-        try:
-            yield
-        finally:
-            with self.lock:
-                self._transactions -= 1
-
-    @property
-    def in_transaction(self):
-        return self._transactions > 0
-
-    def clear(self):
-        """Discard queued frames so a new request only sees replies received after it."""
-        while True:
-            try:
-                self.messages.get_nowait()
-            except queue.Empty:
-                return
-
-    def send(self, message):
-        with self.lock:
-            if self.closed:
-                raise RuntimeError("CAN session is closed")
-            self.bus.send(message)
-        if self.sent:
-            self.sent(message.arbitration_id, bytes(message.data))
-
-    def push(self, message):
-        if self.closed:
-            return
-        while True:
-            try:
-                self.messages.put_nowait(message)
-                return
-            except queue.Full:
-                try:
-                    self.messages.get_nowait()
-                except queue.Empty:
-                    pass
-
-    def recv(self, timeout=0.1):
-        if self.closed:
-            raise RuntimeError("CAN session is closed")
-        try:
-            return self.messages.get(timeout=min(timeout or 0, 0.1))
-        except queue.Empty:
-            return None
-
-    def close(self):
-        with self.lock:
-            self.closed = True
-
-
-# A node is reported lost after NODE_TIMEOUT without traffic. TesterPresent is sent several
-# times per timeout window so one missed response does not cause a false loss.
-DEFAULT_TESTER_PRESENT_INTERVAL = 0.5
-DEFAULT_NODE_TIMEOUT = 2.0
-
-
-OBD_FUNCTIONAL_ID = 0x7DF
-
-
-def diagnostic_request_id(config):
-    """Request ID for UDS exchanges (scripts, flashing, Diagnostic Window).
-
-    The OBD functional ID 0x7DF may not carry multi-frame requests (ISO 15765-2), so when the ECU
-    answers on 0x7E8-0x7EF it is addressed physically at response ID - 8 (ISO 15765-4), e.g. 0x7E0.
-    TesterPresent monitoring keeps using the configured request ID.
-    """
-    request, response = config.get("request_id", OBD_FUNCTIONAL_ID), config.get("response_id", 0x7E8)
-    if config.get("identifier_11_bit", True) and request == OBD_FUNCTIONAL_ID and 0x7E8 <= response <= 0x7EF:
-        return response - 8
-    return request
-
-
-def validate_config(config):
-    """Normalize legacy configs and reject settings that cannot be operated."""
-    cfg = dict(config)
-    cfg.setdefault("name", "Default Configuration")
-    cfg.setdefault("bitrate", 500000)
-    cfg.setdefault("identifier_11_bit", True)
-    cfg.setdefault("request_id", 0x7DF)
-    cfg.setdefault("response_id", 0x7E8)
-    cfg.setdefault("tester_present_interval_seconds", DEFAULT_TESTER_PRESENT_INTERVAL)
-    cfg.setdefault("node_timeout_seconds", DEFAULT_NODE_TIMEOUT)
-    cfg.setdefault("database_family", "")
-    if not isinstance(cfg["name"], str) or not cfg["name"].strip():
-        raise ValueError("Configuration name must be nonempty text")
-    if not isinstance(cfg["database_family"], str):
-        raise ValueError("Database family must be text")
-    for key in ("identifier_11_bit", "extended_id"):
-        if key in cfg and not isinstance(cfg[key], bool):
-            raise ValueError(f"{key} must be true or false")
-    for name in ("tester_present_interval_seconds", "node_timeout_seconds"):
-        cfg[name] = float(cfg[name])
-        if not math.isfinite(cfg[name]) or cfg[name] <= 0:
-            raise ValueError(f"{name} must be positive")
-    if cfg["node_timeout_seconds"] <= cfg["tester_present_interval_seconds"]:
-        raise ValueError("Node timeout must exceed the TesterPresent interval")
-    ids = cfg.get("response_ids") or ([*range(0x7E8, 0x7F0)] if cfg["request_id"] == 0x7DF and cfg["response_id"] == 0x7E8 else [cfg["response_id"]])
-    if not isinstance(ids, list):
-        raise ValueError("response_ids must be a list of numeric CAN IDs")
-    cfg["response_ids"] = [int(i) for i in ids]
-    maximum = 0x7FF if cfg["identifier_11_bit"] else 0x1FFFFFFF
-    for value in [cfg["request_id"], cfg["response_id"], *cfg["response_ids"]]:
-        if not isinstance(value, int) or not 0 <= value <= maximum:
-            raise ValueError(f"CAN ID must be between 0 and {maximum:#x}")
-    if int(cfg["bitrate"]) <= 0:
-        raise ValueError("Bitrate must be positive")
-    if cfg.get("extended_id") and not 0 <= int(cfg.get("extended_id_byte", -1)) <= 255:
-        raise ValueError("Extended address must be a byte")
-    return cfg

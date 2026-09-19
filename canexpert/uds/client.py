@@ -1,5 +1,6 @@
 """
-ISO 14229-1 (UDS) service functions for panel scripts, e.g. RDBI(0xF190) sends 22 F1 90.
+UDS client: uds_request() (one request over ISO-TP with response-pending handling) and the ISO 14229-1
+service functions for panel scripts, e.g. RDBI(0xF190) sends 22 F1 90.
 
 Every service is covered except Authentication (0x29) and SecuredDataTransmission (0x84). The
 functions are available by name in panel scripts and return a UdsResult:
@@ -17,6 +18,65 @@ suppressPosRspMsgIndicationBit; the request is then sent without waiting for a r
 from __future__ import annotations
 
 import inspect
+import time
+from contextlib import nullcontext
+
+from canexpert.uds.isotp import drain, isotp_recv, isotp_send
+
+def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int = 0x7E8,
+                timeout: float = 2.0, extended: bool = False, address_byte: int | None = None,
+                padding: int | None = None, pending_timeout: float = 5.0, wait: bool = True) -> bytes | None:
+    """
+    Send one UDS request and return the ECU's reply (positive or 0x7F negative), or None on timeout.
+    wait=False only sends (for requests with the suppressPosRspMsgIndicationBit set).
+    Frames queued before the request are discarded, unrelated replies are skipped and
+    NRC 0x78 (response pending) extends the wait. A bus exposing transaction() (the
+    session mailbox) pauses the periodic TesterPresent while the exchange is in progress.
+    """
+    request = bytes(request)
+    sid = request[0]
+    transaction = getattr(bus, "transaction", None)
+    with transaction() if callable(transaction) else nullcontext():
+        drain(bus)
+        isotp_send(bus, request_id, request, response_id, extended, address_byte, padding)
+        if not wait:
+            return None
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            reply = isotp_recv(bus, response_id, request_id, remaining, extended, address_byte, padding)
+            if reply is None:
+                return None
+            if reply[0] == sid + 0x40:
+                return reply
+            if reply[0] == 0x7F and len(reply) >= 3 and reply[1] == sid:
+                if reply[2] == 0x78:
+                    deadline = time.monotonic() + pending_timeout
+                    continue
+                return reply
+
+
+def _positive(reply: bytes | None, sid: int) -> bool:
+    return bool(reply) and reply[0] == sid + 0x40
+
+
+def uds_tester_present(bus, request_id: int = 0x7DF, response_id: int = 0x7E8, timeout: float = 0.5,
+                       **transport) -> bool:
+    """Send TesterPresent (0x3E 0x00). Returns True if a positive response is received."""
+    return _positive(uds_request(bus, b"\x3E\x00", request_id, response_id, timeout, **transport), 0x3E)
+
+
+def uds_rdbi(bus, did: int, request_id: int = 0x7DF, response_id: int = 0x7E8, timeout: float = 2.0,
+             **transport) -> bytes | None:
+    """ReadDataByIdentifier (0x22). Returns the data record (after the echoed DID) or None."""
+    did_bytes = bytes([(did >> 8) & 0xFF, did & 0xFF])
+    reply = uds_request(bus, b"\x22" + did_bytes, request_id, response_id, timeout, **transport)
+    if not _positive(reply, 0x22) or reply[1:3] != did_bytes:
+        return None
+    return reply[3:]
+
 
 NRC_NAMES = {
     0x10: "generalReject", 0x11: "serviceNotSupported", 0x12: "subFunctionNotSupported",

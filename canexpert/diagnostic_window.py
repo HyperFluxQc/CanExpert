@@ -26,7 +26,6 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QLineEdit,
     QSplitter,
-    QMenu,
 )
 
 try:
@@ -37,32 +36,21 @@ except ImportError:
 
 from canexpert.paths import ODX_DIR
 from canexpert.ui_common import SplitterPanel, enable_maximize
-from canexpert.panel.runtime import ReceiveMailbox, diagnostic_request_id
-from canexpert.uds.isotp import uds_request
+from canexpert.can_bus import ReceiveMailbox
+from canexpert.config import uds_transport
+from canexpert.uds.client import uds_request
 
 
 def _get_services_from_db(db):
-    """Yield (service, parent_service_or_None) from database: top-level services and related_diag_comms as sub."""
+    """Yield (service, parent service or None) of the first ECU, else of the first diagnostic layer."""
     if not HAS_ODXTOOLS or db is None:
         return
-    # Prefer ECU layer services; fallback to first diag_layer
-    layers = getattr(db, "diag_layers", None) or []
-    ecus = getattr(db, "ecus", None) or []
-    if ecus:
-        for ecu in ecus:
-            svcs = getattr(ecu, "services", None) or []
-            for s in svcs:
-                yield (s, None)
-                for sub in getattr(s, "related_diag_comms", None) or []:
-                    yield (sub, s)
-            break
-    if not ecus and layers:
-        layer = layers[0]
-        svcs = getattr(layer, "services", None) or []
-        for s in svcs:
-            yield (s, None)
-            for sub in getattr(s, "related_diag_comms", None) or []:
-                yield (sub, s)
+    layers = (getattr(db, "ecus", None) or getattr(db, "diag_layers", None) or [])[:1]
+    for layer in layers:
+        for service in getattr(layer, "services", None) or []:
+            yield (service, None)
+            for sub_service in getattr(service, "related_diag_comms", None) or []:
+                yield (sub_service, service)
 
 
 class DiagnosticWindow(QDialog):
@@ -75,10 +63,7 @@ class DiagnosticWindow(QDialog):
         enable_maximize(self)
         self.setMinimumSize(850, 600)
         self.odx_db = None
-        self.odx_path = None
         self._param_widgets = {}
-        self._request_id = 0x7E0
-        self._response_id = 0x7E8
         self._build_ui()
         self.request_finished.connect(self._on_request_finished)
 
@@ -111,8 +96,6 @@ class DiagnosticWindow(QDialog):
         self.services_tree = QTreeWidget()
         self.services_tree.setHeaderLabels(["Service"])
         self.services_tree.setColumnWidth(0, 220)
-        self.services_tree.header().setContextMenuPolicy(Qt.CustomContextMenu)
-        self.services_tree.header().customContextMenuRequested.connect(self._show_services_column_menu)
         self.services_tree.itemSelectionChanged.connect(self._on_service_selected)
         left_layout.addWidget(self.services_tree)
         left_panel = SplitterPanel("Services", left_inner, Qt.Horizontal)
@@ -155,16 +138,6 @@ class DiagnosticWindow(QDialog):
         splitter.setSizes([280, 520])
         layout.addWidget(splitter)
 
-    def _show_services_column_menu(self, pos):
-        """Context menu on Services tree header: toggle column visibility."""
-        menu = QMenu(self)
-        for col in range(self.services_tree.columnCount()):
-            act = menu.addAction("Show 'Service'")
-            act.setCheckable(True)
-            act.setChecked(not self.services_tree.isColumnHidden(col))
-            act.triggered.connect(lambda checked, c=col: self.services_tree.setColumnHidden(c, not checked))
-        menu.exec_(self.services_tree.header().mapToGlobal(pos))
-
     def _load_odx(self):
         default_dir = ODX_DIR
         path, _ = QFileDialog.getOpenFileName(
@@ -185,7 +158,6 @@ class DiagnosticWindow(QDialog):
                 self.odx_db = load_pdx_file(path)
             else:
                 self.odx_db = load_odx_file(path)
-            self.odx_path = str(path)
             self.path_label.setText(path.name)
             self.path_label.setStyleSheet("")
             self._fill_services_tree()
@@ -294,13 +266,7 @@ class DiagnosticWindow(QDialog):
         except Exception as e:
             self._log(f"[Encode error] {e}")
             return
-        transport = {
-            "request_id": diagnostic_request_id(cfg),
-            "response_id": cfg["response_id"],
-            "timeout": cfg.get("timeout_ms", 2000) / 1000.0,
-            "extended": not cfg.get("identifier_11_bit", True),
-            "address_byte": cfg.get("extended_id_byte") if cfg.get("extended_id") else None,
-        }
+        transport = uds_transport(cfg)
         # A private mailbox sees every frame the session worker receives, without
         # competing with the panel script for replies.
         mailbox = ReceiveMailbox(bus, worker.message_sent.emit)
@@ -341,16 +307,13 @@ class DiagnosticWindow(QDialog):
             self.send_btn.setEnabled(True)
 
     def on_can_message(self, arb_id: int, data: bytes | list, direction: str = "RX"):
-        """Called by main when a CAN message is received; only log if ID matches Server or ECU."""
+        """Called by the main window for every frame; logs the ones addressed to or from the ECU."""
         main = self.parent()
-        if not main or not getattr(main, "active_config", None):
-            return
-        if not hasattr(self, "monitor_log"):
+        if not main or not getattr(main, "active_config", None) or not hasattr(self, "monitor_log"):
             return
         cfg = getattr(main, "session_config", None) or main.active_config
-        req_id = cfg.get("request_id") or cfg.get("server_id") or 0x7E0
-        resp_id = cfg.get("response_id") or cfg.get("ecu_id") or 0x7E8
-        if arb_id != req_id and arb_id != resp_id:
+        # Requests go to the physical ID (uds_transport), TesterPresent to the configured request ID.
+        if arb_id not in (cfg.get("request_id"), uds_transport(cfg)["request_id"], cfg.get("response_id")):
             return
         data = bytes(data)[:8] if data else b""
         ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]

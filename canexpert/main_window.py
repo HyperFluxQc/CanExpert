@@ -1,9 +1,7 @@
-#!/usr/bin/env python3
 """
-CAN Expert - Main Application
-
-Select a configuration and CAN receiver, load the newest matching panel database, then
-connect: send periodic TesterPresent, monitor ECU nodes and run the panel's Python script.
+CAN Expert main window: configurations, CAN receivers with their ECU nodes, Connect/Disconnect (load
+the newest matching panel database, send periodic TesterPresent, run the panel's Python script),
+Flashing, the tool windows and the logs.
 """
 import json
 import sys
@@ -11,24 +9,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-if sys.version_info < (3, 10):
-    print("CAN Expert requires Python 3.10 or newer.")
-    print(f"Current interpreter: {sys.version.split()[0]} ({sys.executable})")
-    sys.exit(1)
-
-try:
-    import can
-except ImportError:
-    print("Missing dependency: python-can")
-    print("Install with: pip install -r requirements.txt")
-    sys.exit(1)
-
-try:
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
-except ImportError:
-    print("Missing dependency: PyQt5")
-    print("Install with: pip install -r requirements.txt")
-    sys.exit(1)
+import can
+from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import (
     QAction,
@@ -37,11 +19,8 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDockWidget,
     QFileDialog,
-    QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -53,519 +32,26 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QToolBar,
     QToolButton,
-    QVBoxLayout,
-    QWidget,
-    QComboBox,
     QTreeWidget,
     QTreeWidgetItem,
-    QDoubleSpinBox,
-    QSpinBox,
-    QCheckBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-from canexpert.panel.database import PanelView, load_application_database
-from canexpert.designer.form_designer import FormDesigner
+from canexpert.can_bus import (SUPPORTED_INTERFACES, CanWorker, ChannelActivityScanner, ReceiveMailbox, channel_key,
+                               open_channel)
 from canexpert.can_logger import CANLoggerWindow
+from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
+                              validate_config)
+from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
-from canexpert.panel.runtime import (DEFAULT_NODE_TIMEOUT, DEFAULT_TESTER_PRESENT_INTERVAL, ReceiveMailbox,
-                           ScriptRuntime, validate_config)
-from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
-from canexpert.ui_common import CaptionButton, app_settings, toolbar_icon
 from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
-                         update_progress)
-
-# -----------------------------------------------------------------------------
-# Constants
-# -----------------------------------------------------------------------------
-
-DEFAULT_BITRATE = 500000
-
-SUPPORTED_INTERFACES = [
-    ("kvaser", "Kvaser"),
-    ("vector", "Vector"),
-    ("ixxat", "IXXAT"),
-]
-
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-def _channel_key(cfg: dict) -> tuple:
-    """Unique key for a channel (interface, channel, unique_hardware_id)."""
-    return (
-        cfg.get("interface", "kvaser"),
-        cfg.get("channel", 0),
-        cfg.get("unique_hardware_id", ""),
-        cfg.get("serial", ""),
-    )
-
-
-def _channel_to_int(channel_str: str) -> int:
-    """Parse 'Channel 0' -> 0."""
-    s = str(channel_str).strip()
-    for part in s.split():
-        try:
-            return int(part)
-        except ValueError:
-            continue
-    return 0
-
-
-def create_can_bus(interface: str, channel, bitrate: int, **kwargs) -> can.Bus:
-    """Create a python-can Bus for the given interface. Channel can be int or interface-specific."""
-    params = {"interface": interface, "channel": channel, "bitrate": bitrate}
-    # Pass through interface-specific kwargs (e.g. unique_hardware_id for IXXAT, serial for Vector)
-    for key in ("unique_hardware_id", "serial", "app_name"):
-        if key in kwargs:
-            params[key] = kwargs[key]
-    return can.interface.Bus(**params)
-
-
-# -----------------------------------------------------------------------------
-# Background workers
-# -----------------------------------------------------------------------------
-
-class ChannelActivityScanner(QThread):
-    """Scans CAN channels for activity by briefly opening each and listening."""
-    channel_activity = pyqtSignal(list)
-    scan_finished = pyqtSignal()
-
-    def __init__(self, channels: list, bitrate: int = 500000, listen_time: float = 0.3):
-        super().__init__()
-        self.channels = channels
-        self.bitrate = bitrate
-        self.listen_time = listen_time
-
-    def run(self):
-        result = []
-        for ch_info in self.channels:
-            if self.isInterruptionRequested():
-                break
-            ch = ch_info.get("channel", 0)
-            iface = ch_info.get("interface", "kvaser")
-            kwargs = {k: ch_info[k] for k in ("unique_hardware_id", "serial", "app_name") if k in ch_info}
-            try:
-                bus = create_can_bus(iface, ch, self.bitrate, **kwargs)
-                deadline = time.time() + self.listen_time
-                got_message = False
-                while time.time() < deadline:
-                    msg = bus.recv(timeout=0.05)
-                    if msg:
-                        got_message = True
-                        break
-                bus.shutdown()
-                result.append(got_message)
-            except Exception:
-                result.append(False)
-        self.channel_activity.emit(result)
-        self.scan_finished.emit()
-
-
-class CanWorker(QThread):
-    """Worker thread for CAN communication"""
-    message_received = pyqtSignal(dict)
-    message_sent = pyqtSignal(int, bytes)
-    error_occurred = pyqtSignal(str)
-    connection_status = pyqtSignal(bool)
-    
-    def __init__(self):
-        super().__init__()
-        self.interface = None
-        self.channel = None
-        self.running = False
-        self.bus = None
-        self.config = None
-        self.mailboxes = []
-
-    def add_mailbox(self, mailbox):
-        """Deliver received frames to mailbox as well (script runtime, diagnostic requests)."""
-        self.mailboxes = [*self.mailboxes, mailbox]
-
-    def remove_mailbox(self, mailbox):
-        self.mailboxes = [m for m in self.mailboxes if m is not mailbox]
-        
-    def setup_connection(self, channel, bitrate=500000, config=None, bus=None):
-        """Setup CAN connection. Channel can be int or 'Channel N' string. Pass bus to reuse existing connection."""
-        ch = channel if isinstance(channel, int) else _channel_to_int(channel)
-        self.channel = ch
-        self.bitrate = bitrate
-        self.config = config
-        self.running = True
-
-        if bus is not None:
-            self.bus = bus
-            self.connection_status.emit(True)
-            return
-
-        try:
-            iface = (config or {}).get("interface", "kvaser")
-            kwargs = {k: (config or {})[k] for k in ("unique_hardware_id", "serial", "app_name") if k in (config or {})}
-            self.bus = create_can_bus(iface, ch, bitrate, **kwargs)
-            self.connection_status.emit(True)
-        except Exception as e:
-            self.connection_status.emit(False)
-            self.error_occurred.emit(f"Failed to connect to CAN channel {ch}: {str(e)}")
-            self.running = False
-            
-    def run(self):
-        if not self.bus:
-            return
-        next_heartbeat = 0.0
-        try:
-            cfg = validate_config(self.config or {})
-        except ValueError as exc:
-            self.error_occurred.emit(str(exc))
-            return
-        while self.running:
-            try:
-                now = time.monotonic()
-                if now >= next_heartbeat and any(m.in_transaction for m in self.mailboxes):
-                    # A UDS exchange is in progress; interleaving a request would abort it.
-                    next_heartbeat = now + 0.05
-                elif now >= next_heartbeat:
-                    payload = bytes([2, 0x3E, 0])
-                    if cfg.get("extended_id"):
-                        payload = bytes([cfg["extended_id_byte"]]) + payload
-                    self.bus.send(can.Message(arbitration_id=cfg["request_id"], data=payload,
-                                              is_extended_id=not cfg["identifier_11_bit"]))
-                    self.message_sent.emit(cfg["request_id"], payload)
-                    next_heartbeat = now + cfg["tester_present_interval_seconds"]
-                message = self.bus.recv(timeout=min(0.05, max(0.001, next_heartbeat-time.monotonic())))
-                if message and not message.is_error_frame and not message.is_remote_frame:
-                    for mailbox in self.mailboxes:
-                        mailbox.push(message)
-                    self.message_received.emit({
-                        "timestamp": message.timestamp, "arbitration_id": message.arbitration_id,
-                        "is_extended_frame": message.is_extended_id, "data": list(message.data),
-                        "dlc": message.dlc, "channel": self.channel})
-            except Exception as exc:
-                self.error_occurred.emit(f"CAN session failed: {exc}")
-                self.running = False
-
-    def stop(self):
-        self.running = False
-        for mailbox in self.mailboxes:
-            mailbox.close()
-        self.wait()
-
-
-class ConfigurationDialog(QMainWindow):
-    """Dialog for creating/editing CAN connection configurations (no channel, no filtering)."""
-
-    def __init__(self, parent=None, config=None):
-        super().__init__(parent)
-        self.setWindowTitle("CAN Connection Configuration")
-        self.setGeometry(300, 200, 480, 380)
-        self.config = config or {}
-        self.init_ui()
-        self.load_config()
-
-    def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout()
-        central_widget.setLayout(layout)
-
-        config_group = QGroupBox("Connection Configuration")
-        config_layout = QFormLayout()
-
-        self.name_edit = QComboBox()
-        self.name_edit.setEditable(True)
-        config_layout.addRow("Name:", self.name_edit)
-
-        self.bitrate_combo = QComboBox()
-        self.bitrate_combo.addItems(["125000", "250000", "500000", "1000000"])
-        self.bitrate_combo.setCurrentText("500000")
-        config_layout.addRow("Bitrate (bps):", self.bitrate_combo)
-
-        self.id_size_combo = QComboBox()
-        self.id_size_combo.addItem("11 bits (Standard)", 11)
-        self.id_size_combo.addItem("29 bits (Extended)", 29)
-        config_layout.addRow("Identifier size:", self.id_size_combo)
-
-        self.server_id_edit = QLineEdit()
-        self.server_id_edit.setPlaceholderText("e.g. 7DF (11-bit) or 1DDAEDE9 (29-bit) – request sent to this ID")
-        self.server_id_edit.setText("7DF")
-        config_layout.addRow("SERVER ID (hex):", self.server_id_edit)
-
-        self.ecu_id_edit = QLineEdit()
-        self.ecu_id_edit.setPlaceholderText("e.g. 7E8 (11-bit) – ECU response ID")
-        self.ecu_id_edit.setText("7E8")
-        config_layout.addRow("ECU ID (hex):", self.ecu_id_edit)
-
-        self.timeout_spin = QSpinBox()
-        self.timeout_spin.setRange(500, 60000)
-        self.timeout_spin.setSingleStep(500)
-        self.timeout_spin.setSuffix(" ms")
-        self.timeout_spin.setValue(5000)
-        self.timeout_spin.setToolTip("How long script and Diagnostic Window UDS requests wait for a reply")
-        config_layout.addRow("UDS response timeout:", self.timeout_spin)
-        self.heartbeat_spin = QDoubleSpinBox()
-        self.heartbeat_spin.setRange(0.05, 3600)
-        self.heartbeat_spin.setDecimals(2)
-        self.heartbeat_spin.setSuffix(" s")
-        self.heartbeat_spin.setValue(DEFAULT_TESTER_PRESENT_INTERVAL)
-        config_layout.addRow("TesterPresent interval:", self.heartbeat_spin)
-        self.node_timeout_spin = QDoubleSpinBox()
-        self.node_timeout_spin.setRange(0.1, 86400)
-        self.node_timeout_spin.setValue(DEFAULT_NODE_TIMEOUT)
-        self.node_timeout_spin.setSuffix(" s")
-        config_layout.addRow("Node loss timeout:", self.node_timeout_spin)
-        self.database_family_edit = QLineEdit()
-        self.database_family_edit.setPlaceholderText("Blank = newest database; e.g. engine")
-        config_layout.addRow("Database family:", self.database_family_edit)
-        self.response_ids_edit = QLineEdit()
-        self.response_ids_edit.setPlaceholderText("Optional hex IDs, comma-separated; blank = ECU ID / OBD range")
-        config_layout.addRow("Monitored ECU IDs:", self.response_ids_edit)
-
-        self.extended_id_cb = QCheckBox("Extended identifier (first data byte extends ID in UDS)")
-        self.extended_id_cb.setChecked(False)
-        self.extended_id_cb.toggled.connect(self._on_extended_id_toggled)
-        config_layout.addRow(self.extended_id_cb)
-
-        self.extended_id_byte_edit = QLineEdit()
-        self.extended_id_byte_edit.setPlaceholderText("e.g. 01 or 0x01")
-        self.extended_id_byte_edit.setText("00")
-        self.extended_id_byte_edit.setEnabled(False)
-        config_layout.addRow("Extended ID byte (hex):", self.extended_id_byte_edit)
-
-        config_group.setLayout(config_layout)
-        layout.addWidget(config_group)
-
-        button_layout = QHBoxLayout()
-        self.save_btn = QPushButton("Save Configuration")
-        self.save_btn.clicked.connect(self.save_config)
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self.close)
-        button_layout.addWidget(self.save_btn)
-        button_layout.addWidget(self.cancel_btn)
-        button_layout.addStretch()
-        layout.addLayout(button_layout)
-
-    def _parse_id(self, text: str) -> int | None:
-        """Parse hex ID (11-bit or 29-bit). Returns int or None if invalid."""
-        s = str(text).strip().upper().replace("0X", "")
-        if not s:
-            return None
-        try:
-            value = int(s, 16)
-            return value if 0 <= value <= 0x1FFFFFFF else None
-        except ValueError:
-            return None
-
-    def _parse_extended_id_byte(self, text: str) -> int | None:
-        """Parse hex byte (0-255). Returns int or None if invalid."""
-        s = str(text).strip().upper().replace("0X", "")
-        if not s:
-            return None
-        try:
-            v = int(s, 16)
-            return v if 0 <= v <= 255 else None
-        except ValueError:
-            return None
-
-    def _on_extended_id_toggled(self, checked: bool):
-        self.extended_id_byte_edit.setEnabled(checked)
-
-    def load_config(self):
-        self.heartbeat_spin.setValue(float(self.config.get("tester_present_interval_seconds", DEFAULT_TESTER_PRESENT_INTERVAL)))
-        self.node_timeout_spin.setValue(float(self.config.get("node_timeout_seconds", DEFAULT_NODE_TIMEOUT)))
-        self.database_family_edit.setText(self.config.get("database_family", ""))
-        self.response_ids_edit.setText(", ".join(f"{v:X}" for v in self.config.get("response_ids", [])))
-        if self.config.get("name"):
-            self.name_edit.setCurrentText(self.config["name"])
-        if self.config.get("bitrate"):
-            idx = self.bitrate_combo.findText(str(self.config["bitrate"]))
-            if idx >= 0:
-                self.bitrate_combo.setCurrentIndex(idx)
-        if self.config.get("identifier_11_bit") is not None:
-            self.id_size_combo.setCurrentIndex(0 if self.config["identifier_11_bit"] else 1)
-        elif self.config.get("identifier_bits") == 29:
-            self.id_size_combo.setCurrentIndex(1)
-        if self.config.get("request_id") is not None:
-            rid = self.config["request_id"]
-            if isinstance(rid, int):
-                self.server_id_edit.setText(f"{rid:X}")
-            else:
-                self.server_id_edit.setText(str(rid).strip())
-        if self.config.get("response_id") is not None:
-            rid = self.config["response_id"]
-            if isinstance(rid, int):
-                self.ecu_id_edit.setText(f"{rid:X}")
-            else:
-                self.ecu_id_edit.setText(str(rid).strip())
-        if self.config.get("timeout_ms") is not None:
-            self.timeout_spin.setValue(int(self.config["timeout_ms"]))
-        if self.config.get("extended_id") is not None:
-            self.extended_id_cb.setChecked(bool(self.config["extended_id"]))
-        self._on_extended_id_toggled(self.extended_id_cb.isChecked())
-        if self.config.get("extended_id_byte") is not None:
-            b = self.config["extended_id_byte"]
-            if isinstance(b, int) and 0 <= b <= 255:
-                self.extended_id_byte_edit.setText(f"{b:02X}")
-
-    def save_config(self):
-        request_id = self._parse_id(self.server_id_edit.text())
-        response_id = self._parse_id(self.ecu_id_edit.text())
-        identifier_11_bit = self.id_size_combo.currentData() == 11
-        if request_id is not None and identifier_11_bit and request_id > 0x7FF:
-            QMessageBox.warning(
-                self,
-                "Invalid ID",
-                "Identifier size is set to 11 bits, but SERVER ID is greater than 0x7FF (2047).\n"
-                "Either choose 29 bits (Extended) or use an 11-bit ID (e.g. 0x7DF)."
-            )
-            return
-        if request_id is None and self.server_id_edit.text().strip():
-            QMessageBox.warning(self, "Invalid SERVER ID", "SERVER ID must be a valid hex value (e.g. 7DF or 1DDAEDE9).")
-            return
-        if response_id is None and self.ecu_id_edit.text().strip():
-            QMessageBox.warning(self, "Invalid ECU ID", "ECU ID must be a valid hex value (e.g. 7E8).")
-            return
-        if response_id is not None and identifier_11_bit and response_id > 0x7FF:
-            QMessageBox.warning(
-                self,
-                "Invalid ID",
-                "Identifier size is set to 11 bits, but ECU ID is greater than 0x7FF (2047).\n"
-                "Either choose 29 bits (Extended) or use an 11-bit ECU ID (e.g. 0x7E8)."
-            )
-            return
-        extended_id = self.extended_id_cb.isChecked()
-        extended_id_byte = None
-        if extended_id:
-            extended_id_byte = self._parse_extended_id_byte(self.extended_id_byte_edit.text())
-            if extended_id_byte is None:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Extended ID byte",
-                    "Extended ID byte must be a valid hex value from 00 to FF (0-255)."
-                )
-                return
-        try:
-            response_ids = [int(v.strip(), 16) for v in self.response_ids_edit.text().split(",") if v.strip()]
-        except ValueError:
-            QMessageBox.warning(self, "Invalid configuration", "Monitored ECU IDs must be hexadecimal numbers.")
-            return
-        config = dict(self.config)
-        config.pop("did", None)  # only used by the removed database-ID discovery
-        config.update({
-            "name": self.name_edit.currentText().strip() or "Unnamed",
-            "bitrate": int(self.bitrate_combo.currentText()),
-            "identifier_11_bit": identifier_11_bit,
-            "timeout_ms": self.timeout_spin.value(),
-            "extended_id": extended_id,
-            "tester_present_interval_seconds": self.heartbeat_spin.value(),
-            "node_timeout_seconds": self.node_timeout_spin.value(),
-            "database_family": self.database_family_edit.text().strip(),
-            "response_ids": response_ids,
-        })
-        if request_id is not None:
-            config["request_id"] = request_id
-        if response_id is not None:
-            config["response_id"] = response_id
-        if extended_id_byte is not None:
-            config["extended_id_byte"] = extended_id_byte
-        try:
-            config = validate_config(config)
-            if any(c in config["name"] for c in '/\\:*?"<>|'):
-                raise ValueError("Configuration name cannot contain filename separators")
-        except ValueError as exc:
-            QMessageBox.warning(self, "Invalid configuration", str(exc))
-            return
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        config_file = CONFIG_DIR / f"config_{config['name']}.json"
-        try:
-            with open(config_file, "w") as f:
-                json.dump(config, f, indent=2)
-            if self.parent():
-                self.parent().load_configurations()
-            self.close()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save configuration: {e}")
-
-
-# Thin size for minimized docks (only icon strip visible)
-DOCK_MINIMIZED_SIZE = 28
-
-
-class DockTitleBar(QWidget):
-    """Title bar for a dock with title, minimize (collapse to thin strip), and close."""
-    def __init__(self, dock: QDockWidget, main_window: QMainWindow, area: Qt.DockWidgetArea, parent=None):
-        super().__init__(parent)
-        self.dock = dock
-        self.main_window = main_window
-        self.area = area
-        self.is_minimized = False
-        self.saved_size = 200  # fallback when restoring
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 2, 2)
-        layout.setSpacing(4)
-        layout.setAlignment(Qt.AlignTop)  # when dock is a thin column, keep icon at top
-        self.title_label = QLabel(dock.windowTitle())
-        self.title_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(self.title_label)
-
-        self.min_btn = CaptionButton(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
-        self.min_btn.clicked.connect(self._toggle_minimized)
-        layout.addWidget(self.min_btn)
-
-        self.close_btn = CaptionButton(CaptionButton.CLOSE, "Close panel")
-        self.close_btn.clicked.connect(self.dock.close)
-        layout.addWidget(self.close_btn)
-
-        self.setLayout(layout)
-
-    def _toggle_minimized(self):
-        if self.is_minimized:
-            self.restore()
-        else:
-            self.minimize()
-
-    def minimize(self):
-        self.is_minimized = True
-        # Save current size for restore
-        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
-            self.saved_size = max(80, self.dock.width())
-        else:
-            self.saved_size = max(80, self.dock.height())
-        # Constrain to thin strip
-        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
-            self.dock.setMinimumWidth(DOCK_MINIMIZED_SIZE)
-            self.dock.setMaximumWidth(DOCK_MINIMIZED_SIZE)
-        else:
-            self.dock.setMinimumHeight(DOCK_MINIMIZED_SIZE)
-            self.dock.setMaximumHeight(DOCK_MINIMIZED_SIZE)
-        self.dock.widget().hide()
-        self._update_title_bar_appearance()
-
-    def restore(self):
-        self.is_minimized = False
-        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
-            self.dock.setMinimumWidth(80)
-            self.dock.setMaximumWidth(16777215)
-        else:
-            self.dock.setMinimumHeight(80)
-            self.dock.setMaximumHeight(16777215)
-        self.dock.widget().show()
-        try:
-            orientation = Qt.Horizontal if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea) else Qt.Vertical
-            self.main_window.resizeDocks([self.dock], [self.saved_size], orientation)
-        except Exception:
-            pass
-        self._update_title_bar_appearance()
-
-    def _update_title_bar_appearance(self):
-        minimized = self.is_minimized
-        if minimized:
-            self.min_btn.set_kind(CaptionButton.RESTORE, "Restore panel")
-        else:
-            self.min_btn.set_kind(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
-        self.min_btn.set_compact(minimized)
-        self.layout().setContentsMargins(*((3, 3, 3, 3) if minimized else (4, 2, 2, 2)))
-        self.title_label.setVisible(not minimized)
-        self.close_btn.setVisible(not minimized)
+                                update_progress)
+from canexpert.panel.database import load_application_database
+from canexpert.panel.runtime import ScriptRuntime
+from canexpert.panel.view import PanelView
+from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
+from canexpert.ui_common import DockTitleBar, app_settings, toolbar_icon
 
 
 class MainWindow(QMainWindow):
@@ -582,12 +68,9 @@ class MainWindow(QMainWindow):
         self.workers = {}
         self.can_bus = None
         self.app_database = None
-        self.uds_worker = None
-        self.channel_activity = []
+        self.channel_activity = {}  # channel key -> traffic seen by the last activity scan
         self.connected_channel_config = None
         self.selected_channel_config = None
-        self.channel_discovered_db = {}
-        self.message_count = 0
         self.activity_scanner = None
         self.script_runtime = None
         self.flash_dialog = None
@@ -799,13 +282,13 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self.log_verbose(f"{label} detection: {exc}")
         for in_use in (self.connected_channel_config, self.monitor_channel if self.ecu_monitor else None):
-            if in_use and not any(_channel_key(c) == _channel_key(in_use) for c in self.can_channels):
+            if in_use and not any(channel_key(c) == channel_key(in_use) for c in self.can_channels):
                 self.can_channels.append(in_use)
         for cfg in self.can_channels:
             item = QTreeWidgetItem([self._channel_label(cfg)])
             item.setData(0, Qt.UserRole, cfg)
             self.channel_list.addTopLevelItem(item)
-            self.channel_items[_channel_key(cfg)] = item
+            self.channel_items[channel_key(cfg)] = item
         if not self.can_channels:
             self.channel_list.addTopLevelItem(QTreeWidgetItem(["No CAN receivers found"]))
         self._update_nodes()
@@ -815,9 +298,12 @@ class MainWindow(QMainWindow):
         serial = cfg.get("serial") or cfg.get("unique_hardware_id")
         if serial:
             label += f" ({serial})"
-        if self.connected_channel_config and _channel_key(cfg) == _channel_key(self.connected_channel_config):
+        active = self.channel_activity.get(channel_key(cfg))
+        if active is not None:
+            label += " — traffic" if active else " — no traffic"
+        if self.connected_channel_config and channel_key(cfg) == channel_key(self.connected_channel_config):
             label += " [Connected]"
-        elif self.ecu_monitor and _channel_key(cfg) == _channel_key(self.monitor_channel):
+        elif self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
             label += " [Checking ECUs]"
         return label
 
@@ -825,26 +311,25 @@ class MainWindow(QMainWindow):
         for item in self.channel_items.values():
             item.setText(0, self._channel_label(item.data(0, Qt.UserRole)))
 
-    def _channel_checked(self, channel_key):
+    def _channel_checked(self, key):
         """True while ECU replies on this channel are being watched: a database session or the ECU check."""
         if self.can_bus is not None and self.connected_channel_config is not None:
-            if channel_key == _channel_key(self.connected_channel_config):
+            if key == channel_key(self.connected_channel_config):
                 return True
-        return self.ecu_monitor is not None and channel_key == _channel_key(self.monitor_channel)
+        return self.ecu_monitor is not None and key == channel_key(self.monitor_channel)
 
     def _update_nodes(self):
         now = time.monotonic()
-        for (channel_key, can_id), state in self.node_states.items():
-            parent = self.channel_items.get(channel_key)
+        for (channel, can_id), state in self.node_states.items():
+            parent = self.channel_items.get(channel)
             if parent is None:
                 continue
-            key = (channel_key, can_id)
-            item = self.node_items.get(key)
+            item = self.node_items.get((channel, can_id))
             if item is None:
                 item = QTreeWidgetItem(parent)
-                self.node_items[key] = item
+                self.node_items[(channel, can_id)] = item
                 parent.setExpanded(True)
-            if not self._channel_checked(channel_key):
+            if not self._channel_checked(channel):
                 symbol, status, colour = "○", "Not checked", "gray"
             elif now - state["last_seen"] > state["timeout"]:
                 symbol, status, colour = "✗", "Lost connection", "red"
@@ -877,9 +362,10 @@ class MainWindow(QMainWindow):
         self.activity_scanner.start()
 
     def on_activity_scan_result(self, result: list):
-        """Update channel list with activity scan results."""
-        self.channel_activity = result
-        self.refresh_channel_list()
+        """Show on each channel whether the scan saw traffic."""
+        channels = self.activity_scanner.channels if self.activity_scanner else []
+        self.channel_activity = {channel_key(cfg): active for cfg, active in zip(channels, result)}
+        self._label_channels()
 
     def on_activity_scan_finished(self):
         """Re-enable scan button after scan completes."""
@@ -990,7 +476,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dlg)
         layout.setSpacing(12)
         layout.addWidget(QLabel("CAN Expert"))
-        layout.addWidget(QLabel("Connect to CAN, run UDS discovery, load application databases."))
+        layout.addWidget(QLabel("CAN and UDS tool: panel databases with Python scripts, Form Designer, CAN Logger,\n"
+                                "Diagnostic Window, firmware flashing and a simulated ECU."))
         ok_btn = QPushButton("OK")
         ok_btn.clicked.connect(dlg.accept)
         layout.addWidget(ok_btn, 0, Qt.AlignCenter)
@@ -1032,44 +519,21 @@ class MainWindow(QMainWindow):
             settings.setValue("theme", theme)
 
     def load_configurations(self):
-        """Load available configurations from files"""
+        """List the configurations of the Configurations folder and reselect the last one used."""
         self.config_list.clear()
-        self.configurations = []
-        
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        for filename in sorted(CONFIG_DIR.iterdir()):
-            if filename.name.startswith('config_') and filename.name.endswith('.json'):
-                try:
-                    with open(filename, 'r') as f:
-                        config = validate_config(json.load(f))
-                        self.configurations.append(config)
-                        
-                        # Add to list
-                        item = QListWidgetItem(config['name'])
-                        self.config_list.addItem(item)
-                except Exception as e:
-                    self.log_verbose(f"Error loading config {filename.name}: {e}")
-                    
+        self.configurations, errors = read_configurations(CONFIG_DIR)
+        for error in errors:
+            self.log_verbose(error)
         if not self.configurations:
-            default_config = {
-                "name": "Default Configuration",
-                "bitrate": DEFAULT_BITRATE,
-                "identifier_11_bit": True,
-                "request_id": 0x7DF,
-                "response_id": 0x7E8,
-                "timeout_ms": 5000,
-                "extended_id": False,
-            }
-            self.configurations.append(default_config)
-            item = QListWidgetItem(default_config["name"])
-            self.config_list.addItem(item)
+            self.configurations = [validate_config(DEFAULT_CONFIGURATION)]
+        for config in self.configurations:
+            self.config_list.addItem(QListWidgetItem(config["name"]))
         last_name = app_settings().value("last_configuration", "", type=str)
         selected = next((i for i, cfg in enumerate(self.configurations) if cfg["name"] == last_name), 0)
-        if self.config_list.count():
-            self.config_list.setCurrentRow(selected)
-            self.on_config_selected(self.config_list.item(selected))
+        self.config_list.setCurrentRow(selected)
+        self.on_config_selected(self.config_list.item(selected))
         self.log_verbose(f"Loaded {len(self.configurations)} configuration(s).")
-            
+
     def open_form_designer(self):
         """Open the Form Designer dialog."""
         designer = FormDesigner(self)
@@ -1092,38 +556,31 @@ class MainWindow(QMainWindow):
         self._diagnostic_window.raise_()
         self._diagnostic_window.activateWindow()
 
-    def edit_configuration(self, item):
+    def edit_configuration(self, item=None):
         if self.can_bus is None:
-            dialog = ConfigurationDialog(self, dict(self.active_config or {}))
-            dialog.show()
+            self._open_configuration_dialog(dict(self.active_config or {}))
 
     def create_new_config(self):
-        """Create a new configuration"""
-        dialog = ConfigurationDialog(self)
+        self._open_configuration_dialog({})
+
+    def _open_configuration_dialog(self, config):
+        dialog = ConfigurationDialog(self, config, CONFIG_DIR)
+        dialog.accepted.connect(self.load_configurations)
         dialog.show()
-        
+
     def import_config(self):
-        """Import a configuration from file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Import Configuration", "", "JSON Files (*.json)"
-        )
-        
-        if file_path:
-            try:
-                with open(file_path, 'r') as f:
-                    config = validate_config(json.load(f))
-                if any(c in config["name"] for c in '/\\:*?"<>|'):
-                    raise ValueError("Invalid configuration name")
-                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-                filename = CONFIG_DIR / f"config_{config['name']}.json"
-                with open(filename, 'w') as f:
-                    json.dump(config, f, indent=2)
-                    
-                self.load_configurations()
-                self.status_label.setText("Configuration imported successfully")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to import configuration: {str(e)}")
-                
+        """Copy a configuration file into the Configurations folder."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Import Configuration", "", "JSON Files (*.json)")
+        if not file_path:
+            return
+        try:
+            save_configuration(json.loads(Path(file_path).read_text(encoding="utf-8")), CONFIG_DIR)
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            QMessageBox.critical(self, "Error", f"Failed to import configuration: {exc}")
+            return
+        self.load_configurations()
+        self.status_label.setText("Configuration imported successfully")
+
     def export_config(self):
         """Export current configuration"""
         if not self.active_config:
@@ -1147,7 +604,6 @@ class MainWindow(QMainWindow):
     def on_connect_clicked(self):
         if self.can_bus is not None:
             return
-        self.message_count = 0
         if self.activity_scanner and self.activity_scanner.isRunning():
             self._set_status("Wait for the activity scan to finish", "orange")
             return
@@ -1163,14 +619,12 @@ class MainWindow(QMainWindow):
             # Validate/build before opening hardware, so errors leave a usable UI.
             self.build_application_ui(database)
             cfg = self.selected_channel_config
-            kwargs = {k: cfg[k] for k in ("unique_hardware_id", "serial", "app_name") if k in cfg}
-            self.can_bus = create_can_bus(cfg["interface"], cfg.get("channel", 0), int(config["bitrate"]), **kwargs)
+            self.can_bus = open_channel(cfg, config["bitrate"])
             self.session_config = config
             self.connected_channel_config = dict(cfg)
             self.session_generation += 1
             generation = self.session_generation
-            worker = CanWorker()
-            worker.setup_connection(cfg.get("channel", 0), bus=self.can_bus, config=config)
+            worker = CanWorker(self.can_bus, config)
             mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
             worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
@@ -1255,15 +709,13 @@ class MainWindow(QMainWindow):
         """Send TesterPresent on the channel at the configuration's interval and watch the ECU replies:
         each ECU shows Responding, or Lost connection after the node loss timeout."""
         self.stop_ecu_monitor()
-        kwargs = {key: channel_config[key] for key in ("unique_hardware_id", "serial", "app_name") if key in channel_config}
         channel = channel_config.get("channel", 0)
         try:
-            bus = create_can_bus(channel_config["interface"], channel, int(config["bitrate"]), **kwargs)
+            bus = open_channel(channel_config, config["bitrate"])
         except Exception as exc:
             self.log_verbose(f"ECU check not started: {exc}")
             return
-        worker = CanWorker()
-        worker.setup_connection(channel, bus=bus, config=config)
+        worker = CanWorker(bus, config)
         worker.message_received.connect(lambda msg, w=worker: self._on_monitor_message(w, msg))
         worker.message_sent.connect(lambda can_id, data, w=worker: self.log_can("TX", can_id, data)
                                     if w is self.ecu_monitor else None)
@@ -1297,7 +749,7 @@ class MainWindow(QMainWindow):
             return
         if msg.get("is_extended_frame", False) != (not config["identifier_11_bit"]):
             return
-        self.node_states[(_channel_key(self.monitor_channel), msg["arbitration_id"])] = {
+        self.node_states[(channel_key(self.monitor_channel), msg["arbitration_id"])] = {
             "last_seen": time.monotonic(), "timeout": config["node_timeout_seconds"]}
         self.log_can("RX", msg["arbitration_id"], msg["data"])
         self._update_nodes()
@@ -1313,7 +765,7 @@ class MainWindow(QMainWindow):
         if not cfg:
             return
         menu = QMenu(self)
-        if self.ecu_monitor and _channel_key(cfg) == _channel_key(self.monitor_channel):
+        if self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
             menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
         elif self.can_bus is None and self.active_config:
             menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
@@ -1431,10 +883,9 @@ class MainWindow(QMainWindow):
     def on_can_message(self, msg_dict):
         if self.session_config is None:
             return
-        self.message_count += 1
         can_id, data = msg_dict["arbitration_id"], bytes(msg_dict["data"])
         if can_id in self.session_config["response_ids"] and msg_dict.get("is_extended_frame", False) == (not self.session_config["identifier_11_bit"]):
-            self.node_states[(_channel_key(self.connected_channel_config), can_id)] = {
+            self.node_states[(channel_key(self.connected_channel_config), can_id)] = {
                 "last_seen": time.monotonic(), "timeout": self.session_config["node_timeout_seconds"]}
             self._update_nodes()
         self.log_can("RX", can_id, data)

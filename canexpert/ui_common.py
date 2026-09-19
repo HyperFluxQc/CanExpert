@@ -1,5 +1,5 @@
-"""Shared Qt helpers: persistent settings, toolbar icons, Windows 11-style caption buttons and
-the collapsible SplitterPanel."""
+"""Shared Qt helpers: persistent settings, toolbar icons, Windows 11-style caption buttons, the
+collapsible SplitterPanel and the main window's DockTitleBar."""
 from PyQt5.QtCore import QByteArray, QEvent, QPointF, QRectF, QSettings, Qt
 from PyQt5.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtSvg import QSvgRenderer
@@ -288,3 +288,85 @@ class SplitterPanel(QWidget):
         self._min_btn.set_compact(minimized)
         self._bar_layout.setContentsMargins(*((3, 3, 3, 3) if minimized else (6, 3, 4, 3)))
         self._title_label.setVisible(not minimized)
+
+
+DOCK_MINIMIZED_SIZE = 28  # a minimized dock is a thin strip with its restore button
+
+
+class DockTitleBar(QWidget):
+    """Title bar for a dock with title, minimize (collapse to thin strip), and close."""
+    def __init__(self, dock, main_window, area, parent=None):
+        super().__init__(parent)
+        self.dock = dock
+        self.main_window = main_window
+        self.area = area
+        self.is_minimized = False
+        self.saved_size = 200  # fallback when restoring
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 2, 2)
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignTop)  # when dock is a thin column, keep icon at top
+        self.title_label = QLabel(dock.windowTitle())
+        self.title_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.title_label)
+
+        self.min_btn = CaptionButton(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
+        self.min_btn.clicked.connect(self._toggle_minimized)
+        layout.addWidget(self.min_btn)
+
+        self.close_btn = CaptionButton(CaptionButton.CLOSE, "Close panel")
+        self.close_btn.clicked.connect(self.dock.close)
+        layout.addWidget(self.close_btn)
+
+        self.setLayout(layout)
+
+    def _toggle_minimized(self):
+        if self.is_minimized:
+            self.restore()
+        else:
+            self.minimize()
+
+    def minimize(self):
+        self.is_minimized = True
+        # Save current size for restore
+        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.saved_size = max(80, self.dock.width())
+        else:
+            self.saved_size = max(80, self.dock.height())
+        # Constrain to thin strip
+        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.dock.setMinimumWidth(DOCK_MINIMIZED_SIZE)
+            self.dock.setMaximumWidth(DOCK_MINIMIZED_SIZE)
+        else:
+            self.dock.setMinimumHeight(DOCK_MINIMIZED_SIZE)
+            self.dock.setMaximumHeight(DOCK_MINIMIZED_SIZE)
+        self.dock.widget().hide()
+        self._update_title_bar_appearance()
+
+    def restore(self):
+        self.is_minimized = False
+        if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.dock.setMinimumWidth(80)
+            self.dock.setMaximumWidth(16777215)
+        else:
+            self.dock.setMinimumHeight(80)
+            self.dock.setMaximumHeight(16777215)
+        self.dock.widget().show()
+        try:
+            orientation = Qt.Horizontal if self.area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea) else Qt.Vertical
+            self.main_window.resizeDocks([self.dock], [self.saved_size], orientation)
+        except Exception:
+            pass
+        self._update_title_bar_appearance()
+
+    def _update_title_bar_appearance(self):
+        minimized = self.is_minimized
+        if minimized:
+            self.min_btn.set_kind(CaptionButton.RESTORE, "Restore panel")
+        else:
+            self.min_btn.set_kind(CaptionButton.MINIMIZE, "Minimize panel to a thin strip")
+        self.min_btn.set_compact(minimized)
+        self.layout().setContentsMargins(*((3, 3, 3, 3) if minimized else (4, 2, 2, 2)))
+        self.title_label.setVisible(not minimized)
+        self.close_btn.setVisible(not minimized)

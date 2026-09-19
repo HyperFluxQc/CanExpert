@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import QApplication
 from canexpert.simulator import window as dummy_ecu_window
 from canexpert.simulator.ecu import EcuConfig, claim_channel, load_profile
 from canexpert.simulator.window import DummyEcuWindow, parse_address_format, parse_byte_list, parse_ranges
-from canexpert.uds.isotp import uds_rdbi, uds_request
+from canexpert.uds.client import uds_rdbi, uds_request
 
 APP = QApplication.instance() or QApplication([])
 TESTER, ECU = 0x7E0, 0x7E8

@@ -13,10 +13,13 @@ import can
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
+from canexpert import can_bus
 from canexpert import main_window as main
-from canexpert.panel.database import PanelView, select_database, parse_application_database
-from canexpert.designer.form_designer import FormDesigner, PropertyEditor
-from canexpert.panel.runtime import validate_config
+from canexpert.config import validate_config
+from canexpert.designer.form_designer import FormDesigner
+from canexpert.designer.side_panels import PropertyEditor
+from canexpert.panel.database import parse_application_database, select_database
+from canexpert.panel.view import PanelView
 
 APP = QApplication.instance() or QApplication([])
 
@@ -78,7 +81,7 @@ class RequirementsTest(unittest.TestCase):
             patch.object(main, "DATABASES_DIR", self.databases),
             patch.object(main, "app_settings", lambda: self.settings),
             patch.object(main.can, "detect_available_configs", return_value=[]),
-            patch.object(main, "create_can_bus", lambda *a, **k: can.Bus(interface="virtual", channel=self.channel)),
+            patch.object(can_bus, "create_can_bus", lambda *a, **k: can.Bus(interface="virtual", channel=self.channel)),
         ]
         for item in self.patches:
             item.start()
@@ -196,7 +199,8 @@ class RequirementsTest(unittest.TestCase):
         self.assertEqual(self.window.active_config['name'], 'First')
 
     def test_configuration_editor_persists_heartbeat_and_family(self):
-        dialog = main.ConfigurationDialog(self.window, self.cfg)
+        self.window._open_configuration_dialog(dict(self.cfg))
+        dialog = self.window.findChild(main.ConfigurationDialog)
         dialog.name_edit.setCurrentText('Edited')
         dialog.heartbeat_spin.setValue(1.25)
         dialog.node_timeout_spin.setValue(4.5)
@@ -373,7 +377,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertEqual(self.window.workers["main"].mailboxes[1:], [])
 
     def test_flashing_button_calls_database_flashing(self):
-        from canexpert.uds.isotp import Firmware
+        from canexpert.flashing import Firmware
         item, action = self.window.flashing_toolbar_item, self.window._toolbar_actions["flashing"]
         self.assertFalse(item.isVisible())
         (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + FLASH_SCRIPT)
@@ -437,7 +441,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
     def test_flashing_the_dummy_ecu_with_a_functional_request_id(self):
         import threading
         from canexpert.simulator.ecu import DummyEcu, EcuConfig
-        from canexpert.uds.isotp import load_firmware
+        from canexpert.flashing import load_firmware
         examples = Path(__file__).resolve().parent.parent / "examples"
         (self.databases/'panel_2026-09-18_script.py').write_text(
             (examples / "example_2026-09-18_script.py").read_text(encoding="utf-8"))

@@ -11,7 +11,9 @@ import can
 import cantools
 from PyQt5.QtWidgets import QApplication
 
-from canexpert.panel.runtime import ReceiveMailbox, ScriptRuntime, diagnostic_request_id, validate_config
+from canexpert.can_bus import ReceiveMailbox
+from canexpert.config import diagnostic_request_id, validate_config
+from canexpert.panel.runtime import ScriptRuntime
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parent.parent / "DBC" / "dummy_ecu.dbc"
@@ -141,7 +143,7 @@ class ScriptEventsTest(unittest.TestCase):
                                                 "identifier_11_bit": False}), 0x7DF)
         runtime = ScriptRuntime(self.mailbox, validate_config({"name": "obd", "request_id": 0x7DF,
                                                                "response_id": 0x7E8}), {}, None)
-        self.assertEqual(runtime.api._request_id, 0x7E0)
+        self.assertEqual(runtime.api._transport["request_id"], 0x7E0)
 
     def test_on_stop_runs_while_the_bus_is_open(self):
         self.runtime.stop()
