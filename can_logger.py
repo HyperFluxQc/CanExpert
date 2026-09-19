@@ -1,35 +1,42 @@
 """
-CAN Logger: load a DBC file, log decoded signals from CAN traffic, plot time-series and export CSV.
+CAN Logger: a CANoe-style graphics window. Load a DBC, tick signals in the list and each one
+gets its own strip chart; all strips share one time axis. Measurement cursors, follow/pause,
+fit, and CSV export of everything received.
 """
+import bisect
 import csv
+import time
 from pathlib import Path
-from collections import defaultdict
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QEvent, Qt, QTimer
+from PyQt5.QtGui import QColor, QIcon, QPixmap
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QDialog,
-    QVBoxLayout,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
     QHBoxLayout,
-    QPushButton,
     QLabel,
     QLineEdit,
-    QFileDialog,
+    QPushButton,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
     QWidget,
-    QCheckBox,
-    QFormLayout,
-    QDoubleSpinBox,
 )
 
 from ui_common import SplitterPanel, app_settings, enable_maximize
 
-# Optional: pyqtgraph for plotting
 try:
+    import numpy as np
     import pyqtgraph as pg
     HAS_PG = True
 except ImportError:
+    np = None
     HAS_PG = False
 
 try:
@@ -42,6 +49,12 @@ except ImportError:
 _CURVE_COLORS_LIGHT = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
 _CURVE_COLORS_DARK = ["#5eb3f6", "#ff6b6b", "#51cf66", "#ffd43b", "#cc92e2", "#e599b3", "#ffa8c5", "#adb5bd", "#d8e057", "#45b5d9"]
 
+STRIP_MIN_HEIGHT = 110      # px per signal graph; more strips than fit make the graph area scroll
+REDRAW_INTERVAL_MS = 50     # curves; the value column refreshes every VALUE_REFRESH_TICKS redraws
+VALUE_REFRESH_TICKS = 4
+AXIS_WIDTH = 64             # fixed left-axis width keeps all strips' time axes aligned
+COL_SIGNAL, COL_VALUE, COL_UNIT, COL_C1, COL_C2, COL_DELTA = range(6)
+
 
 def _get_theme() -> str:
     """Return 'light' or 'dark' from app settings."""
@@ -49,8 +62,14 @@ def _get_theme() -> str:
     return s.value("theme", "light", type=str) if s else "light"
 
 
+def _format(value) -> str:
+    if value is None:
+        return ""
+    return f"{value:.6g}" if isinstance(value, float) else str(value)
+
+
 class GraphOptionsDialog(QDialog):
-    """Graph options: Y scale factor, autoscale."""
+    """Graph options: Y scale factor, autoscale, follow time window."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Graph options")
@@ -62,164 +81,249 @@ class GraphOptionsDialog(QDialog):
         self.y_scale_spin.setValue(1.0)
         self.y_scale_spin.setDecimals(3)
         form.addRow("Y scale factor:", self.y_scale_spin)
-        self.autoscale_cb = QCheckBox("Autoscale to received data")
+        self.autoscale_cb = QCheckBox("Autoscale each graph's Y axis to its data")
         self.autoscale_cb.setChecked(True)
         form.addRow(self.autoscale_cb)
+        self.window_spin = QDoubleSpinBox()
+        self.window_spin.setRange(0.5, 3600.0)
+        self.window_spin.setValue(10.0)
+        self.window_spin.setSuffix(" s")
+        form.addRow("Follow time window:", self.window_spin)
         layout.addLayout(form)
         ok_btn = QPushButton("OK")
         ok_btn.clicked.connect(self.accept)
         layout.addWidget(ok_btn)
 
 
+class _Series:
+    """Growable (time, value) storage; the views handed to pyqtgraph stay valid while appending."""
+    __slots__ = ("t", "v", "n")
+
+    def __init__(self):
+        self.n = 0
+        if np is not None:
+            self.t, self.v = np.empty(1024), np.empty(1024)
+        else:
+            self.t, self.v = [], []
+
+    def append(self, t: float, v: float):
+        if np is None:
+            self.t.append(t)
+            self.v.append(v)
+        else:
+            if self.n == len(self.t):
+                self.t = np.concatenate([self.t, np.empty(self.n)])
+                self.v = np.concatenate([self.v, np.empty(self.n)])
+            self.t[self.n] = t
+            self.v[self.n] = v
+        self.n += 1
+
+    def times(self):
+        return self.t[:self.n]
+
+    def values(self):
+        return self.v[:self.n]
+
+    def last(self):
+        return float(self.v[self.n - 1]) if self.n else None
+
+    def at(self, t: float):
+        """Sample-and-hold value at time t (the last sample at or before t)."""
+        if not self.n:
+            return None
+        index = (int(np.searchsorted(self.times(), t, "right")) if np is not None
+                 else bisect.bisect_right(self.t, t)) - 1
+        return float(self.v[index]) if index >= 0 else None
+
+    def points(self):
+        return zip(self.t[:self.n], self.v[:self.n])
+
+
 class CANLoggerWindow(QDialog):
-    """Window to load DBC, select signals, plot time-series and save CSV."""
+    """CANoe-style graphics window: tick DBC signals to add one strip chart per signal."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("CAN Logger")
         enable_maximize(self)
         self.setMinimumSize(900, 550)
+        self.resize(1200, 750)
         self.db = None
         self.dbc_path = None
-        self._curves = {}
-        self._checkboxes = {}
-        self._data = defaultdict(list)
-        self._graph_options = None
+        self._series = {}           # "Message.Signal" -> _Series, for every decoded signal
+        self._units = {}
+        self._items = {}            # "Message.Signal" -> QTreeWidgetItem
+        self._decoders = {}         # frame id -> (message, [(signal name, display name)])
+        self._plotted = []          # checked signals, in the order they were ticked
+        self._colors = {}           # "Message.Signal" -> palette index while plotted
+        self._plots = {}            # "Message.Signal" -> (PlotItem, curve, cursor 1, cursor 2)
+        self._hover = {}            # "Message.Signal" -> (dotted vertical line, dotted horizontal line, readout)
+        self._new_curve_data = set()     # signals whose graph needs redrawing
+        self._new_values = set()         # signals whose Value column needs refreshing
+        self._t0 = None
         self._y_scale = 1.0
         self._autoscale = True
-        self._cursor_a = None
-        self._cursor_b = None
-        self._cursor_label = None
+        self._window_seconds = 10.0
+        self._cursor_pos = [0.0, 0.0]
+        self._syncing_cursors = False
+        self._ticks = 0
         self._build_ui()
+        self._timer = QTimer(self)
+        self._timer.setInterval(REDRAW_INTERVAL_MS)
+        self._timer.timeout.connect(self._redraw)
+        self._timer.start()
+
+    # --- UI -----------------------------------------------------------------------------
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
-        # Toolbar
         bar = QHBoxLayout()
-        load_btn = QPushButton("Load DBC...")
-        load_btn.clicked.connect(self._load_dbc)
-        bar.addWidget(load_btn)
+        self.load_btn = QPushButton("Load DBC...")
+        self.load_btn.clicked.connect(self._load_dbc)
+        bar.addWidget(self.load_btn)
         save_btn = QPushButton("Save CSV...")
         save_btn.clicked.connect(self._save_csv)
         bar.addWidget(save_btn)
+        clear_btn = QPushButton("Clear")
+        clear_btn.setToolTip("Discard recorded data and restart the time axis at 0")
+        clear_btn.clicked.connect(self.clear_data)
+        bar.addWidget(clear_btn)
+        bar.addSpacing(12)
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.setToolTip("Freeze the display; recording continues")
+        self.pause_btn.toggled.connect(self._on_pause_toggled)
+        bar.addWidget(self.pause_btn)
+        self.follow_btn = QPushButton("Follow")
+        self.follow_btn.setCheckable(True)
+        self.follow_btn.setChecked(True)
+        self.follow_btn.setToolTip("Scroll with the newest data (time window in Graph options)")
+        bar.addWidget(self.follow_btn)
+        fit_btn = QPushButton("Fit")
+        fit_btn.setToolTip("Show all recorded data")
+        fit_btn.clicked.connect(self.fit_all)
+        bar.addWidget(fit_btn)
+        self.lock_x_btn = QPushButton("Lock X")
+        self.lock_x_btn.setCheckable(True)
+        self.lock_x_btn.setToolTip("Mouse zoom and pan leave the time axis alone (Follow still scrolls)")
+        self.lock_x_btn.toggled.connect(self._apply_axis_locks)
+        bar.addWidget(self.lock_x_btn)
+        self.lock_y_btn = QPushButton("Lock Y")
+        self.lock_y_btn.setCheckable(True)
+        self.lock_y_btn.setChecked(True)
+        self.lock_y_btn.setToolTip("Mouse zoom and pan leave the value axes alone (autoscale keeps them fitted)")
+        self.lock_y_btn.toggled.connect(self._apply_axis_locks)
+        bar.addWidget(self.lock_y_btn)
+        self.cursors_btn = QPushButton("Cursors")
+        self.cursors_btn.setCheckable(True)
+        self.cursors_btn.setToolTip("Two measurement cursors across all graphs")
+        self.cursors_btn.toggled.connect(self._on_cursors_toggled)
+        bar.addWidget(self.cursors_btn)
         options_btn = QPushButton("Graph options...")
         options_btn.clicked.connect(self._show_graph_options)
         bar.addWidget(options_btn)
         # Selectable status/error line for easy copy-paste
         self.path_status = QLineEdit()
         self.path_status.setReadOnly(True)
-        self.path_status.setPlaceholderText("No DBC loaded")
         self.path_status.setText("No DBC loaded")
         self.path_status.setStyleSheet("QLineEdit { border: none; background: transparent; color: gray; }")
         self.path_status.setMinimumWidth(200)
-        bar.addWidget(self.path_status)
-        bar.addStretch()
+        bar.addWidget(self.path_status, 1)
         layout.addLayout(bar)
 
-        # Content: graph + signal list (resizable, collapsible splitter with minimize)
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(True)
-        if HAS_PG:
-            graph_group = QWidget()
-            graph_group.setMinimumWidth(0)
-            graph_layout = QVBoxLayout(graph_group)
-            self.plot_widget = pg.PlotWidget()
-            self.plot_widget.showGrid(x=True, y=True)
-            self.plot_widget.setLabel("left", "Value")
-            self.plot_widget.setLabel("bottom", "Time (s)")
-            self.plot_widget.addLegend()
-            self._cursor_a = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen("b", width=2))
-            self._cursor_b = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen("r", width=2))
-            self.plot_widget.addItem(self._cursor_a)
-            self.plot_widget.addItem(self._cursor_b)
-            self._cursor_label = pg.TextItem("", anchor=(0, 1))
-            self.plot_widget.addItem(self._cursor_label)
-            self._cursor_a.sigPositionChanged.connect(self._update_cursor_readout)
-            self._cursor_b.sigPositionChanged.connect(self._update_cursor_readout)
-            self._apply_graph_theme()
-            graph_layout.addWidget(self.plot_widget)
-            graph_panel = SplitterPanel("Graph", graph_group, Qt.Horizontal)
-            splitter.addWidget(graph_panel)
-        else:
-            no_pg = QLabel("Install pyqtgraph for plotting: pip install pyqtgraph")
-            no_pg.setMinimumWidth(0)
-            no_pg_panel = SplitterPanel("Graph", no_pg, Qt.Horizontal)
-            splitter.addWidget(no_pg_panel)
 
-        # Right: signal checkboxes (resizable, collapsible)
+        # Left: DBC signal list, as in CANoe
         signals_group = QWidget()
         signals_group.setMinimumWidth(0)
         signals_layout = QVBoxLayout(signals_group)
-        self.signals_scroll = QScrollArea()
-        self.signals_scroll.setWidgetResizable(True)
-        self.signals_container = QWidget()
-        self.signals_inner = QVBoxLayout()
-        self.signals_container.setLayout(self.signals_inner)
-        self.signals_scroll.setWidget(self.signals_container)
-        signals_layout.addWidget(self.signals_scroll)
-        signals_panel = SplitterPanel("Signals (select to plot)", signals_group, Qt.Horizontal)
-        splitter.addWidget(signals_panel)
-        splitter.setSizes([700, 280])
+        filter_row = QHBoxLayout()
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter signals...")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        filter_row.addWidget(self.filter_edit)
+        self.plotted_only_cb = QCheckBox("Plotted only")
+        self.plotted_only_cb.toggled.connect(self._apply_filter)
+        filter_row.addWidget(self.plotted_only_cb)
+        signals_layout.addLayout(filter_row)
+        self.signal_tree = QTreeWidget()
+        self.signal_tree.setHeaderLabels(["Signal", "Value", "Unit", "Cursor 1", "Cursor 2", "Δ"])
+        self.signal_tree.setColumnWidth(COL_SIGNAL, 230)
+        self.signal_tree.setColumnWidth(COL_VALUE, 80)
+        self.signal_tree.setColumnWidth(COL_UNIT, 50)
+        for column in (COL_C1, COL_C2, COL_DELTA):
+            self.signal_tree.setColumnWidth(column, 70)
+            self.signal_tree.setColumnHidden(column, True)
+        self.signal_tree.itemChanged.connect(self._on_item_changed)
+        signals_layout.addWidget(self.signal_tree)
+        splitter.addWidget(SplitterPanel("Signals (tick to add a graph)", signals_group, Qt.Horizontal))
+
+        # Right: one strip chart per ticked signal, sharing the time axis
+        graph_group = QWidget()
+        graph_group.setMinimumWidth(0)
+        graph_layout = QVBoxLayout(graph_group)
+        self.cursor_label = QLabel("")
+        self.cursor_label.setVisible(False)
+        graph_layout.addWidget(self.cursor_label)
+        self.graph_stack = QStackedWidget()
+        self.placeholder = QLabel("Load a DBC and tick signals in the list.\nEach signal gets its own graph.")
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setStyleSheet("color: gray;")
+        self.graph_stack.addWidget(self.placeholder)
+        if HAS_PG:
+            self.graph = pg.GraphicsLayoutWidget()
+            self.graph.ci.setSpacing(0)
+            self.graph_scroll = QScrollArea()
+            self.graph_scroll.setWidgetResizable(True)
+            self.graph_scroll.setWidget(self.graph)
+            self.graph.scene().sigMouseMoved.connect(self._on_mouse_moved)
+            self.graph.installEventFilter(self)  # hide the hover readout when the mouse leaves
+            self.graph_stack.addWidget(self.graph_scroll)
+        else:
+            self.graph = None
+            self.placeholder.setText("Install pyqtgraph for plotting: pip install pyqtgraph")
+        graph_layout.addWidget(self.graph_stack)
+        splitter.addWidget(SplitterPanel("Graphics", graph_group, Qt.Horizontal))
+        splitter.setSizes([420, 780])
         layout.addWidget(splitter)
 
         if not HAS_CANTOOLS:
-            load_btn.setEnabled(False)
+            self.load_btn.setEnabled(False)
             self.path_status.setText("Install cantools: pip install cantools")
 
     def _theme_colors(self):
-        """Return dict with background, axis, grid, text, cursor_a, cursor_b, and curve color list for current theme."""
-        dark = _get_theme() == "dark"
-        if dark:
-            return {
-                "background": QColor(35, 35, 35),
-                "axis": QColor(220, 220, 220),
-                "grid": QColor(80, 80, 80),
-                "text": QColor(220, 220, 220),
-                "cursor_a": QColor(100, 180, 255),
-                "cursor_b": QColor(255, 120, 120),
-                "curves": _CURVE_COLORS_DARK,
-            }
-        return {
-            "background": QColor(255, 255, 255),
-            "axis": QColor(0, 0, 0),
-            "grid": QColor(200, 200, 200),
-            "text": QColor(0, 0, 0),
-            "cursor_a": QColor(0, 0, 200),
-            "cursor_b": QColor(200, 0, 0),
-            "curves": _CURVE_COLORS_LIGHT,
-        }
+        """Background, axis, grid, text, cursor and curve colors for the current theme."""
+        if _get_theme() == "dark":
+            return {"background": QColor(18, 18, 18), "axis": QColor(200, 200, 200), "text": QColor(220, 220, 220),
+                    "cursor_a": QColor(100, 180, 255), "cursor_b": QColor(255, 120, 120),
+                    "curves": _CURVE_COLORS_DARK}
+        return {"background": QColor(255, 255, 255), "axis": QColor(60, 60, 60), "text": QColor(0, 0, 0),
+                "cursor_a": QColor(0, 0, 200), "cursor_b": QColor(200, 0, 0), "curves": _CURVE_COLORS_LIGHT}
+
+    def _color(self, display_name):
+        curves = self._theme_colors()["curves"]
+        return curves[self._colors[display_name] % len(curves)]
+
+    def _swatch(self, color):
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(QColor(color))
+        return QIcon(pixmap)
 
     def _apply_graph_theme(self):
-        """Apply light/dark theme to the graph (background, axes, grid, cursors, legend)."""
-        if not HAS_PG or not getattr(self, "plot_widget", None):
-            return
-        c = self._theme_colors()
-        self.plot_widget.setBackground(c["background"])
-        plot_item = self.plot_widget.getPlotItem()
-        for ax in ("left", "bottom"):
-            axis = plot_item.getAxis(ax)
-            axis.setPen(pg.mkColor(c["axis"]))
-            axis.setTextPen(pg.mkColor(c["text"]))
-        try:
-            plot_item.legend.setLabelTextColor(c["text"])
-        except Exception:
-            pass
-        if self._cursor_a:
-            self._cursor_a.setPen(pg.mkPen(c["cursor_a"], width=2))
-        if self._cursor_b:
-            self._cursor_b.setPen(pg.mkPen(c["cursor_b"], width=2))
-        if self._cursor_label:
-            self._cursor_label.setColor(pg.mkColor(c["text"]))
-        # Re-apply curve colors so they match theme
-        curve_list = list(self._curves.items())
-        for idx, (display_name, curve) in enumerate(curve_list):
-            color = c["curves"][idx % len(c["curves"])]
-            curve.setPen(pg.mkPen(color))
+        """Re-color graphs and swatches for the current light/dark theme."""
+        if self._plotted:
+            self._rebuild_strips()
+        for name in self._plotted:
+            self._items[name].setIcon(COL_SIGNAL, self._swatch(self._color(name)))
 
     def showEvent(self, event):
         super().showEvent(event)
         self._apply_graph_theme()
+
+    # --- DBC ------------------------------------------------------------------------------
 
     def _load_dbc(self):
         default_dir = Path(__file__).parent / "DBC"
@@ -236,162 +340,375 @@ class CANLoggerWindow(QDialog):
             return
         path = Path(path)
         try:
-            self.db = cantools.database.load_file(str(path))
-            self.dbc_path = str(path)
-            self.path_status.setText(path.name)
-            self.path_status.setStyleSheet("QLineEdit { border: none; background: transparent; }")
-            self._data.clear()
-            self._time_ref = None
-            self._curves.clear()
-            self._checkboxes.clear()
-            # Clear plot
-            if HAS_PG:
-                self.plot_widget.clear()
-                self.plot_widget.addItem(self._cursor_a)
-                self.plot_widget.addItem(self._cursor_b)
-                self.plot_widget.addItem(self._cursor_label)
-            # Rebuild signal list
-            while self.signals_inner.count():
-                child = self.signals_inner.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
-            for msg in self.db.messages:
-                for sig in msg.signals:
-                    display_name = f"{msg.name}.{sig.name}"
-                    cb = QCheckBox(display_name)
-                    cb.stateChanged.connect(lambda *a, dn=display_name: self._on_signal_toggled(dn))
-                    self._checkboxes[display_name] = cb
-                    self.signals_inner.addWidget(cb)
-            self.signals_inner.addStretch()
+            db = cantools.database.load_file(str(path))
         except Exception as e:
-            err_msg = str(e)
-            if HAS_CANTOOLS and "cantools" in type(e).__module__:
-                self.path_status.setText(f"DBC file error: {err_msg}")
-            else:
-                self.path_status.setText(f"Load error: {err_msg}")
+            prefix = "DBC file error" if "cantools" in type(e).__module__ else "Load error"
+            self.path_status.setText(f"{prefix}: {e}")
             self.path_status.setStyleSheet("QLineEdit { border: none; background: transparent; color: red; }")
-            self.db = None
+            return
+        self.db = db
+        self.dbc_path = str(path)
+        self.path_status.setText(path.name)
+        self.path_status.setStyleSheet("QLineEdit { border: none; background: transparent; }")
+        self._plotted.clear()
+        self._colors.clear()
+        self._items.clear()
+        self._units.clear()
+        self._decoders.clear()
+        self.clear_data()
+        self.signal_tree.blockSignals(True)
+        self.signal_tree.clear()
+        for msg in sorted(db.messages, key=lambda m: m.name.lower()):
+            parent = QTreeWidgetItem(self.signal_tree, [f"{msg.name}  (0x{msg.frame_id:X})"])
+            parent.setFlags(Qt.ItemIsEnabled)
+            names = []
+            for sig in sorted(msg.signals, key=lambda s: s.name.lower()):
+                display_name = f"{msg.name}.{sig.name}"
+                item = QTreeWidgetItem(parent, [sig.name, "", sig.unit or ""])
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+                item.setCheckState(COL_SIGNAL, Qt.Unchecked)
+                item.setData(COL_SIGNAL, Qt.UserRole, display_name)
+                item.setToolTip(COL_SIGNAL, display_name)
+                self._items[display_name] = item
+                self._units[display_name] = sig.unit or ""
+                names.append((sig.name, display_name))
+            self._decoders[msg.frame_id] = (msg, names)
+        self.signal_tree.blockSignals(False)
+        self._apply_filter()
+        self._rebuild_strips()
 
-    def _on_signal_toggled(self, display_name: str):
+    def _apply_filter(self, *_):
+        text = self.filter_edit.text().strip().lower()
+        plotted_only = self.plotted_only_cb.isChecked()
+        for index in range(self.signal_tree.topLevelItemCount()):
+            parent = self.signal_tree.topLevelItem(index)
+            visible_children = has_plotted = 0
+            for child_index in range(parent.childCount()):
+                child = parent.child(child_index)
+                name = child.data(COL_SIGNAL, Qt.UserRole)
+                visible = (not text or text in name.lower()) and (not plotted_only or name in self._plotted)
+                child.setHidden(not visible)
+                visible_children += visible
+                has_plotted += name in self._plotted
+            parent.setHidden(visible_children == 0)
+            if text or plotted_only:
+                parent.setExpanded(visible_children > 0)
+            elif has_plotted:
+                parent.setExpanded(True)  # keep ticked signals (and their values) in view
+
+    # --- strips -------------------------------------------------------------------------
+
+    def _on_item_changed(self, item, column):
+        name = item.data(COL_SIGNAL, Qt.UserRole)
+        if column != COL_SIGNAL or not name:
+            return
+        checked = item.checkState(COL_SIGNAL) == Qt.Checked
+        if checked and name not in self._plotted:
+            used = set(self._colors.values())
+            self._colors[name] = next(i for i in range(len(self._plotted) + 1) if i not in used)
+            self._plotted.append(name)
+            item.setIcon(COL_SIGNAL, self._swatch(self._color(name)))
+        elif not checked and name in self._plotted:
+            self._plotted.remove(name)
+            del self._colors[name]
+            item.setIcon(COL_SIGNAL, QIcon())
+            for column_index in (COL_C1, COL_C2, COL_DELTA):
+                item.setText(column_index, "")
+        else:
+            return
+        self._rebuild_strips()
+        self._apply_filter()
+
+    def set_signal_plotted(self, display_name: str, plotted: bool = True):
+        """Tick or untick a signal in the list (adds or removes its graph)."""
+        self._items[display_name].setCheckState(COL_SIGNAL, Qt.Checked if plotted else Qt.Unchecked)
+
+    def _rebuild_strips(self):
+        """One PlotItem per plotted signal, stacked, with linked time axes and synced cursors."""
         if not HAS_PG:
             return
-        if self._checkboxes[display_name].isChecked():
-            if display_name not in self._curves:
-                d = self._data.get(display_name, [])
-                if d:
-                    t = [x[0] for x in d]
-                    v = [x[1] * self._y_scale for x in d]
-                    colors = self._theme_colors()["curves"]
-                    pen = pg.mkPen(colors[len(self._curves) % len(colors)])
-                    curve = self.plot_widget.plot(t, v, name=display_name, pen=pen)
-                    self._curves[display_name] = curve
-        else:
-            if display_name in self._curves:
-                self.plot_widget.removeItem(self._curves[display_name])
-                del self._curves[display_name]
-
-    def _show_graph_options(self):
-        layout_already = getattr(self, "_graph_options", None)
-        if layout_already is not None:
-            try:
-                self._graph_options.close()
-            except Exception:
-                pass
-        self._graph_options = GraphOptionsDialog(self)
-        self._graph_options.y_scale_spin.setValue(self._y_scale)
-        self._graph_options.autoscale_cb.setChecked(self._autoscale)
-        if self._graph_options.exec_() == QDialog.Accepted:
-            self._y_scale = self._graph_options.y_scale_spin.value()
-            self._autoscale = self._graph_options.autoscale_cb.isChecked()
-            for display_name, curve in list(self._curves.items()):
-                if display_name in self._data and self._data[display_name]:
-                    t, v = zip(*self._data[display_name])
-                    curve.setData(list(t), [y * self._y_scale for y in v])
-            if HAS_PG and self._autoscale and self._curves:
-                self.plot_widget.autoRange()
-
-    def _update_cursor_readout(self):
-        if not HAS_PG or not self._cursor_a or not self._cursor_b or not self._cursor_label:
+        previous_range = None
+        if self._plots:
+            previous_range = next(iter(self._plots.values()))[0].getViewBox().viewRange()[0]
+        self.graph.clear()
+        self._plots.clear()
+        self._hover.clear()
+        self.graph_stack.setCurrentIndex(1 if self._plotted else 0)
+        if not self._plotted:
             return
-        xa = self._cursor_a.value()
-        xb = self._cursor_b.value()
-        dx = xb - xa
-        text = f"X1={xa:.3f}  X2={xb:.3f}  ΔX={dx:.3f}"
-        curves = list(self._curves.values()) if self._curves else []
-        first_curve = curves[0] if curves else None
-        if first_curve is not None:
-            xs = getattr(first_curve, "xData", None)
-            ys = getattr(first_curve, "yData", None)
-            if xs is not None and ys is not None and len(xs) and len(ys):
-                try:
-                    import numpy as np
-                    xarr = np.asarray(xs)
-                    yarr = np.asarray(ys)
-                    idx_a = min(max(0, int(np.searchsorted(xarr, xa))), len(yarr) - 1)
-                    idx_b = min(max(0, int(np.searchsorted(xarr, xb))), len(yarr) - 1)
-                    ya = float(yarr[idx_a])
-                    yb = float(yarr[idx_b])
-                    text += f"  Y1={ya:.3f}  Y2={yb:.3f}  ΔY={yb - ya:.3f}"
-                except Exception:
-                    pass
-        self._cursor_label.setText(text)
-        self._cursor_label.setPos(xa, 0)
+        theme = self._theme_colors()
+        self.graph.setBackground(theme["background"])
+        self.graph.setMinimumHeight(STRIP_MIN_HEIGHT * len(self._plotted) + 30)
+        first = None
+        last_row = len(self._plotted) - 1
+        for row, name in enumerate(self._plotted):
+            color = self._color(name)
+            plot = self.graph.addPlot(row=row, col=0)
+            plot.showGrid(x=True, y=True, alpha=0.25)
+            plot.setDownsampling(auto=True, mode="peak")
+            plot.setClipToView(True)
+            plot.hideButtons()  # pyqtgraph's hover "A" auto-range button; the Fit button covers it
+            plot.getViewBox().setMouseEnabled(x=not self.lock_x_btn.isChecked(), y=not self.lock_y_btn.isChecked())
+            plot.getViewBox().sigRangeChangedManually.connect(self._on_manual_range)
+            if self._autoscale:
+                plot.enableAutoRange(axis="y")
+            left = plot.getAxis("left")
+            left.setWidth(AXIS_WIDTH)
+            left.setPen(pg.mkPen(color))
+            left.setTextPen(pg.mkPen(color))
+            signal_name = name.split(".", 1)[1]
+            unit = self._units.get(name)
+            left.setLabel(f"{signal_name} [{unit}]" if unit else signal_name, color=color)
+            bottom = plot.getAxis("bottom")
+            bottom.setPen(pg.mkPen(theme["axis"]))
+            bottom.setTextPen(pg.mkPen(theme["text"]))
+            if row == last_row:
+                plot.setLabel("bottom", "Time", units="s", color=theme["text"].name())
+            else:
+                bottom.setStyle(showValues=False)
+                bottom.setHeight(4)
+            curve = plot.plot(pen=pg.mkPen(color, width=1.5), stepMode="right")
+            cursors = []
+            for index, key in enumerate(("cursor_a", "cursor_b")):
+                line = pg.InfiniteLine(self._cursor_pos[index], angle=90, movable=True,
+                                       pen=pg.mkPen(theme[key], width=1.5))
+                line.setVisible(self.cursors_btn.isChecked())
+                line.sigPositionChanged.connect(lambda ln, i=index: self._on_cursor_moved(i, ln.value()))
+                plot.addItem(line, ignoreBounds=True)
+                cursors.append(line)
+            if first is None:
+                first = plot
+            else:
+                plot.setXLink(first)
+            self._plots[name] = (plot, curve, cursors[0], cursors[1])
+            self._hover[name] = self._make_hover_items(plot, theme)
+            self._update_curve(name)
+        if previous_range is not None:
+            first.setXRange(*previous_range, padding=0)
+        self._update_cursor_readout()
+
+    def _make_hover_items(self, plot, theme):
+        """Dotted crosshair and a bottom-right time/value readout, shown while the mouse is over the graph."""
+        pen = pg.mkPen(theme["text"], width=1, style=Qt.DotLine)
+        lines = []
+        for angle in (90, 0):
+            line = pg.InfiniteLine(angle=angle, movable=False, pen=pen)
+            line.setAcceptedMouseButtons(Qt.NoButton)  # never steal drags from cursors or panning
+            line.setAcceptHoverEvents(False)
+            line.setVisible(False)
+            plot.addItem(line, ignoreBounds=True)
+            lines.append(line)
+        background = QColor(theme["background"])
+        background.setAlpha(200)
+        readout = pg.TextItem("", color=theme["text"], anchor=(1, 1), fill=pg.mkBrush(background))
+        view = plot.getViewBox()
+        readout.setParentItem(view)  # pixel position in the view, independent of zoom and scrolling
+        readout.setZValue(1000)
+        readout.setVisible(False)
+        place = lambda *_: readout.setPos(view.width() - 4, view.height() - 4)  # noqa: E731
+        view.sigResized.connect(place)
+        place()
+        return lines[0], lines[1], readout
+
+    def _on_mouse_moved(self, scene_pos):
+        for name, (plot, *_rest) in self._plots.items():
+            vertical, horizontal, readout = self._hover[name]
+            view = plot.getViewBox()
+            inside = view.sceneBoundingRect().contains(scene_pos)
+            if inside:
+                point = view.mapSceneToView(scene_pos)
+                vertical.setValue(point.x())
+                horizontal.setValue(point.y())
+                unit = self._units.get(name)
+                readout.setText(f"{point.x():.3f} s   {point.y():.4g}{' ' + unit if unit else ''}")
+            for item in (vertical, horizontal, readout):
+                item.setVisible(inside)
+
+    def _hide_hover(self):
+        for items in self._hover.values():
+            for item in items:
+                item.setVisible(False)
+
+    def eventFilter(self, watched, event):
+        if watched is self.graph and event.type() == QEvent.Leave:
+            self._hide_hover()
+        return super().eventFilter(watched, event)
+
+    def _update_curve(self, name):
+        entry, series = self._plots.get(name), self._series.get(name)
+        if entry is None:
+            return
+        if series is None or not series.n:
+            entry[1].setData([], [])
+            return
+        values = series.values() * self._y_scale if np is not None else [v * self._y_scale for v in series.values()]
+        entry[1].setData(series.times(), values)
+
+    # --- data -----------------------------------------------------------------------------
 
     def on_can_message(self, arb_id: int, data: bytes | list):
         """Called by main window when a CAN message is received; decode with DBC and append to series."""
-        if not self.db or not HAS_CANTOOLS:
+        decoder = self._decoders.get(arb_id)
+        if decoder is None:
             return
+        message, names = decoder
         try:
-            decoded = self.db.decode_message(arb_id, bytes(data[:8]), decode_choices=False)
+            decoded = message.decode(bytes(data), decode_choices=False, allow_truncated=True)
         except Exception:
             return
-        t = getattr(self, "_time_ref", None)
-        if t is None:
-            from datetime import datetime
-            self._time_ref = datetime.now()
-            t = 0.0
-        else:
-            from datetime import datetime
-            t = (datetime.now() - self._time_ref).total_seconds()
-        for msg in self.db.messages:
-            if msg.frame_id != arb_id:
-                continue
-            for sig in msg.signals:
-                if sig.name in decoded:
-                    display_name = f"{msg.name}.{sig.name}"
-                    val = decoded[sig.name]
-                    self._data[display_name].append((t, val))
-                    if display_name in self._checkboxes and self._checkboxes[display_name].isChecked():
-                        if display_name not in self._curves and HAS_PG:
-                            colors = self._theme_colors()["curves"]
-                            pen = pg.mkPen(colors[len(self._curves) % len(colors)])
-                            curve = self.plot_widget.plot(
-                                [x[0] for x in self._data[display_name]],
-                                [x[1] * self._y_scale for x in self._data[display_name]],
-                                name=display_name, pen=pen
-                            )
-                            self._curves[display_name] = curve
-                        elif display_name in self._curves:
-                            d = self._data[display_name]
-                            self._curves[display_name].setData(
-                                [x[0] for x in d],
-                                [x[1] * self._y_scale for x in d],
-                            )
-            break
-        if HAS_PG and self._autoscale and self._curves:
-            self.plot_widget.autoRange()
+        now = time.monotonic()
+        if self._t0 is None:
+            self._t0 = now
+        t = now - self._t0
+        for signal_name, display_name in names:
+            value = decoded.get(signal_name)
+            if isinstance(value, (int, float)):
+                series = self._series.get(display_name)
+                if series is None:
+                    series = self._series[display_name] = _Series()
+                series.append(t, float(value))
+                self._new_curve_data.add(display_name)
+                self._new_values.add(display_name)
+
+    def clear_data(self):
+        self._series.clear()
+        self._new_curve_data.clear()
+        self._new_values.clear()
+        self._t0 = None
+        for item in self._items.values():
+            for column in (COL_VALUE, COL_C1, COL_C2, COL_DELTA):
+                item.setText(column, "")
+        for name in self._plots:
+            self._update_curve(name)
+
+    def _latest_time(self):
+        return max((s.t[s.n - 1] for s in self._series.values() if s.n), default=None)
+
+    def _redraw(self):
+        if self.pause_btn.isChecked():
+            return
+        self._ticks += 1
+        for name in self._new_curve_data & self._plots.keys():
+            self._update_curve(name)
+        self._new_curve_data.clear()
+        if self._ticks % VALUE_REFRESH_TICKS == 0:
+            for name in self._new_values:
+                item = self._items.get(name)
+                if item is not None:
+                    item.setText(COL_VALUE, _format(self._series[name].last()))
+            self._new_values.clear()
+            self._update_cursor_readout()
+        if self.follow_btn.isChecked() and self._plots:
+            latest = self._latest_time()
+            if latest is not None:
+                first = next(iter(self._plots.values()))[0]
+                first.setXRange(max(0.0, latest - self._window_seconds), max(latest, self._window_seconds),
+                                padding=0)
+
+    def _on_pause_toggled(self, paused):
+        self.pause_btn.setText("Resume" if paused else "Pause")
+        if not paused:  # catch up with what was recorded while paused
+            self._new_curve_data.update(self._series)
+            self._new_values.update(self._series)
+
+    def _on_manual_range(self, mask=None):
+        if mask is None or mask[0]:
+            self.follow_btn.setChecked(False)  # the user moved the time axis; stop scrolling
+
+    def _apply_axis_locks(self, *_):
+        """Lock X / Lock Y: stop mouse zoom and pan from changing that axis on every graph."""
+        lock_x, lock_y = self.lock_x_btn.isChecked(), self.lock_y_btn.isChecked()
+        for plot, *_rest in self._plots.values():
+            plot.getViewBox().setMouseEnabled(x=not lock_x, y=not lock_y)
+            if lock_y and self._autoscale:
+                plot.enableAutoRange(axis="y")  # back to fitted values after a manual Y zoom
+
+    def fit_all(self):
+        self.follow_btn.setChecked(False)
+        for plot, *_ in self._plots.values():
+            plot.enableAutoRange(axis="x")
+            if self._autoscale:
+                plot.enableAutoRange(axis="y")
+            plot.autoRange()
+
+    # --- cursors ----------------------------------------------------------------------------
+
+    def _on_cursors_toggled(self, enabled):
+        if enabled and self._plots:
+            start, end = next(iter(self._plots.values()))[0].getViewBox().viewRange()[0]
+            self._cursor_pos = [start + (end - start) / 3, start + 2 * (end - start) / 3]
+            self._move_cursor_lines()
+            self.follow_btn.setChecked(False)  # measuring needs a still picture
+        for _, _, line_a, line_b in self._plots.values():
+            line_a.setVisible(enabled)
+            line_b.setVisible(enabled)
+        for column in (COL_C1, COL_C2, COL_DELTA):
+            self.signal_tree.setColumnHidden(column, not enabled)
+        self.cursor_label.setVisible(enabled)
+        self._update_cursor_readout()
+
+    def _move_cursor_lines(self):
+        self._syncing_cursors = True
+        try:
+            for _, _, line_a, line_b in self._plots.values():
+                line_a.setValue(self._cursor_pos[0])
+                line_b.setValue(self._cursor_pos[1])
+        finally:
+            self._syncing_cursors = False
+
+    def _on_cursor_moved(self, index, value):
+        if self._syncing_cursors:
+            return
+        self._cursor_pos[index] = value
+        self._move_cursor_lines()
+        self._update_cursor_readout()
+
+    def cursor_values(self, name):
+        """(value at cursor 1, value at cursor 2) for a signal, scaled like its graph."""
+        series = self._series.get(name)
+        if series is None:
+            return None, None
+        values = [series.at(t) for t in self._cursor_pos]
+        return tuple(None if v is None else v * self._y_scale for v in values)
+
+    def _update_cursor_readout(self):
+        if not self.cursors_btn.isChecked():
+            return
+        t1, t2 = self._cursor_pos
+        self.cursor_label.setText(f"Cursor 1: {t1:.3f} s     Cursor 2: {t2:.3f} s     Δt: {t2 - t1:.3f} s")
+        for name in self._plotted:
+            v1, v2 = self.cursor_values(name)
+            item = self._items[name]
+            item.setText(COL_C1, _format(v1))
+            item.setText(COL_C2, _format(v2))
+            item.setText(COL_DELTA, _format(v2 - v1) if v1 is not None and v2 is not None else "")
+
+    # --- options and export ------------------------------------------------------------------
+
+    def _show_graph_options(self):
+        dialog = GraphOptionsDialog(self)
+        dialog.y_scale_spin.setValue(self._y_scale)
+        dialog.autoscale_cb.setChecked(self._autoscale)
+        dialog.window_spin.setValue(self._window_seconds)
+        if dialog.exec_() == QDialog.Accepted:
+            self._y_scale = dialog.y_scale_spin.value()
+            self._autoscale = dialog.autoscale_cb.isChecked()
+            self._window_seconds = dialog.window_spin.value()
+            self._rebuild_strips()
 
     def _save_csv(self):
-        if not self._data:
+        if not self._series:
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save CSV", "", "CSV files (*.csv);;All files (*.*)",
         )
-        if not path:
-            return
+        if path:
+            self.save_csv(path)
+
+    def save_csv(self, path):
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["Time", "Signal", "Value"])
-            for display_name, points in self._data.items():
-                for t, v in points:
+            for display_name, series in self._series.items():
+                for t, v in series.points():
                     w.writerow([t, display_name, v])
