@@ -25,7 +25,8 @@ Configurations live beside `main.py` in `Configurations/`, independent of the wo
 - `response_ids`: optional list of monitored ECU IDs. When omitted, use `response_id`; the default OBD request/response pair `0x7DF`/`0x7E8` monitors `0x7E8` through `0x7EF`.
 - `database_family`: optional database stem/family. Empty selects the newest database across the database directory.
 - `identifier_11_bit`: standard or extended CAN frames.
-- `extended_id` and `extended_id_byte`: optional UDS extended-address prefix for the periodic TesterPresent frame.
+- `extended_id` and `extended_id_byte`: optional UDS extended-address prefix for TesterPresent and every UDS frame sent by scripts or the Diagnostic Window.
+- `timeout_ms`: UDS response timeout for script and Diagnostic Window requests, default 5000 ms.
 
 Each connection uses a snapshot of one configuration and one selected receiver. Configurations can be edited for the next connection without changing an active session. Traffic from configured response IDs establishes node presence; lack of traffic for the configured timeout marks an established node lost. Unknown response IDs are still visible in the CAN monitor but are not added to the node tree. Monitoring continues after timeout to detect recovery.
 
@@ -42,7 +43,7 @@ engine_2026-09-18_script.py
 
 With family `engine`, the second version is chosen. Supported date suffixes are `_YYYY-MM-DD` and `_YYYYMMDD`; invalid dates are skipped. Date-only stems are also accepted. Dates in filenames determine order, not modification times. Undated legacy files rank below dated files. Ties use filename order. A full stem can select an exact version. The script must share the selected XML stem and end in `_script.py`.
 
-The required workflow no longer depends on receiving an RDBI database ID. `connection_database.json` and `uds_discovery.py` remain as legacy helpers, not a prerequisite for connecting. A connection can monitor nodes even before any node responds.
+The connection workflow does not read a database ID from the ECU; the earlier RDBI discovery helpers have been removed. A connection can monitor nodes even before any node responds.
 
 ## Panel scripts
 
@@ -62,13 +63,14 @@ def DatabaseMainFunction(api):
 - `api.every(seconds, callback)`: periodic callback with no arguments.
 - `api.can.send(id, data)`: sends up to eight bytes using the active configuration's CAN identifier width; shorter script frames retain the legacy eight-byte padding behavior.
 - `api.can.get_latest_messages()`: recent received messages.
+- `api.uds.request(payload)`: sends any UDS request over ISO-TP (multi-frame requests and replies, flow control, NRC 0x78 response pending) and returns the positive or negative reply, or `None` on timeout. Helpers: `tester_present()`, `rdbi(did)` (data record without the DID echo), `request_download(format, address, size)`, `transfer_data(sequence, data)`, `request_transfer_exit()`, `transfer_data_from_file(path, packet_size)`. They use the configuration's request/response IDs, identifier size, extended-address byte and UDS response timeout. Frames received before a request are discarded, and the connection's TesterPresent is deferred while an exchange is in progress.
 - `api.ui.get_value(name)` and `api.ui.set_value(name, value)`: read a cached value or enqueue a GUI update. Scripts must not access Qt widgets directly.
 - `api.log(text)`: application debug log.
 - `api.running` and `api.sleep(seconds)`: cooperative cancellation for older loop-based scripts. Prefer callbacks and return from `DatabaseMainFunction`; a startup loop prevents that script's queued callbacks from being processed.
 
 Callbacks run serially off the GUI thread. Exceptions are logged. Disconnect cancels Python execution, stops timers and reception, revokes the script bus, and closes the CAN adapter. A blocking native/DLL call cannot be forcibly interrupted; it must return on its own. It cannot use the revoked session bus to transmit afterward. Database scripts are ordinary local Python code and have the user's process permissions.
 
-The connection already schedules TesterPresent; database scripts do not need to run their own TesterPresent loop. The existing UDS/firmware convenience helpers are not the new connection scheduler and are outside the requirements acceptance scope. This update does not certify firmware programming or full ISO-TP/ODX functionality; the diagnostic window explicitly limits sends to single-frame requests.
+The connection already schedules TesterPresent; database scripts do not need to run their own TesterPresent loop. The UDS/firmware helpers are not the connection scheduler and are outside the requirements acceptance scope. ISO-TP is implemented for classic CAN (payloads up to 4095 bytes) and is tested against a simulated ECU; firmware programming against a real ECU is not certified. The Diagnostic Window sends ODX-encoded requests of any length on a background thread and shows the complete reply.
 
 ## Designer and bindings
 

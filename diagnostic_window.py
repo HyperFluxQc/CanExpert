@@ -1,12 +1,13 @@
 """
 Diagnostic Window: load ODX/CDD/PDX, list sendable services (with sub-services),
-build request form from ODX parameters and data choices, send UDS request, monitor Server/ECU CAN IDs.
+build request form from ODX parameters and data choices, send UDS requests over ISO-TP
+(multi-frame requests and replies), monitor Server/ECU CAN IDs.
 """
+import threading
 from pathlib import Path
 from datetime import datetime
 
-import can
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -37,6 +38,8 @@ except ImportError:
     HAS_ODXTOOLS = False
 
 from splitter_panel import SplitterPanel
+from panel_runtime import ReceiveMailbox
+from uds_services import uds_request
 
 
 def _get_services_from_db(db):
@@ -65,6 +68,7 @@ def _get_services_from_db(db):
 
 class DiagnosticWindow(QDialog):
     """Load ODX/CDD/PDX, show services tree, request form, send UDS, monitor Server/ECU traffic."""
+    request_finished = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,6 +80,7 @@ class DiagnosticWindow(QDialog):
         self._request_id = 0x7E0
         self._response_id = 0x7E8
         self._build_ui()
+        self.request_finished.connect(self._on_request_finished)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -261,13 +266,19 @@ class DiagnosticWindow(QDialog):
                 self.form_inner.addRow(pname + ":", QLabel("(coded/fixed)"))
         self._current_service = diag_service
 
+    def _log(self, text: str):
+        if hasattr(self, "monitor_log"):
+            self.monitor_log.appendPlainText(text)
+
     def _send_request(self):
         if not getattr(self, "_current_service", None):
             return
         main = self.parent()
         bus = getattr(main, "can_bus", None) if main else None
-        if bus is None:
-            self.monitor_log.appendPlainText("[No CAN bus] Connect from main window first.")
+        worker = (getattr(main, "workers", None) or {}).get("main") if main else None
+        cfg = getattr(main, "session_config", None) if main else None
+        if bus is None or worker is None or cfg is None:
+            self._log("[No CAN bus] Connect from main window first.")
             return
         try:
             kwargs = {}
@@ -279,25 +290,55 @@ class DiagnosticWindow(QDialog):
                         kwargs[pname] = int(widget.text(), 0)
                     except ValueError:
                         kwargs[pname] = widget.text()
-            payload = self._current_service.encode_request(**kwargs)
+            payload = bytes(self._current_service.encode_request(**kwargs))
         except Exception as e:
-            self.monitor_log.appendPlainText(f"[Encode error] {e}")
+            self._log(f"[Encode error] {e}")
             return
-        cfg = getattr(main, "session_config", None) or getattr(main, "active_config", None)
-        req_id = self._request_id
-        if cfg:
-            req_id = cfg.get("request_id") or cfg.get("server_id") or self._request_id
+        transport = {
+            "request_id": cfg["request_id"],
+            "response_id": cfg["response_id"],
+            "timeout": cfg.get("timeout_ms", 2000) / 1000.0,
+            "extended": not cfg.get("identifier_11_bit", True),
+            "address_byte": cfg.get("extended_id_byte") if cfg.get("extended_id") else None,
+        }
+        # A private mailbox sees every frame the session worker receives, without
+        # competing with the panel script for replies.
+        mailbox = ReceiveMailbox(bus, worker.message_sent.emit)
+        worker.add_mailbox(mailbox)
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self._log(f"{ts}  TX  ID=0x{cfg['request_id']:X}  {payload.hex(' ')}")
+        if hasattr(self, "send_btn"):
+            self.send_btn.setEnabled(False)
+        threading.Thread(target=self._exchange, daemon=True,
+                         args=(self._current_service, worker, mailbox, payload, transport)).start()
+
+    def _exchange(self, service, worker, mailbox, payload, transport):
+        """Background thread: one request/response exchange; the result is posted to the GUI thread."""
         try:
-            if len(payload) > 7 - int(bool((cfg or {}).get("extended_id"))):
-                raise ValueError("This diagnostic window supports single-frame requests only")
-            frame = bytes([len(payload)]) + bytes(payload)
-            if (cfg or {}).get("extended_id"):
-                frame = bytes([cfg["extended_id_byte"]]) + frame
-            main.send_can_message(req_id, frame)
-            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            self.monitor_log.appendPlainText(f"{ts}  TX  ID=0x{req_id:X}  {payload.hex()}")
+            reply = uds_request(mailbox, payload, **transport)
+            if reply is None:
+                line = "[No response] Timed out waiting for the ECU"
+            elif reply[0] == 0x7F:
+                nrc = reply[2] if len(reply) > 2 else 0
+                line = f"Negative response: service 0x{reply[1]:02X}, NRC 0x{nrc:02X}  ({reply.hex(' ')})"
+            else:
+                line = f"Response ({len(reply)} bytes): {reply.hex(' ')}"
+                try:
+                    line += "\n    " + str(service.decode_message(reply))
+                except Exception:
+                    pass
         except Exception as e:
-            self.monitor_log.appendPlainText(f"[Send error] {e}")
+            line = f"[UDS error] {e}"
+        finally:
+            worker.remove_mailbox(mailbox)
+            mailbox.close()
+        self.request_finished.emit(line)
+
+    def _on_request_finished(self, line: str):
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        self._log(f"{ts}  {line}")
+        if hasattr(self, "send_btn"):
+            self.send_btn.setEnabled(True)
 
     def on_can_message(self, arb_id: int, data: bytes | list, direction: str = "RX"):
         """Called by main when a CAN message is received; only log if ID matches Server or ECU."""

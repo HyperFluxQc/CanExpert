@@ -2,8 +2,8 @@
 """
 CAN Expert - Main Application
 
-Connect to a CAN channel, run UDS discovery to get a database ID, then load and display
-an application database (forms with buttons, values, checkboxes, etc.).
+Select a configuration and CAN receiver, load the newest matching panel database, then
+connect: send periodic TesterPresent, monitor ECU nodes and run the panel's Python script.
 """
 import json
 import sys
@@ -24,7 +24,7 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSettings, QSize
+    from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 except ImportError:
     print("Missing dependency: PyQt5")
     print("Install with: pip install -r requirements.txt")
@@ -69,19 +69,18 @@ from PyQt5.QtWidgets import QSpinBox, QCheckBox  # noqa: F401 - used by config
 
 from database_loader import load_application_database, decode_value_from_can_data
 from form_designer import FormDesigner
-from uds_discovery import send_uds_and_wait_response
 from can_logger import CANLoggerWindow
 from diagnostic_window import DiagnosticWindow
 from panel_runtime import ScriptRuntime, ReceiveMailbox, validate_config
 from panel_view import PanelView
 from toolbar_icons import toolbar_icon
+from settings_store import app_settings
 
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
 
 DEFAULT_BITRATE = 500000
-DEFAULT_DID = 0xF1F0
 DEFAULT_REQUEST_ID = 0x7DF
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = APP_DIR / "Configurations"
@@ -131,80 +130,6 @@ def create_can_bus(interface: str, channel, bitrate: int, **kwargs) -> can.Bus:
 
 # -----------------------------------------------------------------------------
 # Background workers
-# -----------------------------------------------------------------------------
-
-class UdsDiscoveryWorker(QThread):
-    """Worker that connects to CAN, sends UDS request (DID from config), and parses database ID from response."""
-    database_id_ready = pyqtSignal(str)
-    discovery_failed = pyqtSignal(str)
-    discovery_finished = pyqtSignal()
-
-    def __init__(self, channel, bitrate: int, connection_db_path: str = str(APP_DIR / "connection_database.json"), bus=None,
-                 interface: str = "kvaser", connection_config: dict = None, **bus_kwargs):
-        super().__init__()
-        self.channel = channel
-        self.bitrate = bitrate
-        self.connection_db_path = connection_db_path
-        self.bus = bus
-        self.interface = interface
-        self.bus_kwargs = bus_kwargs
-        self.connection_config = connection_config or {}
-
-    def run(self):
-        try:
-            with open(self.connection_db_path, "r") as f:
-                connection_db = json.load(f)
-        except Exception as e:
-            self.discovery_failed.emit(f"Failed to load connection database: {e}")
-            self.discovery_finished.emit()
-            return
-
-        own_bus = False
-        if self.bus is None:
-            try:
-                self.bus = create_can_bus(self.interface, self.channel, self.bitrate, **self.bus_kwargs)
-                own_bus = True
-            except Exception as e:
-                self.discovery_failed.emit(f"Failed to connect to CAN: {e}")
-                self.discovery_finished.emit()
-                return
-
-        did = self.connection_config.get("did", 0xF1F0)
-        timeout_ms = self.connection_config.get("timeout_ms", 5000)
-        timeout_seconds = timeout_ms / 1000.0
-        identifier_11_bit = self.connection_config.get("identifier_11_bit", True)
-        extended_id = self.connection_config.get("extended_id", False)
-
-        request_id = self.connection_config.get("request_id")
-        response_id = self.connection_config.get("response_id")
-        extended_id_byte = self.connection_config.get("extended_id_byte") if extended_id else None
-        try:
-            db_id = send_uds_and_wait_response(
-                self.bus,
-                connection_db,
-                did=did,
-                timeout_seconds=timeout_seconds,
-                identifier_11_bit=identifier_11_bit,
-                extended_id_uds=extended_id,
-                extended_id_byte=extended_id_byte,
-                request_id=request_id,
-                response_id=response_id,
-            )
-            if db_id:
-                self.database_id_ready.emit(db_id)
-            else:
-                self.discovery_failed.emit("No valid database ID in UDS response")
-        except Exception as e:
-            self.discovery_failed.emit(str(e))
-        finally:
-            if own_bus:
-                try:
-                    self.bus.shutdown()
-                except Exception:
-                    pass
-        self.discovery_finished.emit()
-
-
 # -----------------------------------------------------------------------------
 
 class ChannelActivityScanner(QThread):
@@ -257,7 +182,14 @@ class CanWorker(QThread):
         self.running = False
         self.bus = None
         self.config = None
-        self.mailbox = None
+        self.mailboxes = []
+
+    def add_mailbox(self, mailbox):
+        """Deliver received frames to mailbox as well (script runtime, diagnostic requests)."""
+        self.mailboxes = [*self.mailboxes, mailbox]
+
+    def remove_mailbox(self, mailbox):
+        self.mailboxes = [m for m in self.mailboxes if m is not mailbox]
         
     def setup_connection(self, channel, bitrate=500000, config=None, bus=None):
         """Setup CAN connection. Channel can be int or 'Channel N' string. Pass bus to reuse existing connection."""
@@ -294,7 +226,10 @@ class CanWorker(QThread):
         while self.running:
             try:
                 now = time.monotonic()
-                if now >= next_heartbeat:
+                if now >= next_heartbeat and any(m.in_transaction for m in self.mailboxes):
+                    # A UDS exchange is in progress; interleaving a request would abort it.
+                    next_heartbeat = now + 0.05
+                elif now >= next_heartbeat:
                     payload = bytes([2, 0x3E, 0])
                     if cfg.get("extended_id"):
                         payload = bytes([cfg["extended_id_byte"]]) + payload
@@ -304,8 +239,8 @@ class CanWorker(QThread):
                     next_heartbeat = now + cfg["tester_present_interval_seconds"]
                 message = self.bus.recv(timeout=min(0.05, max(0.001, next_heartbeat-time.monotonic())))
                 if message and not message.is_error_frame and not message.is_remote_frame:
-                    if self.mailbox:
-                        self.mailbox.push(message)
+                    for mailbox in self.mailboxes:
+                        mailbox.push(message)
                     self.message_received.emit({
                         "timestamp": message.timestamp, "arbitration_id": message.arbitration_id,
                         "is_extended_frame": message.is_extended_id, "data": list(message.data),
@@ -316,8 +251,8 @@ class CanWorker(QThread):
 
     def stop(self):
         self.running = False
-        if self.mailbox:
-            self.mailbox.close()
+        for mailbox in self.mailboxes:
+            mailbox.close()
         self.wait()
 
 
@@ -365,17 +300,13 @@ class ConfigurationDialog(QMainWindow):
         self.ecu_id_edit.setText("7E8")
         config_layout.addRow("ECU ID (hex):", self.ecu_id_edit)
 
-        self.did_edit = QLineEdit()
-        self.did_edit.setPlaceholderText("e.g. F1F0 or 0xF1F0 (UDS ReadDataByIdentifier DID)")
-        self.did_edit.setText("F1F0")
-        config_layout.addRow("DID (hex):", self.did_edit)
-
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(500, 60000)
         self.timeout_spin.setSingleStep(500)
         self.timeout_spin.setSuffix(" ms")
         self.timeout_spin.setValue(5000)
-        config_layout.addRow("Timeout:", self.timeout_spin)
+        self.timeout_spin.setToolTip("How long script and Diagnostic Window UDS requests wait for a reply")
+        config_layout.addRow("UDS response timeout:", self.timeout_spin)
         self.heartbeat_spin = QDoubleSpinBox()
         self.heartbeat_spin.setRange(0.05, 3600)
         self.heartbeat_spin.setDecimals(2)
@@ -417,12 +348,6 @@ class ConfigurationDialog(QMainWindow):
         button_layout.addWidget(self.cancel_btn)
         button_layout.addStretch()
         layout.addLayout(button_layout)
-
-    def _parse_did(self, text: str) -> int:
-        s = str(text).strip().upper().replace("0X", "")
-        if not s:
-            return 0xF1F0
-        return int(s, 16) & 0xFFFF
 
     def _parse_id(self, text: str) -> int | None:
         """Parse hex ID (11-bit or 29-bit). Returns int or None if invalid."""
@@ -476,12 +401,6 @@ class ConfigurationDialog(QMainWindow):
                 self.ecu_id_edit.setText(f"{rid:X}")
             else:
                 self.ecu_id_edit.setText(str(rid).strip())
-        if self.config.get("did") is not None:
-            did = self.config["did"]
-            if isinstance(did, int):
-                self.did_edit.setText(f"{did:04X}")
-            else:
-                self.did_edit.setText(str(did).strip())
         if self.config.get("timeout_ms") is not None:
             self.timeout_spin.setValue(int(self.config["timeout_ms"]))
         if self.config.get("extended_id") is not None:
@@ -530,17 +449,16 @@ class ConfigurationDialog(QMainWindow):
                 )
                 return
         try:
-            did = self._parse_did(self.did_edit.text())
             response_ids = [int(v.strip(), 16) for v in self.response_ids_edit.text().split(",") if v.strip()]
         except ValueError:
-            QMessageBox.warning(self, "Invalid configuration", "DID and response IDs must be hexadecimal numbers.")
+            QMessageBox.warning(self, "Invalid configuration", "Monitored ECU IDs must be hexadecimal numbers.")
             return
         config = dict(self.config)
+        config.pop("did", None)  # only used by the removed database-ID discovery
         config.update({
             "name": self.name_edit.currentText().strip() or "Unnamed",
             "bitrate": int(self.bitrate_combo.currentText()),
             "identifier_11_bit": identifier_11_bit,
-            "did": did,
             "timeout_ms": self.timeout_spin.value(),
             "extended_id": extended_id,
             "tester_present_interval_seconds": self.heartbeat_spin.value(),
@@ -1030,7 +948,7 @@ class MainWindow(QMainWindow):
         self.dark_mode_action.triggered.connect(lambda: self.apply_theme('dark'))
         theme_group.addAction(self.dark_mode_action)
         # Restore saved preference
-        settings = QSettings("EZCan2", "KvaserCAN")
+        settings = app_settings()
         saved_theme = settings.value("theme", "light", type=str)
         self.apply_theme(saved_theme, restore=True)
 
@@ -1087,7 +1005,7 @@ class MainWindow(QMainWindow):
         for name, action in self._toolbar_actions.items():
             action.setIcon(toolbar_icon(name, dark=theme == "dark"))
         if not restore:
-            settings = QSettings("EZCan2", "KvaserCAN")
+            settings = app_settings()
             settings.setValue("theme", theme)
 
     def load_configurations(self):
@@ -1116,14 +1034,13 @@ class MainWindow(QMainWindow):
                 "identifier_11_bit": True,
                 "request_id": 0x7DF,
                 "response_id": 0x7E8,
-                "did": DEFAULT_DID,
                 "timeout_ms": 5000,
                 "extended_id": False,
             }
             self.configurations.append(default_config)
             item = QListWidgetItem(default_config["name"])
             self.config_list.addItem(item)
-        last_name = QSettings("EZCan2", "KvaserCAN").value("last_configuration", "", type=str)
+        last_name = app_settings().value("last_configuration", "", type=str)
         selected = next((i for i, cfg in enumerate(self.configurations) if cfg["name"] == last_name), 0)
         if self.config_list.count():
             self.config_list.setCurrentRow(selected)
@@ -1230,12 +1147,13 @@ class MainWindow(QMainWindow):
             generation = self.session_generation
             worker = CanWorker()
             worker.setup_connection(cfg.get("channel", 0), bus=self.can_bus, config=config)
-            worker.mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
+            mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
+            worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
             worker.message_sent.connect(lambda cid, data, g=generation: self.log_can("TX", cid, data) if g == self.session_generation else None)
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
             self.workers["main"] = worker
-            runtime = ScriptRuntime(worker.mailbox, config, self.panel.values(), self)
+            runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
             runtime.logged.connect(self.log_verbose)
             self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
@@ -1266,8 +1184,8 @@ class MainWindow(QMainWindow):
         self.session_generation += 1
         if self.script_runtime:
             for worker in self.workers.values():
-                if worker.mailbox:
-                    worker.mailbox.close()
+                for mailbox in worker.mailboxes:
+                    mailbox.close()
             self.script_runtime.stop()
             self.script_runtime = None
         for worker in self.workers.values():
@@ -1372,7 +1290,7 @@ class MainWindow(QMainWindow):
         for config in self.configurations:
             if config['name'] == config_name:
                 self.active_config = config
-                QSettings("EZCan2", "KvaserCAN").setValue("last_configuration", config_name)
+                app_settings().setValue("last_configuration", config_name)
                 self.status_label.setText(f"Active configuration: {config_name}")
                 break
                 

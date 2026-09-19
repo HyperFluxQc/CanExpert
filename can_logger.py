@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
 )
 
 from splitter_panel import SplitterPanel
-from PyQt5.QtCore import QSettings
+from settings_store import app_settings
 
 # Optional: pyqtgraph for plotting
 try:
@@ -47,7 +47,7 @@ _CURVE_COLORS_DARK = ["#5eb3f6", "#ff6b6b", "#51cf66", "#ffd43b", "#cc92e2", "#e
 
 def _get_theme() -> str:
     """Return 'light' or 'dark' from app settings."""
-    s = QSettings("EZCan2", "KvaserCAN")
+    s = app_settings()
     return s.value("theme", "light", type=str) if s else "light"
 
 

@@ -1,6 +1,7 @@
 """
 Database script API - passed to DatabaseMainFunction(api).
-Provides: CAN send/receive, UDS (TesterPresent, RDBI, RequestDownload, TransferData), DLL calls, UI get/set.
+Provides: CAN send/receive, UDS over ISO-TP (any request, TesterPresent, RDBI, RequestDownload,
+TransferData, RequestTransferExit), DLL calls, UI get/set.
 """
 from __future__ import annotations
 import ctypes
@@ -14,10 +15,12 @@ except ImportError:
     can = None
 
 from uds_services import (
+    uds_request,
     uds_tester_present,
     uds_rdbi,
     uds_request_download,
     uds_transfer_data,
+    uds_request_transfer_exit,
     uds_flash_from_file,
     parse_s19_s28_file,
 )
@@ -27,7 +30,8 @@ class DatabaseAPI:
     """
     API injected into the user's DatabaseMainFunction(api).
     - api.can.send(id, data), api.can.get_latest_messages()
-    - api.uds.tester_present(), api.uds.rdbi(did), api.uds.request_download(format, addr, size), api.uds.transfer_data_from_file(path, packet_size)
+    - api.uds.request(payload), api.uds.tester_present(), api.uds.rdbi(did),
+      api.uds.request_download(format, addr, size), api.uds.transfer_data_from_file(path, packet_size)
     - api.dll.load(path), api.dll.call(name, *args)
     - api.ui.get_value(name), api.ui.set_value(name, value), api.ui.get_widget(name)
     - api.log(msg)
@@ -44,6 +48,8 @@ class DatabaseAPI:
         self._dll_handles = {}
         self._runtime = None
         self._extended = False
+        self._address_byte = None
+        self._uds_timeout = 2.0
         self._stop_event = None
 
         self.can = _CANApi(self)
@@ -118,49 +124,43 @@ class _CANApi:
 
 
 class _UDSApi:
+    """UDS over ISO-TP using the session's request/response IDs, identifier size and address byte."""
+
     def __init__(self, parent: DatabaseAPI):
         self._api = parent
 
-    def tester_present(self, timeout: float = 0.5) -> bool:
-        return uds_tester_present(
-            self._api._bus,
-            request_id=self._api._request_id,
-            response_id=self._api._response_id,
-            timeout=timeout,
-        )
+    def _args(self, timeout):
+        api = self._api
+        return {
+            "request_id": api._request_id,
+            "response_id": api._response_id,
+            "timeout": api._uds_timeout if timeout is None else timeout,
+            "extended": api._extended,
+            "address_byte": api._address_byte,
+        }
 
-    def rdbi(self, did: int, timeout: float = 2.0) -> bytes | None:
-        """ReadDataByIdentifier. Returns response data or None."""
-        return uds_rdbi(
-            self._api._bus,
-            did,
-            request_id=self._api._request_id,
-            response_id=self._api._response_id,
-            timeout=timeout,
-        )
+    def request(self, payload: bytes | list, timeout: float | None = None) -> bytes | None:
+        """Send any UDS request. Returns the reply (positive, or 0x7F negative) or None on timeout."""
+        return uds_request(self._api._bus, bytes(payload), **self._args(timeout))
 
-    def request_download(self, format: int, address: int, size: int, timeout: float = 2.0) -> bool:
-        """RequestDownload (0x34). E.g. format 0x44, address 0x1000, size 0x255."""
-        return uds_request_download(
-            self._api._bus,
-            format,
-            address,
-            size,
-            request_id=self._api._request_id,
-            response_id=self._api._response_id,
-            timeout=timeout,
-        )
+    def tester_present(self, timeout: float | None = None) -> bool:
+        return uds_tester_present(self._api._bus, **self._args(timeout))
 
-    def transfer_data(self, sequence: int, data: bytes, timeout: float = 0.5) -> bool:
-        """TransferData (0x36). sequence 1-based, data up to 6 bytes."""
-        return uds_transfer_data(
-            self._api._bus,
-            sequence,
-            data,
-            request_id=self._api._request_id,
-            response_id=self._api._response_id,
-            timeout=timeout,
-        )
+    def rdbi(self, did: int, timeout: float | None = None) -> bytes | None:
+        """ReadDataByIdentifier. Returns the data record (without SID/DID echo) or None."""
+        return uds_rdbi(self._api._bus, did, **self._args(timeout))
+
+    def request_download(self, format: int, address: int, size: int, timeout: float | None = None) -> bool:
+        """RequestDownload (0x34). format is the address/length format, e.g. 0x44."""
+        return uds_request_download(self._api._bus, format, address, size, **self._args(timeout))
+
+    def transfer_data(self, sequence: int, data: bytes, timeout: float | None = None) -> bool:
+        """TransferData (0x36). sequence is the block counter (0-255); data may span several frames."""
+        return uds_transfer_data(self._api._bus, sequence, data, **self._args(timeout))
+
+    def request_transfer_exit(self, timeout: float | None = None) -> bool:
+        """RequestTransferExit (0x37)."""
+        return uds_request_transfer_exit(self._api._bus, **self._args(timeout))
 
     def transfer_data_from_file(
         self,
@@ -168,15 +168,9 @@ class _UDSApi:
         packet_size: int,
         progress_cb: Callable[[int, int], None] | None = None,
     ) -> tuple[bool, str]:
-        """UDS_TD: flash using S19/S28 file, chunked in packets of packet_size bytes. Returns (success, error_msg)."""
-        return uds_flash_from_file(
-            self._api._bus,
-            s19_or_s28_path,
-            packet_size,
-            request_id=self._api._request_id,
-            response_id=self._api._response_id,
-            progress_cb=progress_cb,
-        )
+        """Flash an S19/S28 file in TransferData blocks of packet_size bytes. Returns (success, error_msg)."""
+        return uds_flash_from_file(self._api._bus, s19_or_s28_path, packet_size,
+                                   progress_cb=progress_cb, **self._args(None))
 
     @staticmethod
     def parse_s19_s28(path: str | Path) -> list[tuple[int, bytes]]:

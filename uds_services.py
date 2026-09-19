@@ -1,9 +1,9 @@
 """
-UDS (Unified Diagnostic Services) - TesterPresent, RDBI, RequestDownload, TransferData.
-S19/S28 file parsing for flashing.
+UDS (Unified Diagnostic Services) over ISO-TP - TesterPresent, RDBI, RequestDownload,
+TransferData, RequestTransferExit. S19/S28 file parsing for flashing.
 """
 import time
-import struct
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable
 
@@ -77,39 +77,218 @@ def parse_s19_s28_file(path: str | Path) -> list[tuple[int, bytes]]:
     return blocks
 
 
-# --- UDS over CAN (ISO-TP style single frame assumed for simplicity) ---
+# --- ISO-TP transport (ISO 15765-2, classic CAN) ---
 
-def _make_single_frame(payload: bytes) -> bytes:
-    """First byte = length (0-7 for single frame), then payload."""
-    if len(payload) > 7:
-        payload = payload[:7]
-    return bytes([0x0 | len(payload)]) + payload
-
-
-def uds_tester_present(bus, request_id: int = 0x7DF, response_id: int = 0x7E8, timeout: float = 0.5) -> bool:
-    """Send TesterPresent (0x3E 0x00). Returns True if response received."""
-    payload = _make_single_frame(bytes([0x3E, 0x00]))
-    msg = can.Message(arbitration_id=request_id, data=payload, is_extended_id=False)
-    bus.send(msg)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        recv = bus.recv(timeout=0.05)
-        if recv and recv.arbitration_id == response_id and recv.dlc >= 2 and recv.data[1] == 0x7E:
-            return True
-    return False
+ISOTP_MAX_LENGTH = 0xFFF
+N_BS_TIMEOUT = 1.0   # wait for a flow control frame
+N_CR_TIMEOUT = 1.0   # wait between consecutive frames
+MAX_FC_WAITS = 16    # flow-control WAIT frames accepted before giving up
 
 
-def uds_rdbi(bus, did: int, request_id: int = 0x7DF, response_id: int = 0x7E8, timeout: float = 2.0) -> bytes | None:
-    """ReadDataByIdentifier (0x22). Returns response data or None."""
-    payload = _make_single_frame(bytes([0x22, (did >> 8) & 0xFF, did & 0xFF]))
-    msg = can.Message(arbitration_id=request_id, data=payload, is_extended_id=False)
-    bus.send(msg)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        recv = bus.recv(timeout=0.1)
-        if recv and recv.arbitration_id == response_id and recv.dlc >= 3 and recv.data[1] == 0x62:
-            return bytes(recv.data[3:])
+class IsoTpError(Exception):
+    """Transport-level failure (no flow control, overflow, sequence error, ...)."""
+
+
+def _frame(body: bytes, address_byte: int | None, padding: int | None) -> bytes:
+    data = bytes(body)
+    if address_byte is not None:
+        data = bytes([address_byte]) + data
+    if padding is not None:
+        data = data.ljust(8, bytes([padding]))
+    return data
+
+
+def _send_frame(bus, can_id, body, extended, address_byte, padding):
+    bus.send(can.Message(arbitration_id=can_id, data=_frame(body, address_byte, padding),
+                         is_extended_id=extended))
+
+
+def _recv_payload(bus, response_id, extended, address_byte, timeout):
+    """Next frame from response_id with the address byte stripped, or None."""
+    msg = bus.recv(timeout=max(0.0, timeout))
+    if msg is None or msg.arbitration_id != response_id or bool(msg.is_extended_id) != extended:
+        return None
+    data = bytes(msg.data)
+    if address_byte is not None:
+        data = data[1:]
+    return data or None
+
+
+def _stmin_seconds(value: int) -> float:
+    if value <= 0x7F:
+        return value / 1000.0
+    if 0xF1 <= value <= 0xF9:
+        return (value - 0xF0) / 10000.0
+    return 0x7F / 1000.0
+
+
+def drain(bus) -> None:
+    """Discard frames already queued, so an earlier reply cannot answer a new request."""
+    clear = getattr(bus, "clear", None)
+    if callable(clear):
+        clear()
+        return
+    for _ in range(4096):
+        if bus.recv(timeout=0) is None:
+            break
+
+
+def _wait_flow_control(bus, response_id, extended, address_byte):
+    deadline = time.monotonic() + N_BS_TIMEOUT
+    waits = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise IsoTpError("No flow control frame from ECU")
+        data = _recv_payload(bus, response_id, extended, address_byte, min(0.1, remaining))
+        if not data or data[0] >> 4 != 0x3:
+            continue
+        status = data[0] & 0x0F
+        if status == 0x0:
+            block_size = data[1] if len(data) > 1 else 0
+            st_min = _stmin_seconds(data[2]) if len(data) > 2 else 0.0
+            return block_size, st_min
+        if status == 0x1:
+            waits += 1
+            if waits > MAX_FC_WAITS:
+                raise IsoTpError("ECU kept sending flow control WAIT")
+            deadline = time.monotonic() + N_BS_TIMEOUT
+            continue
+        raise IsoTpError("ECU reported buffer overflow")
+
+
+def isotp_send(bus, request_id: int, payload: bytes, response_id: int, extended: bool = False,
+               address_byte: int | None = None, padding: int | None = None) -> None:
+    """Send payload as one single frame, or as first + consecutive frames with flow control."""
+    payload = bytes(payload)
+    room = 7 - (address_byte is not None)
+    if not payload:
+        raise IsoTpError("Empty ISO-TP payload")
+    if len(payload) <= room:
+        _send_frame(bus, request_id, bytes([len(payload)]) + payload, extended, address_byte, padding)
+        return
+    if len(payload) > ISOTP_MAX_LENGTH:
+        raise IsoTpError(f"ISO-TP payload exceeds {ISOTP_MAX_LENGTH} bytes")
+    first = room - 1
+    header = bytes([0x10 | (len(payload) >> 8), len(payload) & 0xFF])
+    _send_frame(bus, request_id, header + payload[:first], extended, address_byte, padding)
+    offset, sequence = first, 1
+    while offset < len(payload):
+        block_size, st_min = _wait_flow_control(bus, response_id, extended, address_byte)
+        sent = 0
+        while offset < len(payload) and (block_size == 0 or sent < block_size):
+            if sent and st_min:
+                time.sleep(st_min)
+            chunk = payload[offset:offset + room]
+            _send_frame(bus, request_id, bytes([0x20 | sequence]) + chunk, extended, address_byte, padding)
+            offset += len(chunk)
+            sequence = (sequence + 1) & 0x0F
+            sent += 1
+
+
+def isotp_recv(bus, response_id: int, request_id: int, timeout: float, extended: bool = False,
+               address_byte: int | None = None, padding: int | None = None) -> bytes | None:
+    """Receive one ISO-TP message; sends flow control for multi-frame replies. None on timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        data = _recv_payload(bus, response_id, extended, address_byte,
+                             min(0.1, deadline - time.monotonic()))
+        if not data:
+            continue
+        kind = data[0] >> 4
+        if kind == 0x0:
+            length = data[0] & 0x0F
+            if 0 < length <= len(data) - 1:
+                return data[1:1 + length]
+        elif kind == 0x1 and len(data) >= 2:
+            total = ((data[0] & 0x0F) << 8) | data[1]
+            buffer = bytearray(data[2:])
+            _send_frame(bus, request_id, bytes([0x30, 0x00, 0x00]), extended, address_byte, padding)
+            expected = 1
+            frame_deadline = time.monotonic() + N_CR_TIMEOUT
+            while len(buffer) < total:
+                remaining = frame_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise IsoTpError("Timed out waiting for consecutive frame")
+                part = _recv_payload(bus, response_id, extended, address_byte, min(0.1, remaining))
+                if not part or part[0] >> 4 != 0x2:
+                    continue
+                if part[0] & 0x0F != expected:
+                    raise IsoTpError("Consecutive frame out of sequence")
+                buffer += part[1:]
+                expected = (expected + 1) & 0x0F
+                frame_deadline = time.monotonic() + N_CR_TIMEOUT
+            return bytes(buffer[:total])
     return None
+
+
+# --- UDS services ---
+
+def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int = 0x7E8,
+                timeout: float = 2.0, extended: bool = False, address_byte: int | None = None,
+                padding: int | None = None, pending_timeout: float = 5.0) -> bytes | None:
+    """
+    Send one UDS request and return the ECU's reply (positive or 0x7F negative), or None on timeout.
+    Frames queued before the request are discarded, unrelated replies are skipped and
+    NRC 0x78 (response pending) extends the wait. A bus exposing transaction() (the
+    session mailbox) pauses the periodic TesterPresent while the exchange is in progress.
+    """
+    request = bytes(request)
+    sid = request[0]
+    transaction = getattr(bus, "transaction", None)
+    with transaction() if callable(transaction) else nullcontext():
+        drain(bus)
+        isotp_send(bus, request_id, request, response_id, extended, address_byte, padding)
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            reply = isotp_recv(bus, response_id, request_id, remaining, extended, address_byte, padding)
+            if reply is None:
+                return None
+            if reply[0] == sid + 0x40:
+                return reply
+            if reply[0] == 0x7F and len(reply) >= 3 and reply[1] == sid:
+                if reply[2] == 0x78:
+                    deadline = time.monotonic() + pending_timeout
+                    continue
+                return reply
+
+
+def _positive(reply: bytes | None, sid: int) -> bool:
+    return bool(reply) and reply[0] == sid + 0x40
+
+
+def uds_tester_present(bus, request_id: int = 0x7DF, response_id: int = 0x7E8, timeout: float = 0.5,
+                       **transport) -> bool:
+    """Send TesterPresent (0x3E 0x00). Returns True if a positive response is received."""
+    return _positive(uds_request(bus, b"\x3E\x00", request_id, response_id, timeout, **transport), 0x3E)
+
+
+def uds_rdbi(bus, did: int, request_id: int = 0x7DF, response_id: int = 0x7E8, timeout: float = 2.0,
+             **transport) -> bytes | None:
+    """ReadDataByIdentifier (0x22). Returns the data record (after the echoed DID) or None."""
+    did_bytes = bytes([(did >> 8) & 0xFF, did & 0xFF])
+    reply = uds_request(bus, b"\x22" + did_bytes, request_id, response_id, timeout, **transport)
+    if not _positive(reply, 0x22) or reply[1:3] != did_bytes:
+        return None
+    return reply[3:]
+
+
+def _request_download(bus, format: int, address: int, size: int, request_id: int, response_id: int,
+                      timeout: float, **transport) -> int | None:
+    """RequestDownload (0x34). Returns maxNumberOfBlockLength (0 if not reported) or None on failure."""
+    address_length, size_length = format & 0x0F, format >> 4
+    if not address_length or not size_length:
+        raise ValueError("Format must give address and size lengths, e.g. 0x44 or 0x22")
+    request = (bytes([0x34, 0x00, format]) + address.to_bytes(address_length, "big")
+               + size.to_bytes(size_length, "big"))
+    reply = uds_request(bus, request, request_id, response_id, timeout, **transport)
+    if not _positive(reply, 0x34):
+        return None
+    field_length = reply[1] >> 4 if len(reply) > 1 else 0
+    return int.from_bytes(reply[2:2 + field_length], "big") if field_length else 0
 
 
 def uds_request_download(
@@ -120,29 +299,10 @@ def uds_request_download(
     request_id: int = 0x7DF,
     response_id: int = 0x7E8,
     timeout: float = 2.0,
+    **transport,
 ) -> bool:
-    """RequestDownload (0x34). format e.g. 0x22 (2-byte addr/size) or 0x44 (4-byte). Single-frame: max 7 payload bytes so 0x22 + 2 addr + 2 size."""
-    if format == 0x44:
-        addr_b = address.to_bytes(4, "big")
-        size_b = size.to_bytes(4, "big")
-        payload = bytes([0x34, format]) + addr_b + size_b
-        # 10 bytes - need multi-frame; send as single 8-byte CAN frame without ISO-TP length byte
-        msg = can.Message(arbitration_id=request_id, data=payload[:8], is_extended_id=False)
-    else:
-        addr_b = (address & 0xFFFF).to_bytes(2, "big")
-        size_b = (size & 0xFFFF).to_bytes(2, "big")
-        payload = _make_single_frame(bytes([0x34, format]) + addr_b + size_b)
-        msg = can.Message(arbitration_id=request_id, data=payload[:8], is_extended_id=False)
-    bus.send(msg)
-    if format == 0x44 and len(payload) > 8:
-        msg2 = can.Message(arbitration_id=request_id, data=payload[8:], is_extended_id=False)
-        bus.send(msg2)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        recv = bus.recv(timeout=0.1)
-        if recv and recv.arbitration_id == response_id and recv.dlc >= 2 and recv.data[1] == 0x74:
-            return True
-    return False
+    """RequestDownload (0x34). format is the addressAndLengthFormatIdentifier, e.g. 0x44 (4-byte address and size)."""
+    return _request_download(bus, format, address, size, request_id, response_id, timeout, **transport) is not None
 
 
 def uds_transfer_data(
@@ -151,20 +311,20 @@ def uds_transfer_data(
     data: bytes,
     request_id: int = 0x7DF,
     response_id: int = 0x7E8,
-    timeout: float = 0.5,
+    timeout: float = 2.0,
+    **transport,
 ) -> bool:
-    """TransferData (0x36). sequence 1-based, data up to 6 bytes in single frame. Returns True if ACK."""
-    if sequence < 1 or sequence > 0xFF or len(data) > 6:
+    """TransferData (0x36). sequence is the block sequence counter (0-255). Returns True if acknowledged."""
+    if not 0 <= sequence <= 0xFF:
         return False
-    payload = _make_single_frame(bytes([0x36, sequence & 0xFF]) + data[:6])
-    msg = can.Message(arbitration_id=request_id, data=payload, is_extended_id=False)
-    bus.send(msg)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        recv = bus.recv(timeout=0.05)
-        if recv and recv.arbitration_id == response_id and recv.dlc >= 2 and recv.data[1] == 0x76:
-            return True
-    return False
+    reply = uds_request(bus, bytes([0x36, sequence]) + bytes(data), request_id, response_id, timeout, **transport)
+    return _positive(reply, 0x36) and len(reply) > 1 and reply[1] == sequence
+
+
+def uds_request_transfer_exit(bus, request_id: int = 0x7DF, response_id: int = 0x7E8, timeout: float = 2.0,
+                              **transport) -> bool:
+    """RequestTransferExit (0x37)."""
+    return _positive(uds_request(bus, b"\x37", request_id, response_id, timeout, **transport), 0x37)
 
 
 def uds_flash_from_file(
@@ -174,10 +334,12 @@ def uds_flash_from_file(
     request_id: int = 0x7DF,
     response_id: int = 0x7E8,
     progress_cb: Callable[[int, int], None] | None = None,
+    timeout: float = 2.0,
+    **transport,
 ) -> tuple[bool, str]:
     """
-    Perform UDS flashing: RequestDownload then TransferData for each chunk from S19/S28 file.
-    packet_size = bytes per TransferData (e.g. 4 or 6 for single-frame).
+    Flash an S19/S28 file: RequestDownload, TransferData blocks and RequestTransferExit per record block.
+    packet_size = data bytes per TransferData, capped by the ECU's maxNumberOfBlockLength.
     Returns (success, error_message).
     """
     blocks = parse_s19_s28_file(s19_path)
@@ -187,17 +349,21 @@ def uds_flash_from_file(
     total_size = sum(len(d) for _, d in blocks)
     for addr, data in blocks:
         size = len(data)
-        if not uds_request_download(bus, 0x44, addr, size, request_id, response_id):
+        max_block = _request_download(bus, 0x44, addr, size, request_id, response_id, timeout, **transport)
+        if max_block is None:
             return False, f"RequestDownload failed at 0x{addr:X}"
+        chunk_size = max(1, min(packet_size, max_block - 2) if max_block > 2 else packet_size)
         offset = 0
         seq = 1
         while offset < size:
-            chunk = data[offset : offset + min(packet_size, 6)]
-            if not uds_transfer_data(bus, seq, chunk, request_id, response_id):
+            chunk = data[offset : offset + chunk_size]
+            if not uds_transfer_data(bus, seq, chunk, request_id, response_id, timeout, **transport):
                 return False, f"TransferData failed at 0x{addr:X} seq {seq}"
             offset += len(chunk)
-            seq += 1
+            seq = (seq + 1) & 0xFF
             total_sent += len(chunk)
             if progress_cb:
                 progress_cb(total_sent, total_size)
+        if not uds_request_transfer_exit(bus, request_id, response_id, timeout, **transport):
+            return False, f"RequestTransferExit failed at 0x{addr:X}"
     return True, ""

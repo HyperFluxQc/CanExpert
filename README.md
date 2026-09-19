@@ -39,88 +39,74 @@ Use **Form Designer** to create pages, drag controls into place, assign unique s
 
 See [Requirements implementation](REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
-## Legacy connection database (`connection_database.json`)
-
-This file is used by the legacy RDBI discovery helper. The required connection workflow selects a dated database directly and does not require discovery.
-
-Defines the UDS request and how to parse the response:
-
-```json
-{
-  "uds_request": {
-    "request_id": 2015,
-    "response_id": 2024,
-    "payload_hex": "03 22 F1 80",
-    "timeout_seconds": 2.0
-  },
-  "response_parsing": {
-    "database_id_bytes": [4, 5],
-    "format": "decimal",
-    "byte_order": "big"
-  }
-}
-```
-
-- **payload_hex**: UDS payload (e.g. `03 22 F1 80` = length 3, service 0x22, DID 0xF180)
-- **database_id_bytes**: Byte indices in the response that contain the database ID
-- **format**: `decimal`, `hex`, `bcd`, or `packed`
-
 ## Application Database (XML)
 
-Place XML files in the `Databases/` folder, named by database ID (e.g. `1001.xml`).
-
-### Example: `Databases/1001.xml`
+Place panel databases in `Databases/`, named `family_YYYY-MM-DD.xml`, with an optional script beside each one named `family_YYYY-MM-DD_script.py`. The newest date for the configuration's database family is loaded on Connect. The Form Designer creates and edits these files; `examples/` contains a runnable pair.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<application_database name="1001">
-    <description>Temperature &amp; Control Panel</description>
-    
-    <buttons>
-        <button id="1" label="Start System" can_id="0x200" data="01 00 00 00 00 00 00 00"/>
-        <button id="2" label="Stop System" can_id="0x200" data="02 00 00 00 00 00 00 00"/>
-    </buttons>
-    
-    <values>
-        <value id="1" label="Temperature" unit="°C" can_id="0x300" byte_start="0" byte_length="2" scale="0.1" offset="0" type="float"/>
-        <value id="2" label="Pressure" unit="bar" can_id="0x300" byte_start="2" byte_length="2" scale="0.01" offset="0" type="float"/>
-    </values>
-    
-    <checkboxes>
-        <checkbox id="1" label="Enable Logging" can_id="0x201" byte="0" bit="0"/>
-    </checkboxes>
-    
-    <sliders>
-        <slider id="1" label="Brightness" min="0" max="100" can_id="0x202" byte="0" type="integer"/>
-    </sliders>
+<application_database name="engine">
+  <description>Temperature &amp; Control Panel</description>
+  <pages>
+    <page name="Main">
+      <button label="Start" binding_value="start" x="20" y="20"/>
+      <value label="Status" binding_value="status" x="20" y="60"/>
+      <value label="Temperature" unit="°C" can_id="0x300" byte_start="0" byte_length="2" scale="0.1" x="20" y="100"/>
+      <checkbox label="Enable Logging" can_id="0x201" byte="0" bit="0" x="20" y="140"/>
+      <slider label="Brightness" min="0" max="100" can_id="0x202" byte="0" x="20" y="180"/>
+    </page>
+  </pages>
 </application_database>
 ```
 
-### Element attributes
+Controls can be driven by a script binding (`binding_value`), a DBC signal (`binding_type="dbc"`, `binding_value="Message.Signal"`), or a raw CAN mapping:
 
-| Element   | Attributes                                                                 | Description                          |
-|-----------|----------------------------------------------------------------------------|--------------------------------------|
-| **button**  | `can_id`, `data` (hex bytes)                                               | Sends CAN message when clicked       |
-| **value**   | `can_id`, `byte_start`, `byte_length`, `scale`, `offset`, `type`            | Reads from CAN and displays          |
-| **checkbox**| `can_id`, `byte`, `bit`                                                    | Sends bit state when toggled         |
-| **slider**  | `can_id`, `byte`, `min`, `max`                                             | Sends byte value when changed       |
+| Element | Raw CAN attributes | Behaviour |
+|---|---|---|
+| **button** | `can_id`, `data` (hex bytes) | Sends the frame when clicked |
+| **value** | `can_id`, `byte_start`, `byte_length`, `scale`, `offset`, `value_type` | Decodes and displays received data |
+| **checkbox** | `can_id`, `byte`, `bit` | Sends the bit state when toggled |
+| **slider** | `can_id`, `byte`, `min`, `max` | Sends the byte value when changed |
+
+Also available: `label`, `text_input`, `io_box`, `combo`, `gauge`, `progress_bar`, `led`.
+
+## Panel scripts
+
+```python
+def DatabaseMainFunction(api):
+    api.on("start", lambda value: api.can.send(0x200, [1]))
+    vin = api.uds.rdbi(0xF190)  # UDS over ISO-TP, multi-frame replies supported
+    api.ui.set_value("status", vin.decode(errors="replace") if vin else "No VIN")
+```
+
+See [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts) for the full API.
 
 ## File structure
 
 ```
 CanExpert/
-├── main.py
-├── uds_discovery.py
-├── database_loader.py
-├── database_api.py
-├── uds_services.py
-├── form_designer.py (Form Designer dialog)
-├── connection_database.json
-├── Databases/
-│   ├── 1001.xml
-│   └── 1001_script.py
-├── Configurations/
-│   └── config_*.json
-├── DOCUMENTATION.md   # Developer docs + architecture diagrams
+├── main.py                 # Entry point
+├── database_loader.py      # Panel database selection and parsing
+├── panel_view.py           # Panel rendering
+├── panel_runtime.py        # Script runtime, CAN mailbox, config validation
+├── database_api.py         # Script API (CAN, UDS, DLL, UI)
+├── uds_services.py         # ISO-TP transport, UDS services, S19/S28 flashing
+├── form_designer.py        # Form Designer
+├── can_logger.py           # CAN Logger (DBC decoding, graphs)
+├── diagnostic_window.py    # ODX Diagnostic Window
+├── settings_store.py       # Persistent settings
+├── Databases/              # family_YYYY-MM-DD.xml + _script.py
+├── Configurations/         # config_*.json
+├── examples/
+├── tests/
+├── DOCUMENTATION.md        # Developer docs + architecture diagrams
 └── requirements.txt
 ```
+
+## Tests
+
+```bash
+python -B -m unittest discover -s tests -v
+```
+
+The tests use python-can's virtual interface; no hardware is required.

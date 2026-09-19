@@ -69,7 +69,7 @@ class RequirementsTest(unittest.TestCase):
         self.patches = [
             patch.object(main, "CONFIG_DIR", self.configs),
             patch.object(main, "DATABASES_DIR", self.databases),
-            patch.object(main, "QSettings", lambda *a: self.settings),
+            patch.object(main, "app_settings", lambda: self.settings),
             patch.object(main.can, "detect_available_configs", return_value=[]),
             patch.object(main, "create_can_bus", lambda *a, **k: can.Bus(interface="virtual", channel=self.channel)),
         ]
@@ -331,22 +331,41 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertIsNone(self.window.script_runtime)
         self.assertTrue(self.window.connect_btn.isEnabled())
 
-    def test_diagnostic_single_frame_send(self):
+    def test_diagnostic_multi_frame_exchange(self):
         from types import SimpleNamespace
         from diagnostic_window import DiagnosticWindow
         self.window.on_connect_clicked()
-        fake = SimpleNamespace(_current_service=SimpleNamespace(encode_request=lambda **k: b'\x3e\x00'),
-                               parent=lambda: self.window, _param_widgets={}, _request_id=0x7e0,
-                               monitor_log=SimpleNamespace(appendPlainText=lambda s: None))
-        DiagnosticWindow._send_request(fake)
-        frames = []
-        def received():
+        dialog = DiagnosticWindow(self.window)
+        request = bytes([0x2E, 0xF1, 0x90]) + b"WVWZZZ1KZAW000001"
+        reply = bytes([0x6E, 0xF1, 0x90]) + bytes(range(10))
+        dialog._current_service = SimpleNamespace(encode_request=lambda **k: request,
+                                                  decode_message=lambda r: "decoded reply")
+        dialog._send_request()
+        state = {"total": None, "data": b"", "replied": False}
+        def ecu_step():
             message = self.ecu.recv(0)
-            if message:
-                frames.append(message)
-            return len(frames) >= 2
-        self.assertTrue(spin_until(received))
-        self.assertTrue(all(bytes(m.data) == b'\x02\x3e\x00' for m in frames))
+            if message and message.arbitration_id == 0x7E0:
+                data = bytes(message.data)
+                kind = data[0] >> 4
+                if kind == 1:
+                    state["total"] = ((data[0] & 0xF) << 8) | data[1]
+                    state["data"] = data[2:]
+                    self.ecu.send(can.Message(arbitration_id=0x7E8, data=[0x30, 0, 0], is_extended_id=False))
+                elif kind == 2 and state["total"]:
+                    state["data"] += data[1:]
+                    if len(state["data"]) >= state["total"]:
+                        self.ecu.send(can.Message(arbitration_id=0x7E8, data=bytes([0x10, len(reply)]) + reply[:6],
+                                                  is_extended_id=False))
+                elif kind == 3 and not state["replied"]:
+                    state["replied"] = True
+                    self.ecu.send(can.Message(arbitration_id=0x7E8, data=bytes([0x21]) + reply[6:],
+                                              is_extended_id=False))
+            return "decoded reply" in dialog.monitor_log.toPlainText()
+        self.assertTrue(spin_until(ecu_step, timeout=5), dialog.monitor_log.toPlainText())
+        self.assertEqual(state["data"][:state["total"]], request)
+        self.assertIn(f"Response (13 bytes): {reply.hex(' ')}", dialog.monitor_log.toPlainText())
+        self.assertTrue(dialog.send_btn.isEnabled())
+        self.assertEqual(self.window.workers["main"].mailboxes[1:], [])
 
     def test_all_display_and_input_widget_types(self):
         from panel_view import PanelView

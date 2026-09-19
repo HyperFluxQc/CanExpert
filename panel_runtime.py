@@ -3,6 +3,7 @@ import queue
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -32,6 +33,8 @@ class ScriptRuntime(QObject):
                                config.get("response_id", 0x7E8), log_cb=self.logged.emit)
         self.api._runtime = self
         self.api._extended = not config.get("identifier_11_bit", True)
+        self.api._address_byte = config.get("extended_id_byte") if config.get("extended_id") else None
+        self.api._uds_timeout = config.get("timeout_ms", 2000) / 1000.0
         self.api._stop_event = self.stop_event
 
     def start(self, path):
@@ -124,6 +127,30 @@ class ReceiveMailbox:
         self.messages = queue.Queue(maxsize=2048)
         self.lock = threading.Lock()
         self.closed = False
+        self._transactions = 0
+
+    @contextmanager
+    def transaction(self):
+        """Mark a request/response exchange; the CAN worker defers TesterPresent meanwhile."""
+        with self.lock:
+            self._transactions += 1
+        try:
+            yield
+        finally:
+            with self.lock:
+                self._transactions -= 1
+
+    @property
+    def in_transaction(self):
+        return self._transactions > 0
+
+    def clear(self):
+        """Discard queued frames so a new request only sees replies received after it."""
+        while True:
+            try:
+                self.messages.get_nowait()
+            except queue.Empty:
+                return
 
     def send(self, message):
         with self.lock:
@@ -136,14 +163,15 @@ class ReceiveMailbox:
     def push(self, message):
         if self.closed:
             return
-        try:
-            self.messages.put_nowait(message)
-        except queue.Full:
+        while True:
             try:
-                self.messages.get_nowait()
-            except queue.Empty:
-                pass
-            self.messages.put_nowait(message)
+                self.messages.put_nowait(message)
+                return
+            except queue.Full:
+                try:
+                    self.messages.get_nowait()
+                except queue.Empty:
+                    pass
 
     def recv(self, timeout=0.1):
         if self.closed:
