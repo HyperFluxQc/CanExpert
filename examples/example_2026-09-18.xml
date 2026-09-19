@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<application_database name="Python panel example">
+  <description>Start sends a CAN command. Type text to update Status. Incoming CAN updates RX.</description>
+  <pages>
+    <page name="Main">
+      <button id="1" label="Start" x="20" y="20" width="120" height="32" binding_type="script" binding_value="start" />
+      <checkbox id="2" label="Enable" x="160" y="20" width="120" height="32" binding_type="script" binding_value="enable" />
+      <io_box id="3" label="Enter text" x="20" y="70" width="260" height="32" value_type="string" binding_type="script" binding_value="input" />
+      <label id="4" text="Status" label="Status caption" x="20" y="120" width="100" height="28" />
+      <value id="5" label="Status value" x="130" y="120" width="360" height="28" binding_type="script" binding_value="status" />
+      <label id="6" text="RX" label="RX caption" x="20" y="160" width="100" height="28" />
+      <value id="7" label="RX value" x="130" y="160" width="400" height="28" binding_type="script" binding_value="rx" />
+    </page>
+  </pages>
+</application_database>

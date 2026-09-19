@@ -1,0 +1,933 @@
+"""
+CAN Expert main window: configurations, CAN receivers with their ECU nodes, Connect/Disconnect (load
+the newest matching panel database, send periodic TesterPresent, run the panel's Python script),
+Flashing, the tool windows and the logs.
+"""
+import json
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+import can
+from PyQt5.QtCore import QSize, Qt, QTimer
+from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtWidgets import (
+    QAction,
+    QActionGroup,
+    QApplication,
+    QDialog,
+    QDockWidget,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QToolBar,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from canexpert.can_bus import (SUPPORTED_INTERFACES, CanWorker, ChannelActivityScanner, ReceiveMailbox, channel_key,
+                               open_channel)
+from canexpert.can_logger import CANLoggerWindow
+from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
+                              validate_config)
+from canexpert.designer.form_designer import FormDesigner
+from canexpert.diagnostic_window import DiagnosticWindow
+from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
+                                update_progress)
+from canexpert.panel.database import load_application_database
+from canexpert.panel.runtime import ScriptRuntime
+from canexpert.panel.view import PanelView
+from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
+from canexpert.ui_common import DockTitleBar, app_settings, toolbar_icon
+
+
+class MainWindow(QMainWindow):
+    """Main application window"""
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("CAN Expert")
+        self.setGeometry(100, 100, 1000, 700)
+        
+        # Configuration management
+        self.configurations = []
+        self.active_config = None
+        self.workers = {}
+        self.can_bus = None
+        self.app_database = None
+        self.channel_activity = {}  # channel key -> traffic seen by the last activity scan
+        self.connected_channel_config = None
+        self.selected_channel_config = None
+        self.activity_scanner = None
+        self.script_runtime = None
+        self.flash_dialog = None
+        self._auto_minimized = []  # dock title bars minimized on connect, restored on disconnect
+        self._left_split = None    # Configuration / CAN Channels heights before they were minimized
+        self.panel = None
+        self.session_config = None
+        self.node_states = {}
+        self.channel_items = {}
+        self.node_items = {}
+        self.session_generation = 0
+        # Checks the ECUs with TesterPresent while no database is connected (after Disconnect, or on request).
+        self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
+
+        self.init_ui()
+        self.load_configurations()
+        self.node_timer = QTimer(self)
+        self.node_timer.setInterval(100)
+        self.node_timer.timeout.connect(self._update_nodes)
+        self.node_timer.start()
+
+    # --- UI setup ---
+
+    def init_ui(self):
+        """Build CANoe-style main window: toolbar, status bar, dockable Configuration, CAN Channels, Database, Log."""
+        # Status bar (status message)
+        self.status_label = QLabel("No active connections")
+        self._set_status("No active connections", "gray")
+        self.statusBar().addPermanentWidget(self.status_label)
+
+        toolbar = QToolBar("Main actions", self)
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(28, 28))
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        toolbar.setStyleSheet("""
+            QToolBar { spacing: 4px; padding: 6px; border: none; }
+            QToolBar QToolButton { padding: 6px 8px; border-radius: 6px; }
+            QToolBar QToolButton:hover { background: palette(midlight); }
+            QToolBar QToolButton:pressed { background: palette(mid); }
+        """)
+        self._toolbar_actions = {}
+        entries = [
+            ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
+            ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
+             self.disconnect_database),
+            ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
+            ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
+            ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
+            ("flashing", "Flashing", "Flash ECU firmware using the database's Flashing() function", self.open_flashing),
+        ]
+        for name, label, hint, callback in entries:
+            if name == "designer":
+                toolbar.addSeparator()
+            action = QAction(toolbar_icon(name), label, self, triggered=callback)
+            action.setToolTip(hint)
+            action.setStatusTip(hint)
+            button = QToolButton()
+            button.setDefaultAction(action)
+            button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            button.setIconSize(QSize(28, 28))
+            button.setMinimumSize(96, 66)
+            button.setAccessibleName(label)
+            toolbar_item = toolbar.addWidget(button)
+            self._toolbar_actions[name] = action
+            if name == "flashing":
+                # Shown only while connected to a database.
+                self.flashing_toolbar_item = toolbar_item
+                toolbar_item.setVisible(False)
+            if name == "connect":
+                self.connect_btn = button
+            elif name == "disconnect":
+                self.disconnect_btn = button
+                button.setEnabled(False)
+        self.addToolBar(toolbar)
+
+        # Central area: empty placeholder (docks sit around it)
+        central = QWidget()
+        central.setMinimumSize(0, 0)
+        central.setMaximumWidth(0)
+        self.setCentralWidget(central)
+
+        # Dock: Configuration (closable, collapsible)
+        config_widget = QWidget()
+        config_layout = QVBoxLayout()
+        self.config_list = QListWidget()
+        self.config_list.itemClicked.connect(self.on_config_selected)
+        self.config_list.itemDoubleClicked.connect(self.edit_configuration)
+        config_layout.addWidget(self.config_list)
+        btn_row = QHBoxLayout()
+        self.new_config_btn = QPushButton("New")
+        self.new_config_btn.setToolTip("Create a CAN configuration")
+        self.new_config_btn.clicked.connect(self.create_new_config)
+        self.import_config_btn = QPushButton("Import")
+        self.import_config_btn.clicked.connect(self.import_config)
+        self.export_config_btn = QPushButton("Export")
+        self.export_config_btn.clicked.connect(self.export_config)
+        btn_row.addWidget(self.new_config_btn)
+        btn_row.addWidget(self.import_config_btn)
+        btn_row.addWidget(self.export_config_btn)
+        config_layout.addLayout(btn_row)
+        config_widget.setLayout(config_layout)
+        self.config_dock = QDockWidget("Configuration", self)
+        self.config_dock.setWidget(config_widget)
+        self.config_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.config_dock.setTitleBarWidget(DockTitleBar(self.config_dock, self, Qt.LeftDockWidgetArea))
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.config_dock)
+
+        # Dock: CAN Channels (separate window, below Configuration on the left)
+        channels_widget = QWidget()
+        channels_layout = QVBoxLayout()
+        self.channel_list = QTreeWidget()
+        self.channel_list.setHeaderLabels(["CAN receivers and nodes"])
+        self.channel_list.itemClicked.connect(self.on_channel_selected)
+        self.channel_list.itemDoubleClicked.connect(self.on_channel_double_clicked)
+        self.channel_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.channel_list.customContextMenuRequested.connect(self._channel_menu)
+        channels_layout.addWidget(self.channel_list)
+        ch_btn_layout = QHBoxLayout()
+        self.refresh_channels_btn = QPushButton("Refresh")
+        self.refresh_channels_btn.clicked.connect(self.refresh_channel_list)
+        self.scan_activity_btn = QPushButton("Scan Activity")
+        self.scan_activity_btn.clicked.connect(self.scan_channel_activity)
+        ch_btn_layout.addWidget(self.refresh_channels_btn)
+        ch_btn_layout.addWidget(self.scan_activity_btn)
+        channels_layout.addLayout(ch_btn_layout)
+        channels_widget.setLayout(channels_layout)
+        self.channels_dock = QDockWidget("CAN Channels", self)
+        self.channels_dock.setWidget(channels_widget)
+        self.channels_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.channels_dock.setTitleBarWidget(DockTitleBar(self.channels_dock, self, Qt.LeftDockWidgetArea))
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.channels_dock)
+        self.splitDockWidget(self.config_dock, self.channels_dock, Qt.Vertical)
+
+        # Dock: Database (shown when connected and DB loaded; contains application UI)
+        self.app_db_scroll = QScrollArea()
+        self.app_db_scroll.setWidgetResizable(True)
+        self.app_db_container = QWidget()
+        self.app_db_layout = QVBoxLayout()
+        self.app_db_container.setLayout(self.app_db_layout)
+        self.app_db_scroll.setWidget(self.app_db_container)
+        self.database_dock = QDockWidget("Database", self)
+        self.database_dock.setWidget(self.app_db_scroll)
+        self.database_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.database_dock.setTitleBarWidget(DockTitleBar(self.database_dock, self, Qt.RightDockWidgetArea))
+        self.addDockWidget(Qt.RightDockWidgetArea, self.database_dock)
+        self.database_dock.hide()
+
+        # Dock: Log (Debug + CAN Monitor)
+        log_tabs = QTabWidget()
+        self.debug_log = QPlainTextEdit()
+        self.debug_log.setReadOnly(True)
+        self.debug_log.setPlaceholderText("Application debug and status messages…")
+        self.debug_log.setMaximumBlockCount(2000)
+        log_tabs.addTab(self.debug_log, "Debug / Verbose")
+        self.can_log = QPlainTextEdit()
+        self.can_log.setReadOnly(True)
+        self.can_log.setPlaceholderText("CAN traffic (TX/RX) for the connected channel…")
+        self.can_log.setMaximumBlockCount(5000)
+        log_tabs.addTab(self.can_log, "CAN Monitor")
+        self.log_dock = QDockWidget("Log", self)
+        self.log_dock.setWidget(log_tabs)
+        self.log_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.log_dock.setTitleBarWidget(DockTitleBar(self.log_dock, self, Qt.BottomDockWidgetArea))
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
+
+        self.create_menu()
+        self.refresh_channel_list()
+        self.log_verbose("Application started.")
+
+    def _set_status(self, text: str, color: str = "gray"):
+        """Update status label text and optional color (gray, green, red, orange)."""
+        self.status_label.setText(text)
+        colors = {"gray": "gray", "green": "green", "red": "red", "orange": "orange"}
+        self.status_label.setStyleSheet(f"QLabel {{ color: {colors.get(color, 'gray')}; }}")
+
+    def _time_str(self) -> str:
+        """Return current time as HH:MM:SS:mmm."""
+        now = datetime.now()
+        return now.strftime("%H:%M:%S") + f":{now.microsecond // 1000:03d}"
+
+    def log_verbose(self, msg: str):
+        """Append a message to the debug/verbose log."""
+        if getattr(self, "debug_log", None) is None:
+            return
+        line = f"[{self._time_str()}] {msg}"
+        self.debug_log.appendPlainText(line)
+
+    def log_can(self, direction: str, arbitration_id: int, data: list | bytes):
+        """Append a CAN message to the CAN monitor (direction TX or RX, ID, hex data)."""
+        if getattr(self, "can_log", None) is None:
+            return
+        data = list(data) if not isinstance(data, (list, bytearray)) else list(data)
+        hex_str = " ".join(f"{b:02X}" for b in data[:8])
+        line = f"{self._time_str()}  {direction:>3}  ID: 0x{arbitration_id:X}  {hex_str}"
+        self.can_log.appendPlainText(line)
+
+    # --- Channel list ---
+
+    def refresh_channel_list(self):
+        self.channel_list.clear()
+        self.channel_items.clear()
+        self.node_items.clear()
+        self.can_channels = []
+        for interface, label in SUPPORTED_INTERFACES:
+            try:
+                for cfg in can.detect_available_configs(interfaces=[interface], timeout=2.0):
+                    cfg["interface"] = interface
+                    self.can_channels.append(cfg)
+            except Exception as exc:
+                self.log_verbose(f"{label} detection: {exc}")
+        for in_use in (self.connected_channel_config, self.monitor_channel if self.ecu_monitor else None):
+            if in_use and not any(channel_key(c) == channel_key(in_use) for c in self.can_channels):
+                self.can_channels.append(in_use)
+        for cfg in self.can_channels:
+            item = QTreeWidgetItem([self._channel_label(cfg)])
+            item.setData(0, Qt.UserRole, cfg)
+            self.channel_list.addTopLevelItem(item)
+            self.channel_items[channel_key(cfg)] = item
+        if not self.can_channels:
+            self.channel_list.addTopLevelItem(QTreeWidgetItem(["No CAN receivers found"]))
+        self._update_nodes()
+
+    def _channel_label(self, cfg):
+        label = f"[{cfg['interface']}] Ch {cfg.get('channel', 0)}: {cfg.get('device_name', cfg.get('description', 'CAN receiver'))}"
+        serial = cfg.get("serial") or cfg.get("unique_hardware_id")
+        if serial:
+            label += f" ({serial})"
+        active = self.channel_activity.get(channel_key(cfg))
+        if active is not None:
+            label += " — traffic" if active else " — no traffic"
+        if self.connected_channel_config and channel_key(cfg) == channel_key(self.connected_channel_config):
+            label += " [Connected]"
+        elif self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
+            label += " [Checking ECUs]"
+        return label
+
+    def _label_channels(self):
+        for item in self.channel_items.values():
+            item.setText(0, self._channel_label(item.data(0, Qt.UserRole)))
+
+    def _channel_checked(self, key):
+        """True while ECU replies on this channel are being watched: a database session or the ECU check."""
+        if self.can_bus is not None and self.connected_channel_config is not None:
+            if key == channel_key(self.connected_channel_config):
+                return True
+        return self.ecu_monitor is not None and key == channel_key(self.monitor_channel)
+
+    def _update_nodes(self):
+        now = time.monotonic()
+        for (channel, can_id), state in self.node_states.items():
+            parent = self.channel_items.get(channel)
+            if parent is None:
+                continue
+            item = self.node_items.get((channel, can_id))
+            if item is None:
+                item = QTreeWidgetItem(parent)
+                self.node_items[(channel, can_id)] = item
+                parent.setExpanded(True)
+            if not self._channel_checked(channel):
+                symbol, status, colour = "○", "Not checked", "gray"
+            elif now - state["last_seen"] > state["timeout"]:
+                symbol, status, colour = "✗", "Lost connection", "red"
+            else:
+                symbol, status, colour = "●", "Responding", "green"
+            item.setText(0, f"{symbol} ECU 0x{can_id:X} — {status}")
+            item.setForeground(0, QColor(colour))
+            item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))
+
+    def scan_channel_activity(self):
+        """Scan channels for CAN activity (when disconnected)."""
+        if self.can_bus:
+            QMessageBox.information(
+                self, "Info",
+                "Disconnect first to scan for activity on other channels."
+            )
+            return
+        if not getattr(self, "can_channels", None) or not self.can_channels:
+            self.refresh_channel_list()
+        if not self.can_channels:
+            return
+        bitrate = 500000
+        if self.active_config:
+            bitrate = int(self.active_config.get("bitrate", 500000))
+        self.scan_activity_btn.setEnabled(False)
+        self.status_label.setText("Scanning channels for activity...")
+        self.activity_scanner = ChannelActivityScanner(self.can_channels, bitrate)
+        self.activity_scanner.channel_activity.connect(self.on_activity_scan_result)
+        self.activity_scanner.finished.connect(self.on_activity_scan_finished)
+        self.activity_scanner.start()
+
+    def on_activity_scan_result(self, result: list):
+        """Show on each channel whether the scan saw traffic."""
+        channels = self.activity_scanner.channels if self.activity_scanner else []
+        self.channel_activity = {channel_key(cfg): active for cfg, active in zip(channels, result)}
+        self._label_channels()
+
+    def on_activity_scan_finished(self):
+        """Re-enable scan button after scan completes."""
+        self.scan_activity_btn.setEnabled(True)
+        self.status_label.setText("Activity scan complete")
+        self.activity_scanner = None
+
+    def on_channel_selected(self, item, column=0):
+        cfg = item.data(0, Qt.UserRole)
+        if cfg:
+            self.selected_channel_config = cfg
+            self.status_label.setText(f"Selected {cfg['interface']} channel {cfg.get('channel', 0)}")
+
+    def on_channel_double_clicked(self, item, column=0):
+        self.on_channel_selected(item, column)
+        if self.can_bus is None:
+            self.on_connect_clicked()
+
+    def _show_can_channels_dock(self):
+        """Show CAN Channels dock (e.g. after user closed it or after disconnect)."""
+        self.channels_dock.setVisible(True)
+        self.channels_dock.raise_()
+
+    def _show_config_dock(self):
+        """Show Configuration dock."""
+        self.config_dock.setVisible(True)
+        self.config_dock.raise_()
+
+    def _show_log_dock(self):
+        """Show Log (CAN Monitor / Debug) dock."""
+        self.log_dock.setVisible(True)
+        self.log_dock.raise_()
+
+    def create_menu(self):
+        """Create the menu bar"""
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu('File')
+        
+        new_config_action = file_menu.addAction('New Configuration')
+        new_config_action.triggered.connect(self.create_new_config)
+        
+        import_config_action = file_menu.addAction('Import Configuration')
+        import_config_action.triggered.connect(self.import_config)
+        
+        export_config_action = file_menu.addAction('Export Configuration')
+        export_config_action.triggered.connect(self.export_config)
+
+        file_menu.addSeparator()
+        file_menu.addAction('Show Configuration').triggered.connect(self._show_config_dock)
+        file_menu.addAction('Show CAN Channels').triggered.connect(self._show_can_channels_dock)
+        file_menu.addAction('Show CAN Monitor').triggered.connect(self._show_log_dock)
+
+        file_menu.addSeparator()
+        exit_action = file_menu.addAction('Exit')
+        exit_action.triggered.connect(self.close)
+
+        # Tools menu
+        tools_menu = menubar.addMenu('Tools')
+        tools_menu.addAction('Form Designer').triggered.connect(self.open_form_designer)
+        tools_menu.addAction('CAN Logger...').triggered.connect(self.open_can_logger)
+        tools_menu.addAction('Diagnostic Window...').triggered.connect(self.open_diagnostic_window)
+        
+        # View menu
+        view_menu = menubar.addMenu('View')
+        
+        refresh_config_action = view_menu.addAction('Refresh Configurations')
+        refresh_config_action.triggered.connect(self.load_configurations)
+        refresh_channels_action = view_menu.addAction('Refresh Channels')
+        refresh_channels_action.triggered.connect(self.refresh_channel_list)
+
+        # Options menu - Theme
+        options_menu = menubar.addMenu('Options')
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        self.light_mode_action = options_menu.addAction('Light Mode')
+        self.light_mode_action.setCheckable(True)
+        self.light_mode_action.triggered.connect(lambda: self.apply_theme('light'))
+        theme_group.addAction(self.light_mode_action)
+        self.dark_mode_action = options_menu.addAction('Dark Mode')
+        self.dark_mode_action.setCheckable(True)
+        self.dark_mode_action.triggered.connect(lambda: self.apply_theme('dark'))
+        theme_group.addAction(self.dark_mode_action)
+        # Restore saved preference
+        settings = app_settings()
+        saved_theme = settings.value("theme", "light", type=str)
+        self.apply_theme(saved_theme, restore=True)
+
+        # Help menu on the far right (corner widget; avoid nesting a second QMenuBar)
+        help_corner = QWidget()
+        help_corner_layout = QHBoxLayout(help_corner)
+        help_corner_layout.setContentsMargins(0, 0, 6, 0)
+        help_btn = QToolButton()
+        help_btn.setText("Help")
+        help_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        help_btn.setPopupMode(QToolButton.InstantPopup)
+        help_menu = QMenu(help_btn)
+        help_menu.addAction("About", self.show_about)
+        help_btn.setMenu(help_menu)
+        help_corner_layout.addWidget(help_btn)
+        menubar.setCornerWidget(help_corner, Qt.TopRightCorner)
+
+    def show_about(self):
+        """Show About dialog with app info."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About CAN Expert")
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(12)
+        layout.addWidget(QLabel("CAN Expert"))
+        layout.addWidget(QLabel("CAN and UDS tool: panel databases with Python scripts, Form Designer, CAN Logger,\n"
+                                "Diagnostic Window, firmware flashing and a simulated ECU."))
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(dlg.accept)
+        layout.addWidget(ok_btn, 0, Qt.AlignCenter)
+        dlg.exec_()
+
+    def apply_theme(self, theme: str, restore: bool = False):
+        """Apply light or dark theme to the application."""
+        app = QApplication.instance()
+        palette = QPalette()
+        if theme == 'dark':
+            palette.setColor(QPalette.Window, QColor(53, 53, 53))
+            palette.setColor(QPalette.WindowText, Qt.white)
+            palette.setColor(QPalette.Base, QColor(35, 35, 35))
+            palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+            palette.setColor(QPalette.ToolTipBase, Qt.white)
+            palette.setColor(QPalette.ToolTipText, Qt.white)
+            palette.setColor(QPalette.Text, Qt.white)
+            palette.setColor(QPalette.Button, QColor(53, 53, 53))
+            palette.setColor(QPalette.ButtonText, Qt.white)
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Link, QColor(42, 130, 218))
+            palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+            palette.setColor(QPalette.HighlightedText, Qt.black)
+            # Shades used by panel headers, frames and toolbar hover; Qt's defaults are light-theme greys.
+            palette.setColor(QPalette.Light, QColor(80, 80, 80))
+            palette.setColor(QPalette.Midlight, QColor(66, 66, 66))
+            palette.setColor(QPalette.Mid, QColor(38, 38, 38))
+            palette.setColor(QPalette.Dark, QColor(30, 30, 30))
+            palette.setColor(QPalette.Shadow, QColor(15, 15, 15))
+            self.dark_mode_action.setChecked(True)
+        else:
+            palette = QPalette()
+            self.light_mode_action.setChecked(True)
+        app.setPalette(palette)
+        for name, action in self._toolbar_actions.items():
+            action.setIcon(toolbar_icon(name, dark=theme == "dark"))
+        if not restore:
+            settings = app_settings()
+            settings.setValue("theme", theme)
+
+    def load_configurations(self):
+        """List the configurations of the Configurations folder and reselect the last one used."""
+        self.config_list.clear()
+        self.configurations, errors = read_configurations(CONFIG_DIR)
+        for error in errors:
+            self.log_verbose(error)
+        if not self.configurations:
+            self.configurations = [validate_config(DEFAULT_CONFIGURATION)]
+        for config in self.configurations:
+            self.config_list.addItem(QListWidgetItem(config["name"]))
+        last_name = app_settings().value("last_configuration", "", type=str)
+        selected = next((i for i, cfg in enumerate(self.configurations) if cfg["name"] == last_name), 0)
+        self.config_list.setCurrentRow(selected)
+        self.on_config_selected(self.config_list.item(selected))
+        self.log_verbose(f"Loaded {len(self.configurations)} configuration(s).")
+
+    def open_form_designer(self):
+        """Open the Form Designer dialog."""
+        designer = FormDesigner(self)
+        designer.saved.connect(lambda p: self.load_configurations())
+        designer.exec_()
+
+    def open_can_logger(self):
+        """Open the CAN Logger window."""
+        if not getattr(self, "_can_logger_window", None):
+            self._can_logger_window = CANLoggerWindow(self)
+        self._can_logger_window.show()
+        self._can_logger_window.raise_()
+        self._can_logger_window.activateWindow()
+
+    def open_diagnostic_window(self):
+        """Open the Diagnostic Window."""
+        if not getattr(self, "_diagnostic_window", None):
+            self._diagnostic_window = DiagnosticWindow(self)
+        self._diagnostic_window.show()
+        self._diagnostic_window.raise_()
+        self._diagnostic_window.activateWindow()
+
+    def edit_configuration(self, item=None):
+        if self.can_bus is None:
+            self._open_configuration_dialog(dict(self.active_config or {}))
+
+    def create_new_config(self):
+        self._open_configuration_dialog({})
+
+    def _open_configuration_dialog(self, config):
+        dialog = ConfigurationDialog(self, config, CONFIG_DIR)
+        dialog.accepted.connect(self.load_configurations)
+        dialog.show()
+
+    def import_config(self):
+        """Copy a configuration file into the Configurations folder."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Import Configuration", "", "JSON Files (*.json)")
+        if not file_path:
+            return
+        try:
+            save_configuration(json.loads(Path(file_path).read_text(encoding="utf-8")), CONFIG_DIR)
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            QMessageBox.critical(self, "Error", f"Failed to import configuration: {exc}")
+            return
+        self.load_configurations()
+        self.status_label.setText("Configuration imported successfully")
+
+    def export_config(self):
+        """Export current configuration"""
+        if not self.active_config:
+            QMessageBox.warning(self, "Warning", "No configuration selected")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Configuration", "", "JSON Files (*.json)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w') as f:
+                    json.dump(self.active_config, f, indent=2)
+                self.status_label.setText("Configuration exported successfully")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to export configuration: {str(e)}")
+                
+    # --- Connect / Disconnect / UDS ---
+
+    def on_connect_clicked(self):
+        if self.can_bus is not None:
+            return
+        if self.activity_scanner and self.activity_scanner.isRunning():
+            self._set_status("Wait for the activity scan to finish", "orange")
+            return
+        if not self.active_config or not self.selected_channel_config:
+            QMessageBox.warning(self, "Connection", "Select a configuration and a CAN receiver first.")
+            return
+        self.stop_ecu_monitor()  # the session sends TesterPresent itself
+        try:
+            config = validate_config(self.active_config)
+            database = load_application_database(config["database_family"], DATABASES_DIR)
+            if database is None:
+                raise ValueError("No matching database. Create a panel in Form Designer first.")
+            # Validate/build before opening hardware, so errors leave a usable UI.
+            self.build_application_ui(database)
+            cfg = self.selected_channel_config
+            self.can_bus = open_channel(cfg, config["bitrate"])
+            self.session_config = config
+            self.connected_channel_config = dict(cfg)
+            self.session_generation += 1
+            generation = self.session_generation
+            worker = CanWorker(self.can_bus, config)
+            mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
+            worker.add_mailbox(mailbox)
+            worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
+            worker.message_sent.connect(lambda cid, data, g=generation: self.log_can("TX", cid, data) if g == self.session_generation else None)
+            worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
+            self.workers["main"] = worker
+            runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
+            runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
+            runtime.logged.connect(self.log_verbose)
+            runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
+            runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
+            runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
+            self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
+            self.script_runtime = runtime
+            worker.start()
+            script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
+            runtime.dbc = self.panel.dbc
+            runtime.handlers = self.panel.handlers()
+            runtime.start(script_path)
+            self.connect_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
+            self._set_flashing_available(False)
+            self.flashing_toolbar_item.setVisible(True)
+            self.config_list.setEnabled(False)
+            self.database_dock.show()
+            self.channels_dock.show()
+            self.resizeDocks([self.config_dock, self.database_dock], [280, 700], Qt.Horizontal)
+            self._minimize_side_panels()
+            self.refresh_channel_list()
+            self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
+            self.log_verbose(f"Loaded {database['source_path']}")
+        except Exception as exc:
+            self.on_disconnect_clicked()
+            self._set_status(f"Connection failed: {exc}", "red")
+            self.log_verbose(str(exc))
+
+    def _session_failed(self, error):
+        self.log_verbose(error)
+        self.on_disconnect_clicked()
+        self._set_status(error, "red")
+
+    def on_disconnect_clicked(self):
+        self.session_generation += 1
+        self._close_flash_dialog()
+        self.flashing_toolbar_item.setVisible(False)
+        if self.script_runtime:
+            self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
+            self.script_runtime = None
+        for worker in self.workers.values():
+            worker.stop()
+        self.workers.clear()
+        if self.can_bus:
+            try:
+                self.can_bus.shutdown()
+            except Exception as exc:
+                self.log_verbose(str(exc))
+        self.can_bus = None
+        self.session_config = None
+        self.connected_channel_config = None
+        self._label_channels()
+        self.connect_btn.setEnabled(True)
+        self.disconnect_btn.setEnabled(False)
+        self.config_list.setEnabled(True)
+        self._restore_side_panels()
+        self.database_dock.hide()
+        self.channels_dock.show()
+        self._set_status("Disconnected", "gray")
+        self.clear_application_ui()
+        self._update_nodes()
+
+    # --- ECU check while no database is connected ---
+
+    def disconnect_database(self):
+        """Toolbar Disconnect: close the database session, then keep checking its ECUs so the CAN Channels
+        tree still shows which ones respond."""
+        channel, config = self.connected_channel_config, self.session_config
+        self.on_disconnect_clicked()
+        if channel and config:
+            self.start_ecu_monitor(channel, config)
+
+    def start_ecu_monitor(self, channel_config, config):
+        """Send TesterPresent on the channel at the configuration's interval and watch the ECU replies:
+        each ECU shows Responding, or Lost connection after the node loss timeout."""
+        self.stop_ecu_monitor()
+        channel = channel_config.get("channel", 0)
+        try:
+            bus = open_channel(channel_config, config["bitrate"])
+        except Exception as exc:
+            self.log_verbose(f"ECU check not started: {exc}")
+            return
+        worker = CanWorker(bus, config)
+        worker.message_received.connect(lambda msg, w=worker: self._on_monitor_message(w, msg))
+        worker.message_sent.connect(lambda can_id, data, w=worker: self.log_can("TX", can_id, data)
+                                    if w is self.ecu_monitor else None)
+        worker.error_occurred.connect(lambda error, w=worker: self._monitor_failed(w, error))
+        self.ecu_monitor, self.monitor_bus = worker, bus
+        self.monitor_channel, self.monitor_config = dict(channel_config), config
+        worker.start()
+        self._label_channels()
+        self._update_nodes()
+        self.log_verbose(f"Checking ECUs on {channel_config['interface']} channel {channel}: TesterPresent to "
+                         f"0x{config['request_id']:X} every {config['tester_present_interval_seconds']:g} s "
+                         f"(right-click the channel to stop)")
+
+    def stop_ecu_monitor(self):
+        worker, bus = self.ecu_monitor, self.monitor_bus
+        if worker is None:
+            return
+        self.ecu_monitor = self.monitor_bus = None
+        worker.stop()
+        try:
+            bus.shutdown()
+        except Exception as exc:
+            self.log_verbose(str(exc))
+        self._label_channels()
+        self._update_nodes()
+        self.log_verbose("Stopped checking ECUs")
+
+    def _on_monitor_message(self, worker, msg):
+        config = self.monitor_config
+        if worker is not self.ecu_monitor or msg["arbitration_id"] not in config["response_ids"]:
+            return
+        if msg.get("is_extended_frame", False) != (not config["identifier_11_bit"]):
+            return
+        self.node_states[(channel_key(self.monitor_channel), msg["arbitration_id"])] = {
+            "last_seen": time.monotonic(), "timeout": config["node_timeout_seconds"]}
+        self.log_can("RX", msg["arbitration_id"], msg["data"])
+        self._update_nodes()
+
+    def _monitor_failed(self, worker, error):
+        if worker is self.ecu_monitor:
+            self.log_verbose(f"ECU check stopped: {error}")
+            self.stop_ecu_monitor()
+
+    def _channel_menu(self, position):
+        item = self.channel_list.itemAt(position)
+        cfg = item.data(0, Qt.UserRole) if item else None
+        if not cfg:
+            return
+        menu = QMenu(self)
+        if self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
+            menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
+        elif self.can_bus is None and self.active_config:
+            menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
+        if menu.actions():
+            menu.exec_(self.channel_list.viewport().mapToGlobal(position))
+
+    def check_ecus(self, channel_config):
+        """Start the ECU check on a channel with the selected configuration, without loading its database."""
+        try:
+            config = validate_config(self.active_config)
+        except ValueError as exc:
+            self._set_status(f"Invalid configuration: {exc}", "red")
+            return
+        self.start_ecu_monitor(channel_config, config)
+
+    def _minimize_side_panels(self):
+        """Give the loaded database the room: collapse Configuration, CAN Channels and Log to strips."""
+        self._left_split = [self.config_dock.height(), self.channels_dock.height()]
+        for dock in (self.config_dock, self.channels_dock, self.log_dock):
+            title_bar = dock.titleBarWidget()
+            if not dock.isHidden() and not title_bar.is_minimized:
+                title_bar.minimize()
+                self._auto_minimized.append(title_bar)
+
+    def _restore_side_panels(self):
+        """Undo _minimize_side_panels; panels the user minimized or restored themselves are left alone."""
+        for title_bar in self._auto_minimized:
+            if title_bar.is_minimized:
+                title_bar.restore()
+        if self._auto_minimized and self._left_split and min(self._left_split) > 0:
+            self.resizeDocks([self.config_dock, self.channels_dock], self._left_split, Qt.Vertical)
+        self._auto_minimized = []
+        self._left_split = None
+
+    # --- Flashing ---
+
+    def _set_flashing_available(self, available):
+        action = self._toolbar_actions["flashing"]
+        action.setEnabled(available and self.flash_dialog is None)
+        action.setToolTip("Flash ECU firmware using the database's Flashing() function" if available
+                          else "The database script does not define Flashing(api, firmware)")
+
+    def open_flashing(self):
+        """Choose an S-record / Intel HEX file and pass it to the database script's Flashing()."""
+        if self.script_runtime is None or self.script_runtime.flash_function is None:
+            return
+        settings = app_settings()
+        firmware = choose_firmware(self, settings.value("last_firmware_dir", str(APP_DIR), type=str))
+        if firmware is None:
+            return
+        settings.setValue("last_firmware_dir", str(Path(firmware.path).parent))
+        if confirm_flash(self, firmware):
+            self.start_flashing(firmware)
+
+    def start_flashing(self, firmware):
+        if self.script_runtime is None:
+            return
+        self._toolbar_actions["flashing"].setEnabled(False)
+        self.flash_dialog = progress_dialog(self, firmware, self.script_runtime.cancel_flash)
+        self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in {len(firmware.segments)} segment(s)")
+        self.script_runtime.start_flash(firmware)
+
+    def _on_flash_progress(self, done, total, text):
+        update_progress(self.flash_dialog, done, total, text)
+
+    def _close_flash_dialog(self):
+        dialog, self.flash_dialog = self.flash_dialog, None
+        close_progress(dialog)
+
+    def _on_flash_finished(self, ok, text):
+        self._close_flash_dialog()
+        self._set_flashing_available(self.script_runtime is not None and self.script_runtime.flash_function is not None)
+        self.log_verbose(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
+        self._set_status(f"Flashing {'complete' if ok else 'failed'}", "green" if ok else "red")
+        report_result(self, ok, text)
+
+    def closeEvent(self, event):
+        self.node_timer.stop()
+        self.stop_ecu_monitor()
+        self.on_disconnect_clicked()
+        if self.activity_scanner:
+            self.activity_scanner.requestInterruption()
+            self.activity_scanner.wait()
+        event.accept()
+
+    def clear_application_ui(self):
+        """Remove all widgets from application database panel."""
+        while self.app_db_layout.count():
+            item = self.app_db_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.app_database = None
+        self.panel = None
+
+    # --- Application database UI ---
+
+    def build_application_ui(self, app_db):
+        self.clear_application_ui()
+        self.panel = PanelView(app_db, self.send_can_message, self.log_verbose)
+        self.app_db_layout.addWidget(self.panel)
+        self.app_database = app_db
+
+    def send_can_message(self, can_id, data, extended=None):
+        if self.can_bus is None:
+            raise RuntimeError("Connect before sending CAN messages")
+        if extended is None:
+            extended = not self.session_config.get("identifier_11_bit", True)
+        payload = bytes(data)
+        if len(payload) > 8:
+            raise ValueError("Classic CAN messages cannot exceed eight bytes")
+        message = can.Message(arbitration_id=can_id, data=payload, is_extended_id=extended, check=True)
+        self.can_bus.send(message)
+        self.log_can("TX", can_id, payload)
+
+    def on_can_message(self, msg_dict):
+        if self.session_config is None:
+            return
+        can_id, data = msg_dict["arbitration_id"], bytes(msg_dict["data"])
+        if can_id in self.session_config["response_ids"] and msg_dict.get("is_extended_frame", False) == (not self.session_config["identifier_11_bit"]):
+            self.node_states[(channel_key(self.connected_channel_config), can_id)] = {
+                "last_seen": time.monotonic(), "timeout": self.session_config["node_timeout_seconds"]}
+            self._update_nodes()
+        self.log_can("RX", can_id, data)
+        if self.panel:
+            try:
+                self.panel.on_message(can_id, data)
+            except Exception as exc:
+                self.log_verbose(f"Panel decode: {exc}")
+        if self.script_runtime:
+            with self.script_runtime.lock:
+                self.script_runtime.values.update(self.panel.values() if self.panel else {})
+            self.script_runtime.post("can", can_id, data)
+        if getattr(self, "_can_logger_window", None):
+            self._can_logger_window.on_can_message(can_id, data)
+        if getattr(self, "_diagnostic_window", None):
+            self._diagnostic_window.on_can_message(can_id, data, "RX")
+
+    # --- Configuration selection ---
+
+    def on_config_selected(self, item):
+        """Set active configuration when user clicks one in the list."""
+        config_name = item.text()
+        
+        # Find the selected configuration
+        for config in self.configurations:
+            if config['name'] == config_name:
+                self.active_config = config
+                app_settings().setValue("last_configuration", config_name)
+                self.status_label.setText(f"Active configuration: {config_name}")
+                break
+                
+def main():
+    """Start CAN Expert; with --smoke-test only build the main window."""
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = MainWindow()
+    if "--smoke-test" in sys.argv:
+        print("startup ok")
+        return 0
+    window.show()
+    return app.exec_()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

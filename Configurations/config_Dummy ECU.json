@@ -1,0 +1,13 @@
+{
+  "name": "Dummy ECU",
+  "bitrate": 500000,
+  "identifier_11_bit": true,
+  "request_id": 2016,
+  "response_id": 2024,
+  "timeout_ms": 5000,
+  "extended_id": false,
+  "tester_present_interval_seconds": 0.5,
+  "node_timeout_seconds": 2.0,
+  "database_family": "showcase",
+  "response_ids": []
+}
