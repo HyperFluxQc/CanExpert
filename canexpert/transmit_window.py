@@ -8,7 +8,6 @@ configuration or panel file is involved.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer
@@ -33,6 +32,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from canexpert.cyclic import CyclicSchedule
 from canexpert.ui_common import app_settings, enable_maximize
 
 SETTING = "transmit_list"       # settings: the rows as JSON
@@ -174,7 +174,7 @@ class TransmitWindow(QDialog):
         self.send = send                                  # send(can_id, data, extended); raises when not connected
         self.settings = settings or app_settings()
         self.rows: list[dict] = rows_from_json(self.settings.value(SETTING, "", type=str))
-        self._due: dict[int, float] = {}
+        self._schedule = CyclicSchedule()
         self._updating = False
         self._build_ui()
         self._fill_table()
@@ -278,7 +278,7 @@ class TransmitWindow(QDialog):
         try:
             if column == COL_ON:
                 row["enabled"] = item.checkState() == Qt.Checked
-                self._due[index] = time.monotonic()        # a row just switched on sends at once
+                self._schedule.start(index)                # a row just switched on sends at once
             elif column == COL_EXT:
                 row["extended"] = item.checkState() == Qt.Checked
             elif column == COL_NAME:
@@ -362,7 +362,7 @@ class TransmitWindow(QDialog):
         index, row = self._selected()
         if row is not None:
             self.rows.pop(index)
-            self._due.clear()
+            self._schedule.clear()
             self._fill_table()
             self.save_rows()
 
@@ -402,16 +402,11 @@ class TransmitWindow(QDialog):
 
     def tick(self):
         """Send every enabled row whose cycle time has come."""
-        now = time.monotonic()
         for index, row in enumerate(self.rows):
             if not row["enabled"]:
-                self._due.pop(index, None)
-                continue
-            due = self._due.get(index, now)
-            if now >= due:
-                if not self.send_row(index):
-                    continue
-                self._due[index] = max(now, due) + row["cycle_ms"] / 1000.0
+                self._schedule.drop(index)
+            elif self._schedule.due(index, row["cycle_ms"] / 1000.0):
+                self.send_row(index)
 
     # --- the list --------------------------------------------------------------------------
 
@@ -432,7 +427,7 @@ class TransmitWindow(QDialog):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Transmit list", f"Cannot read {Path(path).name}: {exc}")
             return
-        self._due.clear()
+        self._schedule.clear()
         self._fill_table()
         self.save_rows()
 

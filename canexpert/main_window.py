@@ -56,6 +56,7 @@ from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
 from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
+from canexpert.simulation_window import SimulationWindow
 from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
 from canexpert.trace_window import TraceWindow
@@ -74,7 +75,8 @@ LAYOUT_STATE = "layout/state"
 LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
-TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console", "diagnostics")  # with a switch
+TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "simulation", "console",
+              "diagnostics")   # the windows with a switch on the toolbar
 
 
 class MainWindow(QMainWindow):
@@ -166,6 +168,8 @@ class MainWindow(QMainWindow):
             ("statistics", "Statistics", "Frames per identifier, their rate and cycle time, and the bus load",
              self.open_statistics),
             ("transmit", "Transmit", "Send messages once or cyclically", self.open_transmit),
+            ("simulation", "Simulation", "Send the messages of a database's nodes, as those ECUs would",
+             self.open_simulation),
             ("console", "UDS Console", "Send any UDS service and read the fault memory (no ODX file needed)",
              self.open_uds_console),
             ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
@@ -821,6 +825,13 @@ class MainWindow(QMainWindow):
         widget, _ = self.open_tool("transmit", "Transmit",
                                    lambda: TransmitWindow(self, self.symbols, self.send_can_message,
                                                           app_settings()), "bottom")
+        return widget
+
+    def open_simulation(self):
+        """Simulated nodes: send the messages of the symbol databases' nodes."""
+        widget, _ = self.open_tool("simulation", "Simulated nodes",
+                                   lambda: SimulationWindow(self, self.symbols, self.send_can_message,
+                                                            app_settings()), "bottom")
         return widget
 
     def open_uds_console(self):
