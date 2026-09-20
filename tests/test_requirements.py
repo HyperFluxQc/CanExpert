@@ -270,6 +270,18 @@ class RequirementsTest(unittest.TestCase):
         self.assertTrue(spin_until(lambda: "loaded" in self.window.database_items[key].text(0)))
         self.assertIs(self.window.database_items[key].parent(), self.window.channel_items[key])  # the tree was rebuilt
 
+    def test_switching_theme_keeps_every_label_readable(self):
+        from PyQt5.QtGui import QPalette
+        from PyQt5.QtWidgets import QToolButton
+        self.addCleanup(APP.setPalette, APP.palette())                       # the palette is application-wide
+        button = self.window.findChild(QToolButton)                          # a toolbar button, styled by a stylesheet
+        self.window.apply_theme("dark")
+        self.assertLess(APP.palette().color(QPalette.Window).lightness(), 128)
+        self.assertGreater(button.palette().color(QPalette.ButtonText).lightness(), 128)   # light text on dark
+        self.window.apply_theme("light")
+        self.assertGreater(APP.palette().color(QPalette.Window).lightness(), 128)
+        self.assertLess(button.palette().color(QPalette.ButtonText).lightness(), 128)      # dark text on light
+
     def test_configuration_import_and_export(self):
         source = self.root / "external.json"
         source.write_text(json.dumps(dict(self.cfg, name="Imported")))

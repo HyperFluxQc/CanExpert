@@ -61,6 +61,27 @@ class CanLoggerTest(unittest.TestCase):
         pause.setChecked(False)
         self.assertEqual(pause.accessibleName(), "Pause")
 
+    def test_graph_colours_follow_the_palette_of_the_moment(self):
+        from PyQt5.QtGui import QColor, QPalette
+        self.addCleanup(APP.setPalette, APP.palette())
+        self.logger.set_signal_plotted(TEMP)
+        self.feed((0.0, 0x300, engine_frame(20.0, 1.0)), (1.0, 0x300, engine_frame(30.0, 1.0)))
+
+        def use(window, text):
+            palette = QPalette()
+            palette.setColor(QPalette.Window, QColor(window))
+            palette.setColor(QPalette.WindowText, QColor(text))
+            APP.setPalette(palette)
+            for _ in range(3):                                               # the rebuild is deferred by a timer
+                APP.processEvents()
+
+        use("#121212", "#e0e0e0")                                            # dark theme
+        self.assertLess(self.logger._theme_colors()["background"].lightness(), 60)
+        self.assertEqual(self.logger._plots[TEMP][2].pen.color().name(), "#ffffff")   # white cursors
+        use("#ffffff", "#000000")                                            # light theme, window already open
+        self.assertGreater(self.logger._theme_colors()["background"].lightness(), 200)
+        self.assertLess(self.logger._plots[TEMP][2].pen.color().lightness(), 60)      # dark cursors instead
+
     def test_graph_options_set_exact_ranges_and_the_drawing_style(self):
         self.logger.set_signal_plotted(TEMP)
         self.feed((0.0, 0x300, engine_frame(20.0, 1.0)), (1.0, 0x300, engine_frame(30.0, 1.0)))

@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.paths import DBC_DIR
-from canexpert.ui_common import SplitterPanel, app_settings, enable_maximize, line_icon
+from canexpert.ui_common import SplitterPanel, enable_maximize, line_icon
 
 try:
     import numpy as np
@@ -88,10 +88,11 @@ def _curve_args(color, style):
     return {"pen": pg.mkPen(color, width=1.5), "stepMode": "right"}
 
 
-def _get_theme() -> str:
-    """Return 'light' or 'dark' from app settings."""
-    s = app_settings()
-    return s.value("theme", "light", type=str) if s else "light"
+def _is_dark(widget) -> bool:
+    """Dark theme when the window colour is darker than the text on it. Read from the palette in use, so the
+    graphs match the rest of the window even when the theme changes while the logger is open."""
+    palette = widget.palette()
+    return palette.color(QPalette.Window).lightness() < palette.color(QPalette.WindowText).lightness()
 
 
 def _format(value) -> str:
@@ -390,7 +391,7 @@ class CANLoggerWindow(QDialog):
 
     def _theme_colors(self):
         """Background, axis, grid, text, cursor and curve colors for the current theme."""
-        if _get_theme() == "dark":
+        if _is_dark(self):
             return {"background": QColor(18, 18, 18), "axis": QColor(200, 200, 200), "text": QColor(220, 220, 220),
                     "cursor": QColor(255, 255, 255), "curves": _CURVE_COLORS_DARK}
         # White would vanish on the light background, so the cursors take the foreground colour there.
@@ -422,6 +423,9 @@ class CANLoggerWindow(QDialog):
         super().changeEvent(event)
         if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange) and self._tool_buttons:
             self._refresh_tool_icons()
+            # The graphs follow a theme change too, but only once this event is delivered: rebuilding the
+            # plot items while Qt is still updating them crashes.
+            QTimer.singleShot(0, self._apply_graph_theme)
 
     # --- DBC ------------------------------------------------------------------------------
 

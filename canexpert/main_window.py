@@ -567,7 +567,9 @@ class MainWindow(QMainWindow):
     def apply_theme(self, theme: str, restore: bool = False):
         """Apply light or dark theme to the application."""
         app = QApplication.instance()
-        palette = QPalette()
+        # The style's own palette, not QPalette(): a default one copies the palette in use, so switching
+        # back to light would keep the dark theme's white text on light buttons.
+        palette = app.style().standardPalette()
         if theme == 'dark':
             palette.setColor(QPalette.Window, QColor(53, 53, 53))
             palette.setColor(QPalette.WindowText, Qt.white)
@@ -590,9 +592,15 @@ class MainWindow(QMainWindow):
             palette.setColor(QPalette.Shadow, QColor(15, 15, 15))
             self.dark_mode_action.setChecked(True)
         else:
-            palette = QPalette()
             self.light_mode_action.setChecked(True)
         app.setPalette(palette)
+        # A widget with its own stylesheet keeps the palette it was polished with, which left the toolbar
+        # labels white on the light theme; re-polishing picks the new colours up.
+        for owner in (self, *self.findChildren(QWidget)):  # includes the tool windows, which are children
+            if owner.styleSheet():
+                for widget in (owner, *owner.findChildren(QWidget)):  # the children inherit the stylesheet
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
         for name, action in self._toolbar_actions.items():
             action.setIcon(toolbar_icon(name, dark=theme == "dark"))
         if not restore:
