@@ -45,6 +45,7 @@ from canexpert.can_bus import (SUPPORTED_INTERFACES, CanWorker, ChannelActivityS
 from canexpert.can_logger import CANLoggerWindow
 from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
                               validate_config)
+from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
 from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
@@ -73,7 +74,7 @@ LAYOUT_STATE = "layout/state"
 LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
-TOOL_PANES = ("trace", "logger", "statistics", "transmit", "console", "diagnostics")   # windows with a switch
+TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console", "diagnostics")  # with a switch
 
 
 class MainWindow(QMainWindow):
@@ -160,6 +161,8 @@ class MainWindow(QMainWindow):
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
+            ("data", "Data", "Every signal of the symbol databases with the value it holds now",
+             self.open_data),
             ("statistics", "Statistics", "Frames per identifier, their rate and cycle time, and the bus load",
              self.open_statistics),
             ("transmit", "Transmit", "Send messages once or cyclically", self.open_transmit),
@@ -777,6 +780,15 @@ class MainWindow(QMainWindow):
                 if direction == "RX":
                     logger.on_can_message(can_id, data, timestamp)
         return logger
+
+    def open_data(self):
+        """Data window, filled from the frames already recorded."""
+        data, created = self.open_tool("data", "Data", lambda: DataWindow(self, self.symbols))
+        if created:
+            for frame in list(self.frame_history):
+                data.on_frame(*frame)
+            data.rebuild()
+        return data
 
     def open_statistics(self):
         """Statistics window, counting from the frames already recorded."""
