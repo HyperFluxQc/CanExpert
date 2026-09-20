@@ -13,7 +13,7 @@ This document describes the architecture, threads and data flows of **CAN Expert
 - Selects the newest dated **panel database** (`Databases/family_YYYY-MM-DD.xml`) for the active configuration and builds its UI before opening the adapter
 - Sends periodic **TesterPresent** and shows responding ECUs beneath the selected receiver, marking lost nodes with a red cross
 - Runs the panel's **Python script** (`DatabaseMainFunction(api)`) on a background thread with an API for CAN, UDS over ISO-TP, DLL calls and UI values
-- Provides a symbolic **Trace window**, a DBC-aware **CAN Logger**, a **Transmit list**, a **UDS Console**, a **Form Designer** and an ODX-driven **Diagnostic Window**, all as panes of one window whose arrangement is saved
+- Provides a symbolic **Trace window**, a DBC-aware **CAN Logger**, a **Transmit list**, a **UDS Console**, a **Form Designer** and an ODX-driven **Diagnostic Window**; the analysis windows and the panel live in a **workspace** where they tab, split and float, and the arrangement is saved
 - **Records** the measurement to BLF/ASC/CSV and **replays** a recorded file back into those windows offline
 
 ---
@@ -37,6 +37,7 @@ flowchart LR
     main --> diagnostic_window["diagnostic_window.py"]
     main --> flashing["flashing.py"]
     main --> ui_common["ui_common.py"]
+    main --> workspace["workspace.py"]
     trace --> symbols
     transmit --> symbols
     can_logger --> symbols
@@ -86,6 +87,7 @@ flowchart LR
 | **transmit_window.py** | The transmit list: rows (raw or bound to a database message) in a table, `tick()` sends the ones whose cycle time has come, `SignalEditor` re-encodes a message signal by signal, rows stored as JSON in the settings or a file. A row that fails to send switches itself off; hiding the pane stops every cyclic row. |
 | **uds_console.py** | The UDS console: a service tree built from `uds.client.FUNCTIONS`, a request form generated from each function's signature (`_field()`/`_arguments()`), exchanges on a background thread over a private mailbox, session/security bar, and a fault-memory tab (`status_text()` spells out the DTC status bits). |
 | **recording.py** | `Recorder` (python-can writers, format by file name), `read_frames()`, `ReplayWorker` (a thread that hands frames back at their recorded spacing) and `ReplayDialog`. |
+| **workspace.py** | The central workspace: the Qt Advanced Docking System (PyQtAds) configured for CAN Expert (`create_workspace()`), and the windows put into it (`make_pane()`, `add_pane()`). |
 | **symbols.py** | `SymbolDatabases`: the DBC files the application shares (paths in the settings), frame id → message, `decode()`, `signal_names()`, `unit()`, and the dialog that edits the list. A file that cannot be read lands in `errors` without failing the others. |
 | **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors the ECU's CAN IDs. |
 | **simulator/ecu.py** | The simulated UDS ECU (sessions, security, DIDs, DTCs, flashing with RequestDownload/RequestUpload, ISO-TP flow control, periodic frames) for Kvaser virtual channels or any python-can interface. `EcuConfig` holds every setting and is read for each frame, so changes apply while running; `load_profile()`/`save_profile()` store it as JSON; `main()` opens the window, or runs headless with `--console`. |
@@ -113,6 +115,7 @@ CanExpert/
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service and the fault memory
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
+│   ├── workspace.py            # The workspace: the docking system the windows live in
 │   ├── diagnostic_window.py    # ODX Diagnostic Window
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
@@ -283,17 +286,27 @@ settings or a file of their own:
 
 ## 10. The workspace
 
-Tool windows are `QDialog`s placed inside `QDockWidget`s by `MainWindow.open_tool(name, title, factory,
-area)`, which builds each one on first use, gives it an object name (needed by `saveState`) and the
-shared `DockTitleBar`. `tool_widget(name)` returns an already-open pane, and is what `dispatch_frame()`
-uses to decide who needs the frame.
+The window system has two halves:
 
-The toolbar action of each pane in `TOOL_PANES` is checkable and works as a switch: `_toggle_tool()`
-opens the pane or closes (hides) it, and `eventFilter()` follows the dock's `ShowToParent` and
-`HideToParent` events to keep the button in step whichever way the pane was opened or closed - its own
-close button, a saved desktop or Reset layout. Those two events arrive even while the main window is
-hidden, which `visibilityChanged` does not. A closed pane is hidden rather than destroyed, so it keeps
-what it recorded.
+- **Fixed panels** - Configuration, CAN Channels and Log - stay `QDockWidget`s in the main window's own
+  dock areas, with the `DockTitleBar` that minimises them to a strip. `_minimize_side_panels()` on
+  connect and `_restore_side_panels()` on disconnect act on those.
+- **The workspace** is a `CDockManager` (PyQtAds) as the main window's central widget. The Database
+  panel and every tool window are `CDockWidget`s in it, so they tab together, split an area, float as
+  windows of their own and show drop guides while being dragged. `workspace.py` holds the
+  configuration; `MainWindow.open_tool(name, title, factory, area)` builds each window on first use and
+  `tool_widget(name)` returns an already-open one, which is what `dispatch_frame()` asks who needs a
+  frame.
+
+The toolbar action of each window in `TOOL_PANES` is checkable and works as a switch: `_toggle_tool()`
+opens or closes it, and the pane's `viewToggled` signal keeps the button in step whichever way the
+window was opened or closed - its tab's close button, a saved desktop or Reset layout. A closed window
+is hidden rather than destroyed, so it keeps what it recorded.
+
+`layout_state()` returns both halves (`QMainWindow.saveState()` and `CDockManager.saveState()`) and
+`apply_layout_state()` puts them back; the saved layout, the desktops and Reset layout all go through
+that pair. A workspace state only places the windows that existed when it was saved, so `_apply_layout()`
+re-applies it whenever a window is created later.
 
 `restoreState()` only places docks that exist, so `_apply_layout()` re-applies the saved arrangement
 whenever a pane is created later; `_default_state` is captured before the first restore, which is what
@@ -314,7 +327,7 @@ python -B -m unittest discover -s tests -v
 - `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC, flow control (WAIT, block size, STmin, overflow) and flashing behaviour, and its settings: RequestDownload formats, memory ranges, block length and full blocks, RequestUpload read-back, security level/seed/mask, P2/P2* and response pending on a slow response.
 - `tests/test_dummy_ecu_window.py`: the Dummy ECU window connecting and disconnecting on a virtual bus (channel lock included), settings applied while connected, invalid text fields not applied, the log and frame trace, profiles and remembered settings.
 
-- `tests/test_recording_and_workspace.py`: the frame history with the adapter's timestamps, the ECU check feeding the Trace, a window opened later filled from the history, recording to a file and replaying it offline, the tool panes and the saved layout and desktops.
+- `tests/test_recording_and_workspace.py`: the frame history with the adapter's timestamps, the ECU check feeding the Trace, a window opened later filled from the history, recording to a file and replaying it offline, the workspace windows (tabbing, floating, the toolbar switches) and the saved layout and desktops.
 - `tests/test_trace_window.py`: symbolic rows and lazily decoded signals, the three time modes, pass and stop filters, pause, find, CSV export, colours, and `SymbolDatabases` (decoding, a broken file, adding and removing).
 - `tests/test_transmit_window.py`: editing rows, rejecting bad input, a database message and its signal editor, sending once and cyclically, a failing row switching itself off, and the list surviving a restart.
 - `tests/test_uds_console.py`: the service tree, forms built from each function's signature (order, defaults, byte parameters, the security key, a missing required parameter), and a live exchange with the simulated ECU: a multi-frame VIN, an NRC named, session and security, and the fault memory read and cleared.

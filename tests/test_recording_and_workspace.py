@@ -13,6 +13,8 @@ import can
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication
 
+from PyQtAds import ads
+
 from canexpert import can_bus
 from canexpert import main_window as main
 from canexpert.recording import Recorder, read_frames
@@ -151,16 +153,17 @@ class MeasurementTest(unittest.TestCase):
 
     # --- the workspace ----------------------------------------------------------------------------
 
-    def test_tool_windows_are_panes_of_the_main_window(self):
+    def test_tool_windows_live_in_the_workspace(self):
         for name, opener in (("trace", self.window.open_trace), ("logger", self.window.open_can_logger),
                              ("transmit", self.window.open_transmit), ("console", self.window.open_uds_console),
                              ("diagnostics", self.window.open_diagnostic_window)):
             widget = opener()
-            dock = self.window.tool_docks[name]
-            self.assertIs(dock.widget(), widget, name)
-            self.assertIs(dock.parent(), self.window, name)
-            self.assertFalse(dock.isHidden(), name)   # the test window itself is never shown
+            pane = self.window.tool_panes[name]
+            self.assertIs(pane.widget(), widget, name)
+            self.assertIs(pane.dockManager(), self.window.workspace, name)
+            self.assertFalse(pane.isClosed(), name)
             self.assertIs(opener(), widget, f"{name} must be reused, not rebuilt")
+        self.assertIs(self.window.database_pane.dockManager(), self.window.workspace)
 
     def test_a_tool_button_stays_pressed_while_its_pane_is_open(self):
         action = self.window._toolbar_actions["trace"]
@@ -169,19 +172,19 @@ class MeasurementTest(unittest.TestCase):
 
         action.trigger()                                  # a press on the toolbar button
         self.assertTrue(action.isChecked())
-        dock = self.window.tool_docks["trace"]
-        self.assertFalse(dock.isHidden())
+        pane = self.window.tool_panes["trace"]
+        self.assertFalse(pane.isClosed())
 
-        action.trigger()                                  # pressing it again closes the pane
+        action.trigger()                                  # pressing it again closes the window
         self.assertFalse(action.isChecked())
-        self.assertTrue(dock.isHidden())
+        self.assertTrue(pane.isClosed())
 
-        # Closing the pane by its own button lets the toolbar button go, and what it recorded is kept.
+        # Closing it by its own tab button lets the toolbar button go, and what it recorded is kept.
         trace = self.window.open_trace()
         self.assertTrue(action.isChecked())
         trace.add_frame(1000.0, "RX", 0x321, b"\x01")
         trace.flush()
-        dock.close()
+        pane.closeDockWidget()
         self.assertFalse(action.isChecked())
         self.assertIs(self.window.open_trace(), trace)
         self.assertEqual(len(trace.frames), 1)
@@ -191,20 +194,45 @@ class MeasurementTest(unittest.TestCase):
             action = self.window._toolbar_actions[name]
             action.trigger()
             self.assertTrue(action.isChecked(), name)
-            self.assertFalse(self.window.tool_docks[name].isHidden(), name)
+            self.assertFalse(self.window.tool_panes[name].isClosed(), name)
             action.trigger()
             self.assertFalse(action.isChecked(), name)
-            self.assertTrue(self.window.tool_docks[name].isHidden(), name)
+            self.assertTrue(self.window.tool_panes[name].isClosed(), name)
+
+    def test_windows_tab_together_and_float(self):
+        self.window.open_trace()
+        trace = self.window.tool_panes["trace"]
+        self.window.open_can_logger()
+        logger = self.window.tool_panes["logger"]
+        workspace = self.window.workspace
+
+        # Dropping one window onto another's area tabs them, as dragging it there does.
+        workspace.addDockWidget(ads.CenterDockWidgetArea, logger, trace.dockAreaWidget())
+        self.assertTrue(trace.isTabbed() and logger.isTabbed())
+        self.assertEqual([pane.windowTitle() for pane in trace.dockAreaWidget().dockWidgets()],
+                         ["Trace", "CAN Logger"])
+        logger.setAsCurrentTab()
+        self.assertIs(trace.dockAreaWidget().currentDockWidget(), logger)
+
+        # A window can be pulled out into a window of its own, and put back.
+        logger.setFloating()
+        APP.processEvents()
+        self.assertTrue(logger.isFloating())
+        self.assertFalse(logger.isClosed())
+        self.assertIs(self.window.tool_widget("logger"), logger.widget())
+        workspace.addDockWidget(ads.BottomDockWidgetArea, logger, trace.dockAreaWidget())
+        APP.processEvents()
+        self.assertFalse(logger.isFloating())
 
     def test_the_layout_is_remembered_and_desktops_can_be_saved(self):
         self.window.open_trace()
         self.window.save_desktop("Analysis")
         self.assertIn("Analysis", self.window.desktops())
-        self.window.tool_docks["trace"].hide()
+        self.window.tool_panes["trace"].toggleView(False)
         self.window.apply_desktop("Analysis")
-        self.assertFalse(self.window.tool_docks["trace"].isHidden())
+        self.assertFalse(self.window.tool_panes["trace"].isClosed())
         self.window.reset_layout()
-        self.assertTrue(self.window.tool_docks["trace"].isHidden())
+        self.assertTrue(self.window.tool_panes["trace"].isClosed())
         # Closing writes the arrangement, and a new window restores it.
         self.window.open_trace()
         self.window.close()

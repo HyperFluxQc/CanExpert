@@ -10,7 +10,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, with session control, SecurityAccess and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits
 - **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached
 - **Symbol databases**: one list of DBC files shared by the Trace window, the CAN Logger and the Transmit list
-- **One workspace**: the tool windows are panels of the main window; the arrangement is remembered and can be saved as named desktops
+- **CANoe-style window system**: the Database panel and the analysis windows live in a workspace where they tab together, split, and float as windows of their own, with drop guides while dragging (Qt Advanced Docking System); the arrangement is remembered and can be saved as named desktops
 - **Node monitoring**: Sends configured periodic TesterPresent requests, lists responding nodes, and marks lost nodes with a red cross
 - **Form Designer**: CANoe Panel Designer-style editor with 20 controls (gauges, LEDs, multi-state indicators, switches, knobs, trends...), DBC signal drag-and-drop, align/distribute, grid snap, undo/redo, a Python editor and a Test mode against the simulated ECU
 - **Python in place of CAPL**: per-control handler functions and `@on_message`, `@on_signal`, `@on_timer`, `@on_start`, `@on_stop` event procedures
@@ -24,6 +24,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 
 - Python 3.10+
 - PyQt5
+- PyQtAds (the workspace windows)
 - python-can
 - One of: Kvaser CAN driver, Vector driver (Windows), or IXXAT VCI (Windows) as needed for your hardware
 
@@ -159,6 +160,7 @@ CanExpert/
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service and the fault memory
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
+│   ├── workspace.py            # The workspace: the docking system the windows live in
 │   ├── diagnostic_window.py    # ODX Diagnostic Window
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py

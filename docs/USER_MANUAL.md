@@ -21,15 +21,16 @@ The main window has a toolbar and four panels:
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
 | **Log** | *Debug / Verbose* for application messages, *CAN Monitor* for the frames sent and received. |
 
-The tool windows — Trace, CAN Logger, Transmit, UDS Console, Diagnostics — open as further panels of
-the same window, so you can arrange them side by side (see *Arranging the windows*). Their toolbar
-buttons are switches: the button **stays pressed in** while its panel is open, pressing it again closes
-the panel, and closing the panel with its own **×** lets the button go. A panel that is closed keeps
-what it had, so reopening it shows everything recorded meanwhile.
+The tool windows — Trace, CAN Logger, Transmit, UDS Console, Diagnostics — open in the **workspace** in
+the middle, together with the Database panel, where they can be tabbed, split and floated (see
+*Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
+window is open, pressing it again closes the window, and closing the window with its own **×** lets the
+button go. A window that is closed keeps what it had, so reopening it shows everything recorded
+meanwhile.
 
-Each panel has a **–** button to shrink it to a strip and **×** to close it; the *File* menu brings a
-closed built-in panel back. While a database is loaded, the side panels shrink automatically to leave
-it room.
+Configuration, CAN Channels and Log are fixed panels around the workspace. Each has a **–** button to
+shrink it to a strip and **×** to close it; the *File* menu brings a closed one back. While a database
+is loaded, they shrink automatically to leave the workspace room.
 
 Options inside the windows work the same way: a button that switches something on — the toggles in the
 Trace window, the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for
@@ -303,15 +304,27 @@ you can study a recording made in a vehicle at your desk.
 
 ## Arranging the windows
 
-The tool windows are panels of the main window: drag one by its title bar to another edge, drop it on
-another panel to tab them together, or pull it out to float. Each one has the same **–** and **×**
-buttons as the built-in panels.
+The middle of the main window is the **workspace**, where the Database panel and the analysis windows —
+Trace, CAN Logger, Transmit, UDS Console, Diagnostics — live. Configuration, CAN Channels and Log stay
+as fixed panels around it.
+
+Workspace windows behave as they do in CANoe:
+
+- **Drag a window by its tab** to move it. While you drag, drop marks appear: the ones in the middle of
+  a window split that window above, below, left or right of it, or drop onto the centre to **tab** the
+  two together; the ones at the edge of the workspace dock it against that edge instead.
+- **Several windows in one area** share a tab bar. The **▾** button on the right of the area lists its
+  tabs, the **⧉** button pulls the area out as a floating window, and **✕** closes it.
+- **Drag a tab out of the window** to float it on its own; a floating window can hold several tabs, and
+  dragging it back over the workspace docks it again.
+- A **✕** on a tab closes that window. Closing keeps it: its toolbar button goes back to idle, and
+  reopening it shows everything it recorded meanwhile.
 
 The arrangement, including the window size, is saved when you close CAN Expert and restored next time.
 
 **View → Save desktop as...** keeps the current arrangement under a name — one for analysis, one for
-diagnostics, one for testing — and **View → Desktops** switches between them. **Reset layout** goes back
-to how the window starts.
+diagnostics, one for testing — and **View → Desktops** switches between them. A desktop stores both the
+fixed panels and the workspace windows. **Reset layout** goes back to how the window starts.
 
 ## Trying it without a vehicle
 

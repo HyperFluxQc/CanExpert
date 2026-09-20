@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 import can
-from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
+from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import (
     QAction,
@@ -60,6 +60,7 @@ from canexpert.trace_window import TraceWindow
 from canexpert.transmit_window import TransmitWindow
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
+from canexpert.workspace import add_pane, create_workspace, make_pane
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
@@ -68,6 +69,7 @@ LAST_CHANNEL = "last_channel"      # settings: the channel to select and check a
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
 LAYOUT_GEOMETRY = "layout/geometry"
 LAYOUT_STATE = "layout/state"
+LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 TOOL_PANES = ("trace", "logger", "transmit", "console", "diagnostics")   # toolbar buttons that open a pane
@@ -113,7 +115,7 @@ class MainWindow(QMainWindow):
         self.frame_history = deque(maxlen=FRAME_HISTORY)
         self.recorder = None
         self.replay = None
-        self.tool_docks = {}
+        self.tool_panes = {}
 
         self.init_ui()
         self.load_configurations()
@@ -196,11 +198,10 @@ class MainWindow(QMainWindow):
                 button.setEnabled(False)
         self.addToolBar(toolbar)
 
-        # Central area: empty placeholder (docks sit around it)
-        central = QWidget()
-        central.setMinimumSize(0, 0)
-        central.setMaximumWidth(0)
-        self.setCentralWidget(central)
+        # The centre is the workspace: the panel and the analysis windows, which tab together, float
+        # and can be dragged onto each other. Configuration, CAN Channels and Log stay Qt docks around it.
+        self.workspace = create_workspace(self)
+        self._workspace_style = self.workspace.styleSheet()   # palette(...) colours, re-read per theme
 
         # Dock: Configuration (closable, collapsible)
         config_widget = QWidget()
@@ -263,13 +264,9 @@ class MainWindow(QMainWindow):
         self.app_db_layout = QVBoxLayout()
         self.app_db_container.setLayout(self.app_db_layout)
         self.app_db_scroll.setWidget(self.app_db_container)
-        self.database_dock = QDockWidget("Database", self)
-        self.database_dock.setObjectName("dock_database")
-        self.database_dock.setWidget(self.app_db_scroll)
-        self.database_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
-        self.database_dock.setTitleBarWidget(DockTitleBar(self.database_dock, self, Qt.RightDockWidgetArea))
-        self.addDockWidget(Qt.RightDockWidgetArea, self.database_dock)
-        self.database_dock.hide()
+        self.database_pane = make_pane("Database", self.app_db_scroll, "pane_database")
+        add_pane(self.workspace, self.database_pane)
+        self.database_pane.toggleView(False)   # shown once a database is loaded
 
         # Dock: Log (Debug + CAN Monitor)
         log_tabs = QTabWidget()
@@ -292,8 +289,8 @@ class MainWindow(QMainWindow):
 
         self.create_menu()
         # The arrangement the window starts with, so Reset layout has somewhere to go back to.
-        self._default_state = self.saveState()
-        self._layout_state = None
+        self._default_layout = (self.saveState(), self.workspace.saveState())
+        self._workspace_state = None
         self.restore_layout()
         self.refresh_channel_list()
         self.log_verbose("Application started.")
@@ -691,6 +688,9 @@ class MainWindow(QMainWindow):
         for name, action in self._toolbar_actions.items():
             action.setIcon(toolbar_icon(name, dark=theme == "dark"))
         self._refresh_manual_icon()
+        # The workspace's own style sheet is written in palette(...) colours, which are read when it is
+        # set: setting it again is what makes the windows follow the theme.
+        self.workspace.setStyleSheet(self._workspace_style)
         if not restore:
             settings = app_settings()
             settings.setValue("theme", theme)
@@ -720,58 +720,44 @@ class MainWindow(QMainWindow):
     # --- The workspace: tool panes, saved layouts and desktops ---
 
     def tool_widget(self, name):
-        """The widget of a tool pane that was opened, else None (nothing is created here)."""
-        dock = self.tool_docks.get(name)
-        return dock.widget() if dock is not None else None
+        """The widget of a tool window that was opened, else None (nothing is created here)."""
+        pane = self.tool_panes.get(name)
+        return pane.widget() if pane is not None else None
 
-    def open_tool(self, name, title, factory, area=Qt.RightDockWidgetArea):
-        """Show a tool in a pane of the main window, building it the first time. Returns (widget, is new)."""
-        dock, created = self.tool_docks.get(name), False
-        if dock is None:
+    def open_tool(self, name, title, factory, area="center"):
+        """Show a tool in the workspace, building it the first time. Returns (widget, is new)."""
+        pane, created = self.tool_panes.get(name), False
+        if pane is None:
             widget = factory()
-            dock = QDockWidget(title, self)
-            dock.setObjectName(f"dock_{name}")
-            dock.setWidget(widget)
-            dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable |
-                             QDockWidget.DockWidgetFloatable)
-            dock.setTitleBarWidget(DockTitleBar(dock, self, area))
-            self.addDockWidget(area, dock)
-            self.tool_docks[name] = dock
+            pane = make_pane(title, widget, f"pane_{name}")
+            add_pane(self.workspace, pane, area, beside=self.database_pane if area != "center" else None)
+            self.tool_panes[name] = pane
             created = True
-            dock.installEventFilter(self)   # keeps the toolbar button in step (see eventFilter)
+            action = self._toolbar_actions.get(name)
+            if action is not None and action.isCheckable():
+                # However the window is opened or closed - its tab's close button, a saved desktop,
+                # Reset layout - the toolbar button follows.
+                pane.viewToggled.connect(action.setChecked)
             if isinstance(widget, QDialog):
-                # Esc in an embedded dialog would hide it inside its pane and leave an empty one;
-                # close the pane and keep the widget ready for the next time it is opened.
-                widget.finished.connect(lambda _result, d=dock, w=widget: (d.close(), w.show()))
+                # Esc in an embedded dialog would hide it inside its window and leave an empty one;
+                # close the window and keep the widget ready for the next time it is opened.
+                widget.finished.connect(lambda _result, p=pane, w=widget: (p.toggleView(False), w.show()))
             self._apply_layout()      # place it where the saved arrangement wants it
-        dock.show()
-        dock.raise_()
-        return dock.widget(), created
-
-    def eventFilter(self, watched, event):
-        """A tool pane opened or closed by any route - its own close button, a saved desktop, Reset
-        layout - keeps its toolbar button in step. These two events arrive even while the main window
-        itself is hidden, which visibilityChanged does not."""
-        if event.type() in (QEvent.ShowToParent, QEvent.HideToParent):
-            for name, dock in self.tool_docks.items():
-                action = self._toolbar_actions.get(name)
-                if dock is watched and action is not None and action.isCheckable():
-                    action.setChecked(event.type() == QEvent.ShowToParent)
-                    break
-        return super().eventFilter(watched, event)
+        pane.toggleView(True)
+        pane.setAsCurrentTab()
+        return pane.widget(), created
 
     def _toggle_tool(self, name, shown, show):
-        """The toolbar switch of a tool pane: open it, or close the one that is open."""
-        dock = self.tool_docks.get(name)
+        """The toolbar switch of a tool window: open it, or close the one that is open."""
+        pane = self.tool_panes.get(name)
         if shown:
             show()
-        elif dock is not None:
-            dock.close()      # hidden, not destroyed: reopening shows what it recorded meanwhile
+        elif pane is not None:
+            pane.toggleView(False)   # hidden, not destroyed: reopening shows what it recorded meanwhile
 
     def open_trace(self):
-        """Trace pane: every frame of the measurement, with the frames already recorded."""
-        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols),
-                                        Qt.BottomDockWidgetArea)
+        """Trace window, with the frames already recorded."""
+        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols), "bottom")
         if created:
             for frame in list(self.frame_history):
                 trace.add_frame(*frame)
@@ -779,7 +765,7 @@ class MainWindow(QMainWindow):
         return trace
 
     def open_can_logger(self):
-        """CAN Logger pane, filled with the signals of the frames already recorded."""
+        """CAN Logger window, filled with the signals of the frames already recorded."""
         logger, created = self.open_tool("logger", "CAN Logger",
                                          lambda: CANLoggerWindow(self, self.symbols))
         if created:
@@ -789,15 +775,14 @@ class MainWindow(QMainWindow):
         return logger
 
     def open_transmit(self):
-        """Transmit pane: send messages once or cyclically."""
+        """Transmit window: send messages once or cyclically."""
         widget, _ = self.open_tool("transmit", "Transmit",
                                    lambda: TransmitWindow(self, self.symbols, self.send_can_message,
-                                                          app_settings()),
-                                   Qt.BottomDockWidgetArea)
+                                                          app_settings()), "bottom")
         return widget
 
     def open_uds_console(self):
-        """UDS Console pane: any ISO 14229 service and the fault memory, without an ODX file."""
+        """UDS Console window: any ISO 14229 service and the fault memory, without an ODX file."""
         widget, _ = self.open_tool("console", "UDS Console",
                                    lambda: UdsConsoleWindow(self, self.active_session))
         return widget
@@ -817,28 +802,41 @@ class MainWindow(QMainWindow):
 
     # --- Layouts (CANoe's desktops) ---
 
+    def layout_state(self):
+        """Everything about the arrangement: the docked panels, and the workspace windows."""
+        return self.saveState(), self.workspace.saveState()
+
+    def apply_layout_state(self, layout):
+        """Put the panels and the workspace windows back as layout describes them."""
+        panels, workspace = layout
+        if panels:
+            self.restoreState(panels)
+        if workspace:
+            self._workspace_state = workspace
+            self.workspace.restoreState(workspace)
+
     def save_layout(self):
+        panels, workspace = self.layout_state()
         self._settings.setValue(LAYOUT_GEOMETRY, self.saveGeometry())
-        self._settings.setValue(LAYOUT_STATE, self.saveState())
+        self._settings.setValue(LAYOUT_STATE, panels)
+        self._settings.setValue(LAYOUT_WORKSPACE, workspace)
 
     def restore_layout(self):
-        """Put the window and its panes back where they were left."""
-        geometry, state = self._settings.value(LAYOUT_GEOMETRY), self._settings.value(LAYOUT_STATE)
+        """Put the window, its panels and its workspace windows back where they were left."""
+        geometry = self._settings.value(LAYOUT_GEOMETRY)
         if geometry:
             self.restoreGeometry(geometry)
-        if state:
-            self._layout_state = state
-            self.restoreState(state)
+        self.apply_layout_state((self._settings.value(LAYOUT_STATE), self._settings.value(LAYOUT_WORKSPACE)))
 
     def _apply_layout(self):
-        """Re-apply the arrangement after a pane was added: restoreState only places panes that exist."""
-        state = getattr(self, "_layout_state", None)
-        if state:
-            self.restoreState(state)
+        """Re-apply the workspace arrangement after a window was added: a saved state only places the
+        windows that existed when it was saved."""
+        if self._workspace_state:
+            self.workspace.restoreState(self._workspace_state)
 
     def desktops(self) -> list[str]:
         self._settings.beginGroup(DESKTOPS)
-        names = sorted(self._settings.childKeys())
+        names = sorted(self._settings.childGroups())
         self._settings.endGroup()
         return names
 
@@ -849,25 +847,26 @@ class MainWindow(QMainWindow):
             if not ok or not name.strip():
                 return None
         name = name.strip()
-        self._settings.setValue(f"{DESKTOPS}/{name}", self.saveState())
+        panels, workspace = self.layout_state()
+        self._settings.setValue(f"{DESKTOPS}/{name}/panels", panels)
+        self._settings.setValue(f"{DESKTOPS}/{name}/workspace", workspace)
         self._refresh_desktop_menu()
         self._set_status(f"Desktop '{name}' saved", "green")
         return name
 
     def apply_desktop(self, name):
-        state = self._settings.value(f"{DESKTOPS}/{name}")
-        if state:
-            self._layout_state = state
-            self.restoreState(state)
+        layout = (self._settings.value(f"{DESKTOPS}/{name}/panels"),
+                  self._settings.value(f"{DESKTOPS}/{name}/workspace"))
+        if any(layout):
+            self.apply_layout_state(layout)
             self._set_status(f"Desktop '{name}'", "gray")
 
     def reset_layout(self):
         """Back to the arrangement the window starts with."""
-        self._layout_state = self._default_state
-        self.restoreState(self._default_state)
-        for dock in self.tool_docks.values():
-            dock.hide()
-        self.database_dock.setVisible(self.app_database is not None)
+        self.apply_layout_state(self._default_layout)
+        for pane in self.tool_panes.values():
+            pane.toggleView(False)
+        self.database_pane.toggleView(self.app_database is not None)
 
     def _refresh_desktop_menu(self):
         menu = getattr(self, "_desktop_menu", None)
@@ -1029,9 +1028,9 @@ class MainWindow(QMainWindow):
             self._set_flashing_available(False)
             self.flashing_toolbar_item.setVisible(True)
             self.config_list.setEnabled(False)
-            self.database_dock.show()
+            self.database_pane.toggleView(True)
+            self.database_pane.setAsCurrentTab()
             self.channels_dock.show()
-            self.resizeDocks([self.config_dock, self.database_dock], [280, 700], Qt.Horizontal)
             self._minimize_side_panels()
             self.refresh_channel_list()
             self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
@@ -1077,7 +1076,7 @@ class MainWindow(QMainWindow):
         self.disconnect_btn.setEnabled(False)
         self.config_list.setEnabled(True)
         self._restore_side_panels()
-        self.database_dock.hide()
+        self.database_pane.toggleView(False)
         self.channels_dock.show()
         self._set_status("Disconnected", "gray")
         self.clear_application_ui()

@@ -578,8 +578,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.window.on_connect_clicked()
         self.assertIsNotNone(self.window.can_bus)
         self.assertTrue(all(bar.is_minimized for bar in side))
-        self.assertFalse(self.window.database_dock.isHidden())
-        self.assertFalse(self.window.database_dock.titleBarWidget().is_minimized)
+        self.assertFalse(self.window.database_pane.isClosed())    # the panel is a workspace window
         self.window.on_disconnect_clicked()
         self.assertFalse(any(bar.is_minimized for bar in side))                 # back for the next connection
         side[2].minimize()                                                       # the user's own choice is kept

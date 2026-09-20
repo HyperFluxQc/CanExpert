@@ -5,7 +5,8 @@ import sys
 
 if sys.version_info < (3, 10):
     sys.exit(f"CAN Expert requires Python 3.10 or newer (this is {sys.version.split()[0]}, {sys.executable}).")
-for module, package in (("can", "python-can"), ("PyQt5", "PyQt5")):  # cantools, pyqtgraph, odxtools are optional
+for module, package in (("can", "python-can"), ("PyQt5", "PyQt5"), ("PyQtAds", "PyQtAds")):
+    # cantools, pyqtgraph and odxtools are optional; PyQtAds carries the workspace windows
     if importlib.util.find_spec(module) is None:
         sys.exit(f"Missing dependency: {package}\nInstall with: pip install -r requirements.txt")
 

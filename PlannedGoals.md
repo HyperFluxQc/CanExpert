@@ -130,10 +130,17 @@ arrangement and splitter positions are rebuilt from scratch at every start.
 **Add:** make the tool windows dockable panes of the main window, remember the layout, and offer named
 desktops (Analysis / Diagnostics / Test).
 
-**Now:** `MainWindow.open_tool()` puts every tool window in a dock of the main window; the arrangement
-and the window geometry are saved on close and restored at the next start, and **View ▸ Save desktop
-as...** / **Desktops** / **Reset layout** keep named arrangements. The Form Designer stays a separate
-window, as CANoe's panel designer does.
+**Now:** the middle of the main window is a workspace built on the Qt Advanced Docking System
+(PyQtAds): the Database panel and the analysis windows tab together, split an area, float as windows of
+their own and show drop guides while being dragged, which plain Qt docks cannot do. Configuration, CAN
+Channels and Log stay fixed panels around it, keeping their minimise-to-a-strip buttons. The
+arrangement and the window geometry are saved on close, and **View ▸ Save desktop as...** /
+**Desktops** / **Reset layout** keep named arrangements of both halves. The Form Designer stays a
+separate window, as CANoe's panel designer does.
+
+Still missing from CANoe's window system: **auto-hide** (a window pinned to a side tab that slides out
+on hover). That arrived in Qt-ADS 4.x and the Python binding is at 3.8.1, so it would need the
+minimise-to-a-strip idea extended to workspace windows.
 
 ---
 
