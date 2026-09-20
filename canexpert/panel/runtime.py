@@ -157,14 +157,17 @@ class _UDSApi:
 
     def __init__(self, parent: DatabaseAPI):
         self._api = parent
-        self.functions = UdsFunctions(self.request, parent.log)
+        self.functions = UdsFunctions(self.request, parent.log, parent._transport.get("timeout"))
 
-    def request(self, payload: bytes | list, timeout: float | None = None, wait: bool = True) -> bytes | None:
+    def request(self, payload: bytes | list, timeout: float | None = None, wait: bool = True,
+                pending: float | None = None) -> bytes | None:
         """Send any UDS request. Returns the reply (positive, or 0x7F negative) or None on timeout;
-        wait=False only sends it."""
+        wait=False only sends it. pending is how long a "response pending" may extend the wait."""
         transport = dict(self._api._transport)
         if timeout is not None:
             transport["timeout"] = timeout
+        if pending is not None:
+            transport["pending_timeout"] = pending
         return uds_request(self._api._bus, bytes(payload), wait=wait, **transport)
 
     def tester_present(self, timeout: float | None = None) -> bool:

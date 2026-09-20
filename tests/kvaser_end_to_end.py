@@ -137,7 +137,7 @@ def main_check():
         console = window.open_uds_console()
         console.run(lambda uds: uds.RDBI(0xF190), "RDBI")
         check("UDS console reads the VIN over ISO-TP",
-              spin(lambda: "WVWZZZ1KZAW000001" in console.log.toPlainText(), 10), console.state_label.text())
+              spin(lambda: "WVWZZZ1KZAW000001" in console.log.toPlainText(), 10))
         console.read_dtcs()
         check("UDS console reads the fault memory", spin(lambda: console.dtc_table.rowCount() > 0, 10),
               f"{console.dtc_table.rowCount()} DTC(s)")
