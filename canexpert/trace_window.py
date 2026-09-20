@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from canexpert.uds.observer import assemble
 from canexpert.ui_common import enable_maximize, is_dark_theme, line_icon, style_toggle
 
 MAX_ROWS = 20000            # frames kept; the oldest are dropped
@@ -45,6 +46,8 @@ TOOL_ICONS = {
     "colour": '<path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-1 2-1.8 0-1.6-1.6-1.8-1.6-3 0-.9.8-1.6 1.8-1.6H16a5 5 0 0 0 5-5"/>'
               '<circle cx="7.5" cy="12" r="1.2" fill="currentColor"/><circle cx="9.5" cy="8" r="1.2" fill="currentColor"/>'
               '<circle cx="14" cy="7" r="1.2" fill="currentColor"/>',
+    "transport": '<path d="M4 7h10a3 3 0 0 1 0 6H8a3 3 0 0 0 0 6h12"/><path d="M17 4l3 3-3 3"/>'
+                 '<path d="M7 16l-3 3 3 3"/>',
 }
 # One colour per identifier, picked by the identifier itself so a message keeps its colour.
 _ID_COLORS_LIGHT = ["#1f77b4", "#b8410e", "#2e7d32", "#8a6d00", "#6a1b9a", "#00707f", "#a3145c", "#3f51b5"]
@@ -82,6 +85,8 @@ class TraceWindow(QDialog):
         self.resize(1100, 620)
         self.symbols = symbols
         self.frames = deque(maxlen=MAX_ROWS)   # (timestamp, direction, can_id, data, extended)
+        self.diagnostic_ids = set()            # the identifiers the transport view assembles
+        self.address_byte = None               # ISO-TP extended addressing, when the configuration uses it
         self._pending = []
         self._filter = ([], [])
         self._tool_buttons = {}
@@ -140,6 +145,10 @@ class TraceWindow(QDialog):
         self.colour_btn = self._tool_button("colour", "Colour: give each identifier its own colour",
                                             checkable=True, checked=True, toggled=lambda _: self.rebuild())
         bar.addWidget(self.colour_btn)
+        self.transport_btn = self._tool_button("transport", "Transport: show the diagnostic messages the "
+                                               "frames carry, not the frames themselves", checkable=True,
+                                               toggled=lambda _: self.rebuild())
+        bar.addWidget(self.transport_btn)
         bar.addWidget(self._separator())
         bar.addWidget(QLabel("Time:"))
         self.time_combo = QComboBox()
@@ -228,7 +237,7 @@ class TraceWindow(QDialog):
         self.frames.extend(pending)
         if self.pause_btn.isChecked():
             return
-        if dropped:                                     # the deque dropped rows the view still shows
+        if dropped or self.transport_btn.isChecked():   # the view is not a row per frame any more
             self.rebuild()
             return
         previous = self.frames[len(self.frames) - len(pending) - 1] if len(self.frames) > len(pending) else None
@@ -240,17 +249,59 @@ class TraceWindow(QDialog):
             self.tree.scrollToBottom()
         self._update_status()
 
+    def set_diagnostic_ids(self, identifiers, address_byte=None):
+        """Which identifiers the transport view assembles, and the extended addressing byte if any."""
+        self.diagnostic_ids = {int(identifier) for identifier in identifiers}
+        self.address_byte = address_byte
+        if self.transport_btn.isChecked():
+            self.rebuild()
+
     def rebuild(self):
-        """Rebuild every row: the filter, the time mode, the colours or the databases changed."""
+        """Rebuild every row: the filter, the time mode, the view or the databases changed."""
         self.tree.clear()
-        previous = None
-        for frame in self.frames:
-            if self._passes(frame):
-                self._append_row(frame, previous)
-            previous = frame
+        if self.transport_btn.isChecked():
+            self._rebuild_transport()
+        else:
+            previous = None
+            for frame in self.frames:
+                if self._passes(frame):
+                    self._append_row(frame, previous)
+                previous = frame
         if self.follow_btn.isChecked():
             self.tree.scrollToBottom()
         self._update_status()
+
+    def transport_messages(self):
+        """The diagnostic messages the recorded frames carry."""
+        diagnostic = [frame for frame in self.frames if frame[2] in self.diagnostic_ids]
+        return assemble(diagnostic, self.address_byte)
+
+    def _rebuild_transport(self):
+        """A row per diagnostic message, opening into the frames that carried it."""
+        if not self.diagnostic_ids:
+            item = QTreeWidgetItem(["", "", "", "No diagnostic identifiers yet - connect, or set the "
+                                    "request and response IDs in the configuration", "", ""])
+            self.tree.addTopLevelItem(item)
+            return
+        previous = None
+        for message in self.transport_messages():
+            if not self._passes((message.start, message.direction, message.can_id, message.payload,
+                                 message.extended)):
+                continue
+            frame = (message.start, message.direction, message.can_id, message.payload, message.extended)
+            item = QTreeWidgetItem([self._time_text(frame, previous), message.direction,
+                                    f"{message.can_id:08X}x" if message.extended else f"{message.can_id:03X}",
+                                    message.summary(), str(len(message.payload)),
+                                    message.payload.hex(" ").upper()])
+            if self.colour_btn.isChecked():
+                item.setForeground(COL_ID, self._colour(message.can_id))
+            if not message.complete:
+                item.setForeground(COL_NAME, QColor("#c0392b"))
+            for timestamp, label, data in message.frames:
+                item.addChild(QTreeWidgetItem([f"{timestamp - message.start:+.6f}", "", "", label,
+                                               str(len(data)), bytes(data).hex(" ").upper()]))
+            self.tree.addTopLevelItem(item)
+            previous = frame
 
     def _on_filter_changed(self, text):
         self._filter = parse_filter(text)
@@ -321,8 +372,13 @@ class TraceWindow(QDialog):
             item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
 
     def _update_status(self):
-        shown = self.tree.topLevelItemCount()
-        total = len(self.frames)
+        shown, total = self.tree.topLevelItemCount(), len(self.frames)
+        if self.transport_btn.isChecked():
+            messages = self.transport_messages()
+            unfinished = sum(1 for message in messages if not message.complete)
+            self.status.setText(f"{shown} of {len(messages)} diagnostic message(s) from {total} frame(s)"
+                                + (f", {unfinished} unfinished" if unfinished else ""))
+            return
         self.status.setText(f"{shown} of {total} frame(s)" if shown != total else f"{total} frame(s)")
 
     # --- find and export ------------------------------------------------------------------

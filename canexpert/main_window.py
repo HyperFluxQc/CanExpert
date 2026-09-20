@@ -44,7 +44,7 @@ from canexpert.can_bus import (SUPPORTED_INTERFACES, CanWorker, ChannelActivityS
                                open_channel)
 from canexpert.can_logger import CANLoggerWindow
 from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
-                              validate_config)
+                              uds_transport, validate_config)
 from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
@@ -769,7 +769,18 @@ class MainWindow(QMainWindow):
             for frame in list(self.frame_history):
                 trace.add_frame(*frame)
             trace.flush()
+        self._update_diagnostic_ids()
         return trace
+
+    def _update_diagnostic_ids(self):
+        """Which identifiers the Trace assembles in its transport view: the ones this configuration uses."""
+        trace = self.tool_widget("trace")
+        config = self.session_config or self.monitor_config or self.active_config
+        if trace is None or not config:
+            return
+        transport = uds_transport(config)
+        identifiers = {config.get("request_id"), transport["request_id"], *config.get("response_ids", [])}
+        trace.set_diagnostic_ids({i for i in identifiers if i is not None}, transport["address_byte"])
 
     def open_can_logger(self):
         """CAN Logger window, filled with the signals of the frames already recorded."""
@@ -1066,6 +1077,7 @@ class MainWindow(QMainWindow):
             self.channels_dock.show()
             self._minimize_side_panels()
             self.refresh_channel_list()
+            self._update_diagnostic_ids()
             self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
             self.log_verbose(f"Loaded {database['source_path']}")
         except Exception as exc:
@@ -1142,6 +1154,7 @@ class MainWindow(QMainWindow):
         worker.error_occurred.connect(lambda error, w=worker: self._monitor_failed(w, error))
         self.ecu_monitor, self.monitor_bus = worker, bus
         self.monitor_channel, self.monitor_config = dict(channel_config), config
+        self._update_diagnostic_ids()
         worker.start()
         self._label_channels()
         self._update_nodes()
