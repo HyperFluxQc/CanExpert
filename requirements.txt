@@ -1,4 +1,5 @@
 PyQt5>=5.15.0
+PyQtAds>=3.8.1
 python-can>=3.3.0
 cantools>=39.0.0
 pyqtgraph>=0.13.0

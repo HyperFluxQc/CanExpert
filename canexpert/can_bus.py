@@ -42,10 +42,11 @@ class CanWorker(QThread):
     message_sent = pyqtSignal(int, bytes)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, bus, config):
+    def __init__(self, bus, config, tester_present=True):
         super().__init__()
         self.bus, self.config = bus, config  # config: validated (canexpert.config.validate_config)
         self.running = True
+        self.tester_present = tester_present   # off in tests that must see no heartbeat on the bus
         self.mailboxes = []
 
     def add_mailbox(self, mailbox):
@@ -59,7 +60,7 @@ class CanWorker(QThread):
         heartbeat = bytes([2, 0x3E, 0])
         if cfg.get("extended_id"):
             heartbeat = bytes([cfg["extended_id_byte"]]) + heartbeat
-        next_heartbeat = 0.0
+        next_heartbeat = 0.0 if self.tester_present else float("inf")
         while self.running:
             try:
                 now = time.monotonic()

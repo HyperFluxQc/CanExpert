@@ -9,6 +9,9 @@ database XML, or the `_script.py` mechanism: where a feature has to remember som
 its own file or in QSettings. Three items would genuinely be better with one new optional configuration
 field, and they say so.
 
+**Status:** tier 1 items 2-6 and 8 are **implemented** (item 7, the test feature set, was left out on
+purpose; item 1 was built and then removed — see it below). Each one is marked; the rest is untouched.
+
 ---
 
 ## Tier 1 — Structural gaps
@@ -16,10 +19,10 @@ field, and they say so.
 These are the differences that make CAN Expert a panel tool with CAN underneath rather than a bus
 analysis tool.
 
-### 1. A measurement that starts without a panel database, and a passive mode
+### 1. A measurement that starts without a panel database, and a passive mode — **REMOVED after trying it**
 *Effort: medium*
 
-**Today:** Connect refuses outright when no database matches
+**Was:** Connect refuses outright when no database matches
 ([main_window.py:726](canexpert/main_window.py#L726)), and connecting always transmits TesterPresent
 ([can_bus.py:69](canexpert/can_bus.py#L69)). There is no way to simply watch a vehicle bus.
 
@@ -29,47 +32,69 @@ analysis tool.
 listen-only / silent option (no TesterPresent, no ACK). Everything below this line becomes easier once
 it exists.
 
-### 2. A real Trace window
+**Now:** built as **Start** and **Passive**, then taken out again in use. Another tool already covers
+reading a bus without a database, and a running measurement blocked Connect while the node tree showed
+"Lost connection", because nothing sends TesterPresent during one. **Connect** is the only way to open a
+channel again. What the work left behind is still there and is what the rest of tier 1 stands on: one
+path for every frame, the frame history that fills a window opened later, and the adapter's timestamps.
+
+### 2. A real Trace window — **DONE**
 *Effort: large — the biggest visible payoff*
 
-**Today:** a `QPlainTextEdit` printing raw hex, capped at 5000 lines, with no decoding, filtering,
+**Was:** a `QPlainTextEdit` printing raw hex, capped at 5000 lines, with no decoding, filtering,
 search, export or colour ([main_window.py:313](canexpert/main_window.py#L313)).
 
 **Add:** a table with time, channel, direction, ID, symbolic message name, DLC and data, with
 expandable rows showing the decoded signals; relative / absolute / delta time; scroll lock; pass and
 stop filters; search; copy and export; colour per ID. `cantools` already does the decoding.
 
-### 3. Logging to file and offline replay
+**Now:** `canexpert/trace_window.py`, with all of that except the channel column (there is still only
+one channel — item 10). Frames are buffered and flushed on a timer, and a row's signals are decoded only
+when it is opened, so a busy bus stays responsive.
+
+### 3. Logging to file and offline replay — **DONE**
 *Effort: medium — python-can does the heavy lifting*
 
-**Today:** nothing reaches disk except the logger's decoded-signal CSV.
+**Was:** nothing reaches disk except the logger's decoded-signal CSV.
 
 **Add:** BLF/ASC recording (python-can has the writers and readers) with triggers and a pre-trigger
 buffer, and an offline mode that replays a file through the same decode path into the Trace, the
 Logger and the panels. Offline analysis is half of what CANoe is used for.
 
-### 4. Interactive Generator (transmit list)
+**Now:** `canexpert/recording.py`: **Record to file...** writes BLF, ASC, CSV, LOG or TRC, and **Replay
+a recorded file...** plays one back into every window at real time up to as fast as possible, with no bus
+open. Triggers and a pre-trigger buffer are still to do.
+
+### 4. Interactive Generator (transmit list) — **DONE**
 *Effort: medium*
 
-**Today:** the only way to send anything repeatedly is a panel script calling `api.every`.
+**Was:** the only way to send anything repeatedly is a panel script calling `api.every`.
 
 **Add:** a transmit window of rows (raw messages or picked from a DBC), each with a cycle time,
 one-shot and burst sending, signal-level editing with value tables, enable/disable per row, and the
 list saved as its own file.
 
-### 5. Databases assigned at the application level, not per panel
+**Now:** `canexpert/transmit_window.py`, with rows kept in the settings and saveable as JSON. A row
+that cannot be sent (no measurement, or passive) switches itself off with the reason; closing the pane
+stops every cyclic row.
+
+### 5. Databases assigned at the application level, not per panel — **DONE**
 *Effort: medium — the enabler for items 2, 4 and 14*
 
-**Today:** a DBC is attached inside a panel XML (`dbc_path`) and loaded again separately in the CAN
+**Was:** a DBC is attached inside a panel XML (`dbc_path`) and loaded again separately in the CAN
 Logger. Nothing says "this bus speaks this database".
 
 **Add:** an application-level database list (its own file or QSettings, not the configuration JSON)
 that the Trace, Logger, transmit list, data window and panels all read.
 
-### 6. A diagnostic console that does not need ODX, and a fault memory window
+**Now:** `canexpert/symbols.py` holds the list in the settings, and the Trace window, the CAN Logger
+and the transmit list all read it (**Tools ▸ Symbol databases...**). The Logger's own **Load DBC...**
+adds to the same list, and it can show several files at once. Panels keep their own DBC.
+
+### 6. A diagnostic console that does not need ODX, and a fault memory window — **DONE**
 *Effort: medium — the best value per hour on this list*
 
-**Today:** the Diagnostic Window needs `odxtools`, a loaded ODX file and a full database session
+**Was:** the Diagnostic Window needs `odxtools`, a loaded ODX file and a full database session
 ([diagnostic_window.py:31](canexpert/diagnostic_window.py#L31),
 [:252](canexpert/diagnostic_window.py#L252)).
 
@@ -82,7 +107,12 @@ decoded with NRC names, with a history and a resend. Then a fault memory window:
 (`ReadDTCs` already exists), status bits, snapshot and extended records, and clear, using ODX text
 when it is available.
 
-### 7. Test feature set with reports
+**Now:** `canexpert/uds_console.py` builds each request form from the function's own signature, sends
+on a background thread over a private mailbox, and logs the response with its NRC name. It also has a
+session and SecurityAccess bar and a fault-memory tab (read, count, snapshot, extended data, clear) that
+spells out the DTC status bits. ODX text for DTCs is still to do.
+
+### 7. Test feature set with reports — *not started (left out on purpose)*
 *Effort: large*
 
 **Today:** absent. This is what separates a viewer from a validation tool.
@@ -90,15 +120,27 @@ when it is available.
 **Add:** a test tree that runs Python test cases against the live bus (reusing `ScriptRuntime` and the
 UDS functions), with pass/fail per step, setup and teardown, and an HTML or JUnit report.
 
-### 8. One docked workspace instead of separate dialogs, with saved desktops
+### 8. One docked workspace instead of separate dialogs, with saved desktops — **DONE**
 *Effort: medium — the single biggest "looks like CANoe" item*
 
-**Today:** the CAN Logger, Diagnostic Window and Form Designer are `QDialog`s floating outside the
+**Was:** the CAN Logger, Diagnostic Window and Form Designer are `QDialog`s floating outside the
 main window, and there is no `saveState` or `saveGeometry` anywhere in the codebase: window size, dock
 arrangement and splitter positions are rebuilt from scratch at every start.
 
 **Add:** make the tool windows dockable panes of the main window, remember the layout, and offer named
 desktops (Analysis / Diagnostics / Test).
+
+**Now:** the middle of the main window is a workspace built on the Qt Advanced Docking System
+(PyQtAds): the Database panel and the analysis windows tab together, split an area, float as windows of
+their own and show drop guides while being dragged, which plain Qt docks cannot do. Configuration, CAN
+Channels and Log stay fixed panels around it, keeping their minimise-to-a-strip buttons. The
+arrangement and the window geometry are saved on close, and **View ▸ Save desktop as...** /
+**Desktops** / **Reset layout** keep named arrangements of both halves. The Form Designer stays a
+separate window, as CANoe's panel designer does.
+
+Still missing from CANoe's window system: **auto-hide** (a window pinned to a side tab that slides out
+on hover). That arrived in Qt-ADS 4.x and the Python binding is at 3.8.1, so it would need the
+minimise-to-a-strip idea extended to workspace windows.
 
 ---
 
@@ -383,14 +425,14 @@ exist.
 
 ---
 
-## If only five get done
+## What has been done
 
-1. **Item 1** — measurement without a database, plus listen-only
-2. **Item 2** — the Trace window
-3. **Item 6** — ODX-free diagnostic console and fault memory
-4. **Item 3** — logging to file and offline replay
-5. **Item 8** — docked workspace and saved layout
+Tier 1 items **2, 3, 4, 5, 6 and 8** are implemented, with `canexpert/trace_window.py`,
+`transmit_window.py`, `uds_console.py`, `recording.py` and `symbols.py` as new modules and the tool
+windows turned into panes of the main window. Item **7** (the test feature set) was deliberately left
+out, and item **1** was built and then removed again in use. None of it changed the configuration,
+database or script formats.
 
-Those five change the feel from "a panel tool with CAN underneath" to "a CANoe-like analysis tool", and
-none of them touch the configuration, database or script formats. **Item 19** (ISO-TP padding) is a
-half-hour fix worth slipping in regardless.
+The next things worth doing, in order: **item 19** (ISO-TP padding — a half-hour fix and the most likely
+reason a real ECU ignores CAN Expert), **item 11** (bus statistics, error frames and bus-off), **item 9**
+(CAN FD) and **item 7** if the tool is to be used for validation.

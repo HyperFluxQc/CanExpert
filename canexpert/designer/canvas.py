@@ -17,7 +17,7 @@ from canexpert.designer.side_panels import (BINDING_TYPE_DBC, BINDING_TYPE_SCRIP
                                             UNDO_LIMIT, WIDGET_TYPE_MIME, control_name)
 from canexpert.panel.controls import CONTROLS, build
 from canexpert.panel.database import parse_hex_bytes
-from canexpert.ui_common import line_icon
+from canexpert.ui_common import line_icon, style_toggle
 
 # -----------------------------------------------------------------------------
 # Canvas items
@@ -270,6 +270,7 @@ class FormCanvas(QGroupBox):
             self.tool_bar.addWidget(button)
         self._tool_buttons["grid"].setCheckable(True)
         self._tool_buttons["grid"].setChecked(True)
+        style_toggle(self._tool_buttons["grid"])
         self.tool_bar.addStretch()
         main_layout.addLayout(self.tool_bar)
 
@@ -826,6 +827,8 @@ class FormCanvas(QGroupBox):
         for name, button in self._tool_buttons.items():
             body = _ICONS[name].replace('fill="currentColor"', f'fill="{colour.name()}"')
             button.setIcon(line_icon(body, colour))
+            if button.isCheckable():
+                style_toggle(button)      # re-reads the style sheet's palette(...) for the new theme
 
     def changeEvent(self, event):
         super().changeEvent(event)

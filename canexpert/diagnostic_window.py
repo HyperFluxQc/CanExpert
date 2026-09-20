@@ -62,6 +62,8 @@ class DiagnosticWindow(QDialog):
         self.setWindowTitle("Diagnostic Window")
         enable_maximize(self)
         self.setMinimumSize(850, 600)
+        # The main window, kept explicitly: the window is shown in a pane, so parent() is its dock.
+        self.main = parent
         self.odx_db = None
         self._param_widgets = {}
         self._build_ui()
@@ -245,7 +247,7 @@ class DiagnosticWindow(QDialog):
     def _send_request(self):
         if not getattr(self, "_current_service", None):
             return
-        main = self.parent()
+        main = self.main
         bus = getattr(main, "can_bus", None) if main else None
         worker = (getattr(main, "workers", None) or {}).get("main") if main else None
         cfg = getattr(main, "session_config", None) if main else None
@@ -308,7 +310,7 @@ class DiagnosticWindow(QDialog):
 
     def on_can_message(self, arb_id: int, data: bytes | list, direction: str = "RX"):
         """Called by the main window for every frame; logs the ones addressed to or from the ECU."""
-        main = self.parent()
+        main = self.main
         if not main or not getattr(main, "active_config", None) or not hasattr(self, "monitor_log"):
             return
         cfg = getattr(main, "session_config", None) or main.active_config

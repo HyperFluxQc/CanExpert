@@ -6,6 +6,7 @@ Flashing, the tool windows and the logs.
 import json
 import sys
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from PyQt5.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -52,13 +54,25 @@ from canexpert.panel.database import load_application_database, select_database
 from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
+from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
+from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
+from canexpert.trace_window import TraceWindow
+from canexpert.transmit_window import TransmitWindow
+from canexpert.uds_console import UdsConsoleWindow
 from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
+from canexpert.workspace import add_pane, create_workspace, make_pane
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
+LAYOUT_GEOMETRY = "layout/geometry"
+LAYOUT_STATE = "layout/state"
+LAYOUT_WORKSPACE = "layout/workspace"
+DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
+FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
+TOOL_PANES = ("trace", "logger", "transmit", "console", "diagnostics")   # toolbar buttons that open a pane
 
 
 class MainWindow(QMainWindow):
@@ -94,6 +108,14 @@ class MainWindow(QMainWindow):
         self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
         self.last_channel, self.used_channels = None, set()
         self._read_channel_history()
+        # What is on the bus, whoever opened it: the database session, the ECU check, or a replayed
+        # file. Windows opened later read the history.
+        self._settings = app_settings()
+        self.symbols = SymbolDatabases(parent=self, settings=self._settings)
+        self.frame_history = deque(maxlen=FRAME_HISTORY)
+        self.recorder = None
+        self.replay = None
+        self.tool_panes = {}
 
         self.init_ui()
         self.load_configurations()
@@ -116,33 +138,52 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(28, 28))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        # A checked button keeps a pressed-in background with an accent line: a style sheet that names
+        # any state replaces the style's own drawing of the checked one, which would leave a toggle
+        # here looking identical on and off.
         toolbar.setStyleSheet("""
             QToolBar { spacing: 4px; padding: 6px; border: none; }
-            QToolBar QToolButton { padding: 6px 8px; border-radius: 6px; }
+            QToolBar QToolButton { padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; }
             QToolBar QToolButton:hover { background: palette(midlight); }
             QToolBar QToolButton:pressed { background: palette(mid); }
+            QToolBar QToolButton:checked { background: palette(mid); border: 1px solid palette(dark);
+                                           border-bottom: 3px solid palette(highlight); }
+            QToolBar QToolButton:checked:hover { background: palette(midlight); }
         """)
         self._toolbar_actions = {}
         entries = [
             ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
             ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
              self.disconnect_database),
-            ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
+            ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
+             self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
+            ("transmit", "Transmit", "Send messages once or cyclically", self.open_transmit),
+            ("console", "UDS Console", "Send any UDS service and read the fault memory (no ODX file needed)",
+             self.open_uds_console),
             ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
+            ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
             ("flashing", "Flashing", "Flash ECU firmware using the database's Flashing() function", self.open_flashing),
         ]
         for name, label, hint, callback in entries:
-            if name == "designer":
+            if name == "trace":
                 toolbar.addSeparator()
-            action = QAction(toolbar_icon(name), label, self, triggered=callback)
+            action = QAction(toolbar_icon(name), label, self)
+            if name in TOOL_PANES:
+                # A tool button works as a switch: it stays pressed while its pane is open, pressing it
+                # again closes the pane, and closing the pane by its own button lets the toolbar go.
+                action.setCheckable(True)
+                action.toggled.connect(lambda shown, n=name, show=callback: self._toggle_tool(n, shown, show))
+                hint = f"{hint}\nPress again to close the pane"
+            else:
+                action.triggered.connect(callback)
             action.setToolTip(hint)
             action.setStatusTip(hint)
             button = QToolButton()
             button.setDefaultAction(action)
             button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             button.setIconSize(QSize(28, 28))
-            button.setMinimumSize(96, 66)
+            button.setMinimumSize(88, 66)
             button.setAccessibleName(label)
             toolbar_item = toolbar.addWidget(button)
             self._toolbar_actions[name] = action
@@ -157,11 +198,10 @@ class MainWindow(QMainWindow):
                 button.setEnabled(False)
         self.addToolBar(toolbar)
 
-        # Central area: empty placeholder (docks sit around it)
-        central = QWidget()
-        central.setMinimumSize(0, 0)
-        central.setMaximumWidth(0)
-        self.setCentralWidget(central)
+        # The centre is the workspace: the panel and the analysis windows, which tab together, float
+        # and can be dragged onto each other. Configuration, CAN Channels and Log stay Qt docks around it.
+        self.workspace = create_workspace(self)
+        self._workspace_style = self.workspace.styleSheet()   # palette(...) colours, re-read per theme
 
         # Dock: Configuration (closable, collapsible)
         config_widget = QWidget()
@@ -184,6 +224,7 @@ class MainWindow(QMainWindow):
         config_layout.addLayout(btn_row)
         config_widget.setLayout(config_layout)
         self.config_dock = QDockWidget("Configuration", self)
+        self.config_dock.setObjectName("dock_configuration")
         self.config_dock.setWidget(config_widget)
         self.config_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
         self.config_dock.setTitleBarWidget(DockTitleBar(self.config_dock, self, Qt.LeftDockWidgetArea))
@@ -209,6 +250,7 @@ class MainWindow(QMainWindow):
         channels_layout.addLayout(ch_btn_layout)
         channels_widget.setLayout(channels_layout)
         self.channels_dock = QDockWidget("CAN Channels", self)
+        self.channels_dock.setObjectName("dock_channels")
         self.channels_dock.setWidget(channels_widget)
         self.channels_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
         self.channels_dock.setTitleBarWidget(DockTitleBar(self.channels_dock, self, Qt.LeftDockWidgetArea))
@@ -222,12 +264,9 @@ class MainWindow(QMainWindow):
         self.app_db_layout = QVBoxLayout()
         self.app_db_container.setLayout(self.app_db_layout)
         self.app_db_scroll.setWidget(self.app_db_container)
-        self.database_dock = QDockWidget("Database", self)
-        self.database_dock.setWidget(self.app_db_scroll)
-        self.database_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
-        self.database_dock.setTitleBarWidget(DockTitleBar(self.database_dock, self, Qt.RightDockWidgetArea))
-        self.addDockWidget(Qt.RightDockWidgetArea, self.database_dock)
-        self.database_dock.hide()
+        self.database_pane = make_pane("Database", self.app_db_scroll, "pane_database")
+        add_pane(self.workspace, self.database_pane)
+        self.database_pane.toggleView(False)   # shown once a database is loaded
 
         # Dock: Log (Debug + CAN Monitor)
         log_tabs = QTabWidget()
@@ -242,14 +281,22 @@ class MainWindow(QMainWindow):
         self.can_log.setMaximumBlockCount(5000)
         log_tabs.addTab(self.can_log, "CAN Monitor")
         self.log_dock = QDockWidget("Log", self)
+        self.log_dock.setObjectName("dock_log")
         self.log_dock.setWidget(log_tabs)
         self.log_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
         self.log_dock.setTitleBarWidget(DockTitleBar(self.log_dock, self, Qt.BottomDockWidgetArea))
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
 
         self.create_menu()
+        # The arrangement the window starts with, so Reset layout has somewhere to go back to.
+        self._default_layout = (self.saveState(), self.workspace.saveState())
+        self._workspace_state = None
+        self.restore_layout()
         self.refresh_channel_list()
         self.log_verbose("Application started.")
+        if self.symbols.errors:
+            for error in self.symbols.errors:
+                self.log_verbose(f"Symbol database: {error}")
 
     # --- The channels used before ---------------------------------------------------
 
@@ -509,19 +556,38 @@ class MainWindow(QMainWindow):
         exit_action = file_menu.addAction('Exit')
         exit_action.triggered.connect(self.close)
 
+        # Connection menu: the session, and what is written to or read from a file
+        measurement_menu = menubar.addMenu('Connection')
+        for name in ("connect", "disconnect"):
+            measurement_menu.addAction(self._toolbar_actions[name])
+        measurement_menu.addSeparator()
+        self._record_action = measurement_menu.addAction('Record to file...')
+        self._record_action.triggered.connect(self.start_recording)
+        self._stop_record_action = measurement_menu.addAction('Stop recording')
+        self._stop_record_action.setEnabled(False)
+        self._stop_record_action.triggered.connect(self.stop_recording)
+        measurement_menu.addAction('Replay a recorded file...').triggered.connect(self.replay_log)
+
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
         tools_menu.addAction('Form Designer').triggered.connect(self.open_form_designer)
-        tools_menu.addAction('CAN Logger...').triggered.connect(self.open_can_logger)
-        tools_menu.addAction('Diagnostic Window...').triggered.connect(self.open_diagnostic_window)
-        
+        for name in TOOL_PANES:
+            tools_menu.addAction(self._toolbar_actions[name])   # checked while the pane is open
+        tools_menu.addSeparator()
+        tools_menu.addAction('Symbol databases...').triggered.connect(self.edit_symbol_databases)
+
         # View menu
         view_menu = menubar.addMenu('View')
-        
+
         refresh_config_action = view_menu.addAction('Refresh Configurations')
         refresh_config_action.triggered.connect(self.load_configurations)
         refresh_channels_action = view_menu.addAction('Refresh Channels')
         refresh_channels_action.triggered.connect(self.refresh_channel_list)
+        view_menu.addSeparator()
+        self._desktop_menu = view_menu.addMenu('Desktops')
+        view_menu.addAction('Save desktop as...').triggered.connect(lambda: self.save_desktop())
+        view_menu.addAction('Reset layout').triggered.connect(self.reset_layout)
+        self._refresh_desktop_menu()
 
         # Options menu - Theme
         options_menu = menubar.addMenu('Options')
@@ -622,6 +688,9 @@ class MainWindow(QMainWindow):
         for name, action in self._toolbar_actions.items():
             action.setIcon(toolbar_icon(name, dark=theme == "dark"))
         self._refresh_manual_icon()
+        # The workspace's own style sheet is written in palette(...) colours, which are read when it is
+        # set: setting it again is what makes the windows follow the theme.
+        self.workspace.setStyleSheet(self._workspace_style)
         if not restore:
             settings = app_settings()
             settings.setValue("theme", theme)
@@ -648,21 +717,221 @@ class MainWindow(QMainWindow):
         designer.saved.connect(lambda p: self.load_configurations())
         designer.exec_()
 
+    # --- The workspace: tool panes, saved layouts and desktops ---
+
+    def tool_widget(self, name):
+        """The widget of a tool window that was opened, else None (nothing is created here)."""
+        pane = self.tool_panes.get(name)
+        return pane.widget() if pane is not None else None
+
+    def open_tool(self, name, title, factory, area="center"):
+        """Show a tool in the workspace, building it the first time. Returns (widget, is new)."""
+        pane, created = self.tool_panes.get(name), False
+        if pane is None:
+            widget = factory()
+            pane = make_pane(title, widget, f"pane_{name}")
+            add_pane(self.workspace, pane, area, beside=self.database_pane if area != "center" else None)
+            self.tool_panes[name] = pane
+            created = True
+            action = self._toolbar_actions.get(name)
+            if action is not None and action.isCheckable():
+                # However the window is opened or closed - its tab's close button, a saved desktop,
+                # Reset layout - the toolbar button follows.
+                pane.viewToggled.connect(action.setChecked)
+            if isinstance(widget, QDialog):
+                # Esc in an embedded dialog would hide it inside its window and leave an empty one;
+                # close the window and keep the widget ready for the next time it is opened.
+                widget.finished.connect(lambda _result, p=pane, w=widget: (p.toggleView(False), w.show()))
+            self._apply_layout()      # place it where the saved arrangement wants it
+        pane.toggleView(True)
+        pane.setAsCurrentTab()
+        return pane.widget(), created
+
+    def _toggle_tool(self, name, shown, show):
+        """The toolbar switch of a tool window: open it, or close the one that is open."""
+        pane = self.tool_panes.get(name)
+        if shown:
+            show()
+        elif pane is not None:
+            pane.toggleView(False)   # hidden, not destroyed: reopening shows what it recorded meanwhile
+
+    def open_trace(self):
+        """Trace window, with the frames already recorded."""
+        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols), "bottom")
+        if created:
+            for frame in list(self.frame_history):
+                trace.add_frame(*frame)
+            trace.flush()
+        return trace
+
     def open_can_logger(self):
-        """Open the CAN Logger window."""
-        if not getattr(self, "_can_logger_window", None):
-            self._can_logger_window = CANLoggerWindow(self)
-        self._can_logger_window.show()
-        self._can_logger_window.raise_()
-        self._can_logger_window.activateWindow()
+        """CAN Logger window, filled with the signals of the frames already recorded."""
+        logger, created = self.open_tool("logger", "CAN Logger",
+                                         lambda: CANLoggerWindow(self, self.symbols))
+        if created:
+            for timestamp, direction, can_id, data, _extended in list(self.frame_history):
+                if direction == "RX":
+                    logger.on_can_message(can_id, data, timestamp)
+        return logger
+
+    def open_transmit(self):
+        """Transmit window: send messages once or cyclically."""
+        widget, _ = self.open_tool("transmit", "Transmit",
+                                   lambda: TransmitWindow(self, self.symbols, self.send_can_message,
+                                                          app_settings()), "bottom")
+        return widget
+
+    def open_uds_console(self):
+        """UDS Console window: any ISO 14229 service and the fault memory, without an ODX file."""
+        widget, _ = self.open_tool("console", "UDS Console",
+                                   lambda: UdsConsoleWindow(self, self.active_session))
+        return widget
 
     def open_diagnostic_window(self):
-        """Open the Diagnostic Window."""
-        if not getattr(self, "_diagnostic_window", None):
-            self._diagnostic_window = DiagnosticWindow(self)
-        self._diagnostic_window.show()
-        self._diagnostic_window.raise_()
-        self._diagnostic_window.activateWindow()
+        """ODX Diagnostic Window pane."""
+        widget, _ = self.open_tool("diagnostics", "Diagnostics", lambda: DiagnosticWindow(self))
+        return widget
+
+    def edit_symbol_databases(self):
+        """Add or remove the DBC files every window uses."""
+        dialog = SymbolDatabaseDialog(self.symbols, self)
+        dialog.exec_()
+        self.log_verbose(f"Symbol databases: {len(self.symbols.messages())} message(s) "
+                         f"from {len(self.symbols.databases)} file(s)")
+        return dialog
+
+    # --- Layouts (CANoe's desktops) ---
+
+    def layout_state(self):
+        """Everything about the arrangement: the docked panels, and the workspace windows."""
+        return self.saveState(), self.workspace.saveState()
+
+    def apply_layout_state(self, layout):
+        """Put the panels and the workspace windows back as layout describes them."""
+        panels, workspace = layout
+        if panels:
+            self.restoreState(panels)
+        if workspace:
+            self._workspace_state = workspace
+            self.workspace.restoreState(workspace)
+
+    def save_layout(self):
+        panels, workspace = self.layout_state()
+        self._settings.setValue(LAYOUT_GEOMETRY, self.saveGeometry())
+        self._settings.setValue(LAYOUT_STATE, panels)
+        self._settings.setValue(LAYOUT_WORKSPACE, workspace)
+
+    def restore_layout(self):
+        """Put the window, its panels and its workspace windows back where they were left."""
+        geometry = self._settings.value(LAYOUT_GEOMETRY)
+        if geometry:
+            self.restoreGeometry(geometry)
+        self.apply_layout_state((self._settings.value(LAYOUT_STATE), self._settings.value(LAYOUT_WORKSPACE)))
+
+    def _apply_layout(self):
+        """Re-apply the workspace arrangement after a window was added: a saved state only places the
+        windows that existed when it was saved."""
+        if self._workspace_state:
+            self.workspace.restoreState(self._workspace_state)
+
+    def desktops(self) -> list[str]:
+        self._settings.beginGroup(DESKTOPS)
+        names = sorted(self._settings.childGroups())
+        self._settings.endGroup()
+        return names
+
+    def save_desktop(self, name=None):
+        """Keep the current arrangement under a name, as CANoe keeps desktops."""
+        if name is None:
+            name, ok = QInputDialog.getText(self, "Save desktop", "Name of this window arrangement:")
+            if not ok or not name.strip():
+                return None
+        name = name.strip()
+        panels, workspace = self.layout_state()
+        self._settings.setValue(f"{DESKTOPS}/{name}/panels", panels)
+        self._settings.setValue(f"{DESKTOPS}/{name}/workspace", workspace)
+        self._refresh_desktop_menu()
+        self._set_status(f"Desktop '{name}' saved", "green")
+        return name
+
+    def apply_desktop(self, name):
+        layout = (self._settings.value(f"{DESKTOPS}/{name}/panels"),
+                  self._settings.value(f"{DESKTOPS}/{name}/workspace"))
+        if any(layout):
+            self.apply_layout_state(layout)
+            self._set_status(f"Desktop '{name}'", "gray")
+
+    def reset_layout(self):
+        """Back to the arrangement the window starts with."""
+        self.apply_layout_state(self._default_layout)
+        for pane in self.tool_panes.values():
+            pane.toggleView(False)
+        self.database_pane.toggleView(self.app_database is not None)
+
+    def _refresh_desktop_menu(self):
+        menu = getattr(self, "_desktop_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        for name in self.desktops():
+            menu.addAction(name, lambda checked=False, n=name: self.apply_desktop(n))
+        if not self.desktops():
+            menu.addAction("(none saved yet)").setEnabled(False)
+
+    # --- Recording and offline replay ---
+
+    def start_recording(self):
+        """Write every frame of the measurement to a file; python-can picks the format from the name."""
+        if self.recorder is not None:
+            return None
+        path, _ = QFileDialog.getSaveFileName(self, "Record the measurement to a file",
+                                              str(APP_DIR / "measurement.blf"), LOG_FILE_FILTER)
+        if not path:
+            return None
+        try:
+            self.recorder = Recorder(path)
+        except Exception as exc:                          # unwritable path, or a suffix python-can refuses
+            QMessageBox.critical(self, "Recording", f"Cannot record to {Path(path).name}:\n{exc}")
+            return None
+        self._update_recording_actions()
+        self._set_status(f"Recording to {Path(path).name}", "green")
+        self.log_verbose(f"Recording to {path}")
+        return self.recorder
+
+    def stop_recording(self):
+        """Close the recording file, if one is open."""
+        recorder, self.recorder = self.recorder, None
+        if recorder is None:
+            return None
+        try:
+            recorder.stop()
+        except Exception as exc:
+            self.log_verbose(f"Closing the recording failed: {exc}")
+        self._update_recording_actions()
+        self.log_verbose(f"Recorded {recorder.count} frame(s) to {recorder.path}")
+        self._set_status(f"Recorded {recorder.count} frame(s) to {recorder.name}", "gray")
+        return recorder
+
+    def _update_recording_actions(self):
+        record = getattr(self, "_record_action", None)
+        if record is not None:
+            record.setEnabled(self.recorder is None)
+            self._stop_record_action.setEnabled(self.recorder is not None)
+
+    def replay_log(self, path=None):
+        """Offline mode: play a recorded file back into the Trace window, the CAN Logger and the panels."""
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Replay a recorded file", str(APP_DIR), LOG_FILE_FILTER)
+        if not path:
+            return None
+        if self.replay is not None:
+            self.replay.close()                           # one replay at a time; it owns a reading thread
+        trace = self.open_trace()
+        trace.set_source(f"Offline: {Path(path).name}")
+        self.replay = ReplayDialog(path, self.replay_frames, self)
+        self.replay.show()
+        self.log_verbose(f"Replaying {path}")
+        return self.replay
 
     def edit_configuration(self, item=None):
         if self.can_bus is None:
@@ -710,6 +979,7 @@ class MainWindow(QMainWindow):
     # --- Connect / Disconnect / UDS ---
 
     def on_connect_clicked(self):
+        """Connect: load the active configuration's panel database and run its script on the bus."""
         if self.can_bus is not None:
             return
         if self.activity_scanner and self.activity_scanner.isRunning():
@@ -737,7 +1007,7 @@ class MainWindow(QMainWindow):
             mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
             worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
-            worker.message_sent.connect(lambda cid, data, g=generation: self.log_can("TX", cid, data) if g == self.session_generation else None)
+            worker.message_sent.connect(lambda cid, data, g=generation: self.dispatch_frame(time.time(), "TX", cid, data) if g == self.session_generation else None)
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
             self.workers["main"] = worker
             runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
@@ -758,9 +1028,9 @@ class MainWindow(QMainWindow):
             self._set_flashing_available(False)
             self.flashing_toolbar_item.setVisible(True)
             self.config_list.setEnabled(False)
-            self.database_dock.show()
+            self.database_pane.toggleView(True)
+            self.database_pane.setAsCurrentTab()
             self.channels_dock.show()
-            self.resizeDocks([self.config_dock, self.database_dock], [280, 700], Qt.Horizontal)
             self._minimize_side_panels()
             self.refresh_channel_list()
             self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
@@ -769,6 +1039,13 @@ class MainWindow(QMainWindow):
             self.on_disconnect_clicked()
             self._set_status(f"Connection failed: {exc}", "red")
             self.log_verbose(str(exc))
+
+    def active_session(self):
+        """(bus, worker, configuration) while connected, for the UDS console; else None."""
+        worker = self.workers.get("main")
+        if self.can_bus is None or worker is None or self.session_config is None:
+            return None
+        return self.can_bus, worker, self.session_config
 
     def _session_failed(self, error):
         self.log_verbose(error)
@@ -793,12 +1070,13 @@ class MainWindow(QMainWindow):
         self.can_bus = None
         self.session_config = None
         self.connected_channel_config = None
+        self.stop_recording()
         self._label_channels()
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.config_list.setEnabled(True)
         self._restore_side_panels()
-        self.database_dock.hide()
+        self.database_pane.toggleView(False)
         self.channels_dock.show()
         self._set_status("Disconnected", "gray")
         self.clear_application_ui()
@@ -826,7 +1104,7 @@ class MainWindow(QMainWindow):
             return
         worker = CanWorker(bus, config)
         worker.message_received.connect(lambda msg, w=worker: self._on_monitor_message(w, msg))
-        worker.message_sent.connect(lambda can_id, data, w=worker: self.log_can("TX", can_id, data)
+        worker.message_sent.connect(lambda can_id, data, w=worker: self.dispatch_frame(time.time(), "TX", can_id, data)
                                     if w is self.ecu_monitor else None)
         worker.error_occurred.connect(lambda error, w=worker: self._monitor_failed(w, error))
         self.ecu_monitor, self.monitor_bus = worker, bus
@@ -853,14 +1131,19 @@ class MainWindow(QMainWindow):
         self.log_verbose("Stopped checking ECUs")
 
     def _on_monitor_message(self, worker, msg):
+        """Every frame seen while the ECUs are checked: the trace and the logger see the whole bus,
+        the node tree only the configured response identifiers."""
         config = self.monitor_config
-        if worker is not self.ecu_monitor or msg["arbitration_id"] not in config["response_ids"]:
+        if worker is not self.ecu_monitor:
+            return
+        self.dispatch_frame(msg["timestamp"], "RX", msg["arbitration_id"], msg["data"],
+                            msg.get("is_extended_frame", False))
+        if msg["arbitration_id"] not in config["response_ids"]:
             return
         if msg.get("is_extended_frame", False) != (not config["identifier_11_bit"]):
             return
         self.node_states[(channel_key(self.monitor_channel), msg["arbitration_id"])] = {
             "last_seen": time.monotonic(), "timeout": config["node_timeout_seconds"]}
-        self.log_can("RX", msg["arbitration_id"], msg["data"])
         self._update_nodes()
 
     def _monitor_failed(self, worker, error):
@@ -952,8 +1235,11 @@ class MainWindow(QMainWindow):
         report_result(self, ok, text)
 
     def closeEvent(self, event):
+        self.save_layout()          # before the panes go away, so they come back where they were
         self.node_timer.stop()
         self.stop_ecu_monitor()
+        if self.replay is not None:
+            self.replay.close()
         self.on_disconnect_clicked()
         if self.activity_scanner:
             self.activity_scanner.requestInterruption()
@@ -987,7 +1273,36 @@ class MainWindow(QMainWindow):
             raise ValueError("Classic CAN messages cannot exceed eight bytes")
         message = can.Message(arbitration_id=can_id, data=payload, is_extended_id=extended, check=True)
         self.can_bus.send(message)
-        self.log_can("TX", can_id, payload)
+        self.dispatch_frame(time.time(), "TX", can_id, payload, extended)
+
+    def dispatch_frame(self, timestamp, direction, can_id, data, extended=False):
+        """One frame of the measurement, from wherever: the monitor, the recording, and every window.
+
+        The timestamp is the adapter's for received frames, so the trace and the logger share one clock.
+        """
+        data = bytes(data)
+        self.frame_history.append((float(timestamp), direction, int(can_id), data, bool(extended)))
+        if self.recorder is not None:
+            try:
+                self.recorder.write(timestamp, direction, can_id, data, extended)
+            except Exception as exc:                      # a full disk must not take the measurement down
+                self.log_verbose(f"Recording stopped: {exc}")
+                self.stop_recording()
+        self.log_can(direction, can_id, data)
+        trace = self.tool_widget("trace")
+        if trace is not None:
+            trace.add_frame(timestamp, direction, can_id, data, extended)
+        logger = self.tool_widget("logger")
+        if logger is not None and direction == "RX":
+            logger.on_can_message(can_id, data, timestamp)
+        diagnostics = self.tool_widget("diagnostics")
+        if diagnostics is not None:
+            diagnostics.on_can_message(can_id, data, direction)
+
+    def replay_frames(self, frames):
+        """Frames read back from a recorded file (offline mode): they reach the windows, not the bus."""
+        for timestamp, direction, can_id, data, extended in frames:
+            self.dispatch_frame(timestamp, direction, can_id, data, extended)
 
     def on_can_message(self, msg_dict):
         if self.session_config is None:
@@ -997,7 +1312,8 @@ class MainWindow(QMainWindow):
             self.node_states[(channel_key(self.connected_channel_config), can_id)] = {
                 "last_seen": time.monotonic(), "timeout": self.session_config["node_timeout_seconds"]}
             self._update_nodes()
-        self.log_can("RX", can_id, data)
+        self.dispatch_frame(msg_dict.get("timestamp") or time.time(), "RX", can_id, data,
+                            msg_dict.get("is_extended_frame", False))
         if self.panel:
             try:
                 self.panel.on_message(can_id, data)
@@ -1007,10 +1323,6 @@ class MainWindow(QMainWindow):
             with self.script_runtime.lock:
                 self.script_runtime.values.update(self.panel.values() if self.panel else {})
             self.script_runtime.post("can", can_id, data)
-        if getattr(self, "_can_logger_window", None):
-            self._can_logger_window.on_can_message(can_id, data)
-        if getattr(self, "_diagnostic_window", None):
-            self._diagnostic_window.on_can_message(can_id, data, "RX")
 
     # --- Configuration selection ---
 

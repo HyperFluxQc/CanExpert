@@ -16,6 +16,26 @@ This document describes the workflow implemented from `Requirements.docx`. CAN E
 | 4 | Drag/drop designer retains control geometry, names, script bindings, DBC bindings and legacy byte mappings across save/load | XML round-trip tests |
 | 4.2 | Database Python scripts run on a background thread with startup, input, CAN and timer callbacks | Callback, timer, error isolation and cancellation tests |
 
+## Analysis and diagnostics beyond the requirements
+
+These were added for bench and vehicle work; none of them changes the configuration files, the panel
+databases or the panel scripts. Anything that has to be remembered lives in the application settings or
+in a file of its own.
+
+- Every frame, from the session, the ECU check or a replayed file, goes through one path
+  that keeps the last 20000 frames, writes the optional recording and feeds the Trace window, the CAN
+  Logger and the Diagnostic Window. Received frames carry the adapter's timestamp.
+- **Trace window**: symbolic names and decoded signals from the shared symbol databases, absolute,
+  relative and delta time, pass/stop filters, find and CSV export.
+- **Transmit list**: raw or database messages, one-shot or cyclic, edited signal by signal.
+- **UDS Console**: every ISO 14229 service (the same catalogue the scripts use) with a generated request
+  form, session control, SecurityAccess and a fault-memory tab, without an ODX file.
+- **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
+  windows offline and never touches a bus.
+- **Symbol databases**: one DBC list shared by the Trace window, the CAN Logger and the transmit list.
+- **Workspace**: the tool windows are panes of the main window; the arrangement is saved and can be kept
+  as named desktops.
+
 ## Configuration
 
 Configurations live beside `main.py` in `Configurations/`, independent of the working directory. Double-click a configuration to edit it while disconnected. New settings are editable in the configuration dialog:

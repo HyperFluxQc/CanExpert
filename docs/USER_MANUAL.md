@@ -1,9 +1,10 @@
 # CAN Expert user manual
 
 CAN Expert connects to a CAN bus, shows which ECUs answer, and runs a **panel** — a page of controls
-driven by a Python script. It also has a Form Designer to build those panels, a CAN Logger to graph DBC
-signals, a Diagnostic Window for ODX services, firmware flashing over UDS, and a simulated ECU so you
-can try everything without a vehicle.
+driven by a Python script. It also has a Trace window for every frame on the bus, a CAN Logger to graph
+DBC signals, a Transmit list to send messages, a UDS Console for diagnostic services and fault memory, a
+Form Designer to build panels, an ODX Diagnostic Window, recording and offline replay, firmware flashing
+over UDS, and a simulated ECU so you can try everything without a vehicle.
 
 Press the **?** button at the top right of the main window to open this manual at any time.
 
@@ -20,8 +21,20 @@ The main window has a toolbar and four panels:
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
 | **Log** | *Debug / Verbose* for application messages, *CAN Monitor* for the frames sent and received. |
 
-Each panel has a **–** button to shrink it to a strip and **×** to close it; the *File* menu brings a
-closed one back. While a database is loaded, the side panels shrink automatically to leave it room.
+The tool windows — Trace, CAN Logger, Transmit, UDS Console, Diagnostics — open in the **workspace** in
+the middle, together with the Database panel, where they can be tabbed, split and floated (see
+*Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
+window is open, pressing it again closes the window, and closing the window with its own **×** lets the
+button go. A window that is closed keeps what it had, so reopening it shows everything recorded
+meanwhile.
+
+Configuration, CAN Channels and Log are fixed panels around the workspace. Each has a **–** button to
+shrink it to a strip and **×** to close it; the *File* menu brings a closed one back. While a database
+is loaded, they shrink automatically to leave the workspace room.
+
+Options inside the windows work the same way: a button that switches something on — the toggles in the
+Trace window, the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for
+as long as that option is active, so you can see at a glance what is switched on.
 
 At startup CAN Expert selects the receiver you used last, shows every receiver you have connected to
 before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below).
@@ -84,6 +97,36 @@ Under a responding ECU, CAN Expert also lists the database that configuration wo
 
 One caution: TesterPresent keeps the ECU's diagnostic session alive. If the ECU was in an extended or
 programming session, it stays there while it is being checked; stop the check to let it time out.
+
+## Symbol databases
+
+**Tools → Symbol databases...** holds the DBC files the whole application uses: the Trace window names
+messages and decodes signals with them, the CAN Logger lists their signals, and the Transmit list can
+send their messages. **Add DBC...** and **Remove** manage the list, which is remembered between runs. The
+CAN Logger's own **Load DBC...** button adds to the same list.
+
+Panels keep their own DBC (set in the Form Designer), so a panel is self-contained.
+
+## Trace window
+
+**Tools → Trace...** shows every frame on the bus while you are connected, newest at the bottom.
+
+| Column | Meaning |
+|---|---|
+| **Time** | Absolute clock time, seconds since the first frame (*Relative*), or since the frame above (*Delta*). |
+| **Dir** | `RX` received, `TX` sent by CAN Expert. |
+| **ID** | The identifier; 29-bit identifiers end in `x`. |
+| **Name** | The message name from the symbol databases, when one describes it. |
+| **DLC / Data** | Length and bytes. |
+
+A row with a name has an arrow: open it to see the decoded signals with their units. Signals are decoded
+only for rows you actually open, so a busy bus stays responsive.
+
+The toolbar has **Clear**, **Pause** (freezes the view while recording continues), **Follow** (keeps the
+newest frame in view) and **Colour** (gives each identifier its own colour).
+
+**Filter** takes identifiers, ranges and names: `7E0, 300-3FF, EngineData`. *Pass* shows only what
+matches, *Stop* hides it. **Find next** searches the rows shown, and **Export...** writes them to CSV.
 
 ## Using a panel
 
@@ -185,6 +228,39 @@ shows both times and Δt, and the signal list gains *Cursor 1*, *Cursor 2* and *
 
 **Save CSV...** writes everything decoded — time, signal, value — not only what is on screen.
 
+Frames are timed by the adapter, so the Logger, the Trace window and a recorded file all agree.
+
+## Transmit window
+
+**Tools → Transmit...** sends messages, once or over and over — CANoe's Interactive Generator.
+
+- **Add** makes a raw row; type its identifier, data bytes and cycle time straight into the table.
+- **Add from database...** picks a message from the symbol databases, with its identifier and length.
+- **Edit signals...** (or double-clicking the data of a database row) opens the message signal by signal,
+  with value tables as lists, and re-encodes the bytes.
+- Tick **On** to send that row every *Cycle (ms)*; **Send now** sends the selected row once; **All off**
+  stops everything. *Sent* counts what went out.
+- **Save list...** and **Load list...** keep sets of rows as JSON files; the current list is remembered.
+
+A row that cannot be sent — because nothing is connected, say — switches itself off and shows why,
+instead of repeating the error. Closing the pane stops every cyclic row.
+
+## UDS Console
+
+**Tools → UDS Console...** sends any ISO 14229 service without needing an ODX file, using the session
+the main window has open.
+
+- The tree lists every service by functional unit, exactly as the panel scripts see them. Pick one and its
+  parameters appear as a form, with the defaults filled in; press **Send**.
+- **or raw:** sends bytes you type, e.g. `22 F1 90`.
+- The log shows the request and the response: a positive answer with its data as hex, as a number and as
+  text; a negative one as `NRC 0x31 requestOutOfRange`.
+- The bar at the top sets the **session** (DiagnosticSessionControl), sends a single **Tester present**,
+  and unlocks **SecurityAccess** — give the level and the key rule (`key = seed XOR mask`, the rule the
+  simulated ECU uses; replace it for a real ECU).
+- **Fault memory** reads the DTCs with their status bits spelled out (`confirmedDTC, testFailed`), counts
+  them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all.
+
 ## Diagnostic Window
 
 **Tools → Diagnostic Window...** sends services described by an ODX file.
@@ -215,6 +291,41 @@ TransferData blocks and RequestTransferExit, and finally a dependency check and 
 
 Keep the connection and ECU power stable until it finishes.
 
+## Recording and replaying
+
+**Connection → Record to file...** writes every frame to a file while you are connected; the format
+follows the name you give it — `.blf` (Vector binary), `.asc` (Vector ASCII), `.csv`, `.log` or `.trc`.
+**Stop recording** closes it, and so does Disconnect. The status bar says how many frames were written.
+
+**Connection → Replay a recorded file...** plays a file back into the Trace window, the CAN Logger and
+the panels, with no bus involved at all: the Trace header shows **Offline**. Choose the speed — real
+time, 2x, 5x, 10x, or as fast as possible — then **Start**; **Stop** ends it. Nothing is transmitted, so
+you can study a recording made in a vehicle at your desk.
+
+## Arranging the windows
+
+The middle of the main window is the **workspace**, where the Database panel and the analysis windows —
+Trace, CAN Logger, Transmit, UDS Console, Diagnostics — live. Configuration, CAN Channels and Log stay
+as fixed panels around it.
+
+Workspace windows behave as they do in CANoe:
+
+- **Drag a window by its tab** to move it. While you drag, drop marks appear: the ones in the middle of
+  a window split that window above, below, left or right of it, or drop onto the centre to **tab** the
+  two together; the ones at the edge of the workspace dock it against that edge instead.
+- **Several windows in one area** share a tab bar. The **▾** button on the right of the area lists its
+  tabs, the **⧉** button pulls the area out as a floating window, and **✕** closes it.
+- **Drag a tab out of the window** to float it on its own; a floating window can hold several tabs, and
+  dragging it back over the workspace docks it again.
+- A **✕** on a tab closes that window. Closing keeps it: its toolbar button goes back to idle, and
+  reopening it shows everything it recorded meanwhile.
+
+The arrangement, including the window size, is saved when you close CAN Expert and restored next time.
+
+**View → Save desktop as...** keeps the current arrangement under a name — one for analysis, one for
+diagnostics, one for testing — and **View → Desktops** switches between them. A desktop stores both the
+fixed panels and the workspace windows. **Reset layout** goes back to how the window starts.
+
 ## Trying it without a vehicle
 
 `dummy_ecu.py` is a simulated ECU. With the Kvaser virtual driver its two channels are connected, so the
@@ -239,11 +350,14 @@ requests break security access and flashing.
 |---|---|
 | `Configurations/` | `config_<name>.json`, one per configuration |
 | `Databases/` | Panels: `family_YYYY-MM-DD.xml` and `family_YYYY-MM-DD_script.py` |
-| `DBC/` | DBC files for the Logger, the designer and panel signal bindings |
+| `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings |
 | `ODX/` | ODX, PDX and CDD files for the Diagnostic Window |
 | `examples/` | A runnable panel and script, and demo firmware images |
 
-Window positions, the theme and the receiver used last are remembered between runs.
+Recordings go wherever you save them; `.blf` is the most compact.
+
+The window arrangement and its saved desktops, the theme, the symbol databases, the transmit list and the
+receiver used last are all remembered between runs.
 
 ## If something does not work
 
@@ -255,6 +369,9 @@ powered. **Scan Activity** tells you whether anything is talking on a channel at
 
 **"No matching database"** — the configuration's *Database family* does not match any file in
 `Databases/`. Clear the field to load the newest panel, or build one in the Form Designer.
+
+**The Trace shows identifiers but no names** — no symbol database describes those messages. Add the DBC
+under *Tools → Symbol databases...*.
 
 **The Flashing button stays greyed out** — the panel's script has no `Flashing(api, firmware)` function.
 

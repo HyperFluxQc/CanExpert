@@ -3,7 +3,8 @@ Hardware check: the real main window against dummy_ecu.py over the Kvaser Virtua
 
 The automated suite never touches an adapter, so this script covers what only a driver can show:
 opening a channel, TesterPresent and node status, a panel database, flashing, the CAN Logger with live
-traffic, the activity scan, the ECU check after Disconnect and reconnecting.
+traffic, the Trace window, the UDS console, the transmit list, recording and replaying a file, the
+activity scan, the ECU check after Disconnect and reconnecting.
 
     python tests/kvaser_end_to_end.py
 
@@ -31,6 +32,8 @@ from canexpert import main_window as main                                   # no
 from canexpert.can_logger import CANLoggerWindow                            # noqa: E402
 from canexpert.diagnostic_window import DiagnosticWindow                    # noqa: E402
 from canexpert.flashing import load_firmware                                # noqa: E402
+from canexpert.recording import read_frames                                 # noqa: E402
+from canexpert.transmit_window import default_row                           # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 CONFIGURATION = {"name": "Kvaser check", "bitrate": 500000, "identifier_11_bit": True, "request_id": 0x7E0,
@@ -90,9 +93,8 @@ def main_check():
         check("ECU answers TesterPresent (node Responding)", spin(lambda: "Responding" in node_text()), node_text())
         check("periodic frames received", spin(lambda: window.can_log.toPlainText().count("RX") > 5))
 
-        window.open_can_logger()
-        window.open_diagnostic_window()
-        logger, diagnostics = window._can_logger_window, window._diagnostic_window
+        logger = window.open_can_logger()
+        diagnostics = window.open_diagnostic_window()
         check("CAN Logger and Diagnostic Window open while connected",
               isinstance(logger, CANLoggerWindow) and isinstance(diagnostics, DiagnosticWindow))
         logger.load_dbc_from_path(REPO / "DBC" / "dummy_ecu.dbc")
@@ -124,8 +126,49 @@ def main_check():
         window.on_connect_clicked()
         check("reconnect works", window.can_bus is not None, window.status_label.text())
         check("ECU Responding again", spin(lambda: "Responding" in node_text()), node_text())
-        logger.close()
-        diagnostics.close()
+
+        # The trace, the console and the transmit list on live traffic
+        trace = window.open_trace()
+        check("Trace shows the ECU frames with their symbolic name",
+              spin(lambda: (trace.flush(), any(trace.tree.topLevelItem(row).text(3) == "EngineData"
+                                               for row in range(trace.tree.topLevelItemCount())))[1], 8),
+              trace.status.text())
+
+        console = window.open_uds_console()
+        console.run(lambda uds: uds.RDBI(0xF190), "RDBI")
+        check("UDS console reads the VIN over ISO-TP",
+              spin(lambda: "WVWZZZ1KZAW000001" in console.log.toPlainText(), 10), console.state_label.text())
+        console.read_dtcs()
+        check("UDS console reads the fault memory", spin(lambda: console.dtc_table.rowCount() > 0, 10),
+              f"{console.dtc_table.rowCount()} DTC(s)")
+
+        transmit = window.open_transmit()
+        transmit.rows = [default_row("Start", 0x200, b"\x01", 50)]
+        transmit._fill_table()
+        transmit.rows[0]["enabled"] = True
+        check("transmit list sends cyclically",
+              spin(lambda: (transmit.tick(), transmit.rows[0]["sent"] > 2)[1], 5), transmit.status.text())
+        transmit.stop_all()
+
+        # Recording the live measurement, then replaying the file with no bus at all
+        recording = temp / "session.asc"
+        with patch.object(main.QFileDialog, "getSaveFileName", return_value=(str(recording), "")):
+            window.start_recording()
+        written = lambda: window.recorder.count if window.recorder else 0             # noqa: E731
+        check("the measurement is recorded to a file", spin(lambda: written() > 20, 15), written())
+        window.stop_recording()
+        check("the recorded file reads back", len(read_frames(recording)) > 20, str(recording))
+
+        window.on_disconnect_clicked()
+        trace.clear()
+        with patch.object(main.QFileDialog, "getOpenFileName", return_value=(str(recording), "")):
+            replay = window.replay_log()
+        replay.speed_combo.setCurrentIndex(replay.speed_combo.count() - 1)            # as fast as possible
+        replay.start_replay()
+        check("the file replays into the Trace offline",
+              spin(lambda: (trace.flush(), len(trace.frames) > 20)[1], 20), f"{len(trace.frames)} frames")
+        replay.close()
+
     finally:
         window.close()
         APP.processEvents()
