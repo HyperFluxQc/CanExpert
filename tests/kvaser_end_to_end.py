@@ -3,8 +3,8 @@ Hardware check: the real main window against dummy_ecu.py over the Kvaser Virtua
 
 The automated suite never touches an adapter, so this script covers what only a driver can show:
 opening a channel, TesterPresent and node status, a panel database, flashing, the CAN Logger with live
-traffic, the Trace window, the UDS console, the transmit list, recording and replaying a file, a passive
-measurement, the activity scan, the ECU check after Disconnect and reconnecting.
+traffic, the Trace window, the UDS console, the transmit list, recording and replaying a file, the
+activity scan, the ECU check after Disconnect and reconnecting.
 
     python tests/kvaser_end_to_end.py
 
@@ -169,20 +169,6 @@ def main_check():
               spin(lambda: (trace.flush(), len(trace.frames) > 20)[1], 20), f"{len(trace.frames)} frames")
         replay.close()
 
-        # A passive measurement: no database, and nothing leaves the adapter
-        seen = len(window.frame_history)
-        window.passive_action.setChecked(True)
-        window.start_measurement()
-        check("passive measurement runs without a database",
-              window.can_bus is not None and window.measurement_only, window.status_label.text())
-        try:
-            window.send_can_message(0x200, b"\x01")
-            check("passive measurement refuses to transmit", False)
-        except RuntimeError as exc:
-            check("passive measurement refuses to transmit", True, exc)
-        check("passive measurement still receives", spin(lambda: len(window.frame_history) > seen + 5, 8))
-        window.on_disconnect_clicked()
-        window.passive_action.setChecked(False)
     finally:
         window.close()
         APP.processEvents()

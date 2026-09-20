@@ -5,11 +5,10 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 ## Features
 
 - **Multiple interfaces**: Kvaser, Vector, IXXAT (via python-can)
-- **Measurement without a panel**: **Start** watches the selected receiver with no database and no script; **Passive** never transmits at all (and puts a Kvaser adapter into silent mode), for a live vehicle you must not disturb
-- **Trace window**: every frame with its symbolic message name, expandable into decoded signals, absolute/relative/delta time, pass and stop filters by identifier, range or name, find, colour per identifier and CSV export
+- **Trace window**: every frame of the session with its symbolic message name, expandable into decoded signals, absolute/relative/delta time, pass and stop filters by identifier, range or name, find, colour per identifier and CSV export
 - **Transmit list**: raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator)
 - **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, with session control, SecurityAccess and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits
-- **Recording and offline replay**: write the measurement to BLF/ASC/CSV and play a file back into every window with no bus attached
+- **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached
 - **Symbol databases**: one list of DBC files shared by the Trace window, the CAN Logger and the Transmit list
 - **One workspace**: the tool windows are panels of the main window; the arrangement is remembered and can be saved as named desktops
 - **Node monitoring**: Sends configured periodic TesterPresent requests, lists responding nodes, and marks lost nodes with a red cross
@@ -41,14 +40,14 @@ pip install -r requirements.txt
 1. The application lists configurations and restores the last selected one. The CAN receiver used last is selected again and shown in **bold** (as is every receiver connected before), and CAN Expert starts checking it with TesterPresent straight away.
 2. An ECU that answers appears under its receiver, together with the database that configuration can load: **double-click that entry** (or the receiver) to load it, exactly as **Connect** does.
 3. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
-4. Or select a CAN receiver yourself and click **Connect**. The newest matching database is loaded before communication starts. To watch a bus with no panel at all, click **Start** instead (with **Passive** on, CAN Expert never transmits).
+4. Or select a CAN receiver yourself and click **Connect**. The newest matching database is loaded before communication starts.
 5. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again. After **Disconnect** the ECUs are still checked: CAN Expert keeps sending TesterPresent at the configuration's interval (the channel shows **[Checking ECUs]**), so each ECU stays **Responding** while it answers and shows **Lost connection** when it stops. Right-click the channel to stop, or to **Check ECUs** with the selected configuration without connecting; unchecked ECUs show **Not checked**. Connecting again hands the channel back to the session.
 6. Use the panel's controls; their named Python callbacks handle CAN sends and UI updates.
 7. Click **Disconnect** to stop reception, periodic requests and the panel script.
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 
-The [user manual](docs/USER_MANUAL.md) walks through the main window, measurements and passive mode, the symbol databases, the Trace window, the Form Designer, the CAN Logger, the Transmit list, the UDS Console, the Diagnostic Window, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+The [user manual](docs/USER_MANUAL.md) walks through the main window, the symbol databases, the Trace window, the Form Designer, the CAN Logger, the Transmit list, the UDS Console, the Diagnostic Window, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
 ## Application Database (XML)
 

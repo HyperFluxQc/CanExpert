@@ -67,8 +67,6 @@ _PATHS = {
     "flashing": '<path d="M12 3v8m-3.5-3.5L12 11l3.5-3.5"/>'
                 '<rect x="5" y="14" width="14" height="7" rx="1.5"/>'
                 '<path d="M8 21v2m4-2v2m4-2v2M9 17.5h6"/>',
-    "start": '<circle cx="12" cy="12" r="9"/><path d="M10 8.2l6 3.8-6 3.8z"/>',
-    "passive": '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.6"/>',
     "trace": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 13h10M7 16.5h6"/>',
     "transmit": '<path d="M12 3v10"/><path d="M8.5 6.5 12 3l3.5 3.5"/>'
                 '<path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
@@ -81,8 +79,6 @@ _COLORS = {
     "logger": ("#1566ae", "#7ac4ff"),
     "diagnostics": ("#a6600b", "#f6c16b"),
     "flashing": ("#b42318", "#ff9c8a"),
-    "start": ("#0f7b6c", "#5fd6c2"),
-    "passive": ("#4b5563", "#c3cad6"),
     "trace": ("#1f6feb", "#8ab4ff"),
     "transmit": ("#b45309", "#fbbf24"),
     "console": ("#7c3aed", "#c4b5fd"),
@@ -122,7 +118,7 @@ def line_icon(body, color):
 
 # A button that switches an option on stays pressed in, with an accent line under it, so the state is
 # visible at a glance. Qt's own checked look is a faint grey box, and a style sheet that names other
-# states suppresses it altogether - which left the toolbar's Passive button looking identical on and off.
+# states (a hover colour, say) suppresses it altogether, leaving a toggle looking the same on and off.
 TOGGLE_STYLE = """
     QToolButton { border: 1px solid transparent; border-radius: 4px; }
     QToolButton:hover { background: palette(midlight); }

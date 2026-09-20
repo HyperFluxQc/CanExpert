@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PyQt5.QtCore import QSettings
-from PyQt5.QtWidgets import QApplication, QToolButton
+from PyQt5.QtWidgets import QApplication
 
 from canexpert import main_window as main
 from canexpert.designer.canvas import FormCanvas
@@ -63,9 +63,7 @@ class ToggleButtonTest(unittest.TestCase):
 
     def toggles(self):
         """Every button in the application that switches an option on: (where, name, button)."""
-        passive = next(button for button in self.window.findChildren(QToolButton)
-                       if button.accessibleName() == "Passive")
-        found = [("toolbar", "passive", passive)]
+        found = []
         for where, window in (("logger", self.window.open_can_logger()), ("trace", self.window.open_trace())):
             found += [(where, name, button) for name, button in window._tool_buttons.items()
                       if button.isCheckable()]
@@ -82,14 +80,14 @@ class ToggleButtonTest(unittest.TestCase):
             self.window.apply_theme(theme)
             APP.processEvents()
             checked = self.toggles()
-            self.assertGreaterEqual(len(checked), 10, "the toggles were not found")
+            self.assertGreaterEqual(len(checked), 9, "the toggles were not found")
             for where, name, button in checked:
                 self.assertGreater(difference(button), VISIBLE,
                                    f"{where} '{name}' looks the same on and off in the {theme} theme")
 
-    def test_the_toolbar_says_what_a_checked_button_looks_like(self):
-        # The Passive button used to show nothing at all: a style sheet that names :hover and :pressed
-        # replaces Qt's own checked drawing, so the checked state has to be named too.
+    def test_the_toolbar_would_show_a_checked_button(self):
+        # The toolbar has no toggle today, but its style sheet names :hover and :pressed, and a sheet
+        # that names any state replaces the style's own drawing of the checked one.
         sheet = self.window.findChild(main.QToolBar).styleSheet()
         self.assertIn("QToolButton:checked", sheet)
         self.assertIn("QToolButton:checked:hover", sheet)

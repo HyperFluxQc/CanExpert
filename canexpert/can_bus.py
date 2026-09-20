@@ -14,12 +14,7 @@ import can
 from PyQt5.QtCore import QThread, pyqtSignal
 
 SUPPORTED_INTERFACES = [("kvaser", "Kvaser"), ("vector", "Vector"), ("ixxat", "IXXAT")]
-# IXXAT hardware ID, Vector serial / app name, and the Kvaser silent mode used by a passive measurement.
-_ADAPTER_OPTIONS = ("unique_hardware_id", "serial", "app_name", "driver_mode")
-# Driver settings that stop the adapter transmitting at all, including the acknowledge bit. Only Kvaser
-# exposes one through python-can; on the others a passive measurement is silent because CAN Expert
-# itself never sends (see MainWindow.send_can_message).
-PASSIVE_OPTIONS = {"kvaser": {"driver_mode": False}}
+_ADAPTER_OPTIONS = ("unique_hardware_id", "serial", "app_name")  # IXXAT hardware ID, Vector serial / app name
 
 
 def channel_key(channel_config: dict) -> tuple:
@@ -34,14 +29,10 @@ def create_can_bus(interface: str, channel, bitrate: int, **options) -> can.BusA
                    **{key: value for key, value in options.items() if key in _ADAPTER_OPTIONS})
 
 
-def open_channel(channel_config: dict, bitrate, passive: bool = False) -> can.BusABC:
-    """Open a channel as listed by can.detect_available_configs(); its other keys (device name, ...) are dropped.
-    passive asks the adapter for silent mode where it has one (PASSIVE_OPTIONS)."""
-    interface = channel_config["interface"]
+def open_channel(channel_config: dict, bitrate) -> can.BusABC:
+    """Open a channel as listed by can.detect_available_configs(); its other keys (device name, ...) are dropped."""
     options = {key: channel_config[key] for key in _ADAPTER_OPTIONS if key in channel_config}
-    if passive:
-        options.update(PASSIVE_OPTIONS.get(interface, {}))
-    return create_can_bus(interface, channel_config.get("channel", 0), int(bitrate), **options)
+    return create_can_bus(channel_config["interface"], channel_config.get("channel", 0), int(bitrate), **options)
 
 
 class CanWorker(QThread):
@@ -55,8 +46,7 @@ class CanWorker(QThread):
         super().__init__()
         self.bus, self.config = bus, config  # config: validated (canexpert.config.validate_config)
         self.running = True
-        # A measurement only watches the bus: nothing is sent unless the user asks for it.
-        self.tester_present = tester_present
+        self.tester_present = tester_present   # off in tests that must see no heartbeat on the bus
         self.mailboxes = []
 
     def add_mailbox(self, mailbox):

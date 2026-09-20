@@ -66,7 +66,6 @@ MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
-PASSIVE = "passive_measurement"    # settings: a measurement only listens, never transmits
 LAYOUT_GEOMETRY = "layout/geometry"
 LAYOUT_STATE = "layout/state"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
@@ -106,16 +105,14 @@ class MainWindow(QMainWindow):
         self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
         self.last_channel, self.used_channels = None, set()
         self._read_channel_history()
-        # The measurement: what is on the bus, whoever opened it (a database session, a plain
-        # measurement or the ECU check). Windows opened later read the history.
+        # What is on the bus, whoever opened it: the database session, the ECU check, or a replayed
+        # file. Windows opened later read the history.
         self._settings = app_settings()
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
         self.frame_history = deque(maxlen=FRAME_HISTORY)
         self.recorder = None
         self.replay = None
         self.tool_docks = {}
-        self.measurement_only = False
-        self.passive_measurement = False
 
         self.init_ui()
         self.load_configurations()
@@ -138,8 +135,9 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(28, 28))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        # A checked button (Passive) keeps a pressed-in background with an accent line, so an option that
-        # is on can be seen without reading the tooltip.
+        # A checked button keeps a pressed-in background with an accent line: a style sheet that names
+        # any state replaces the style's own drawing of the checked one, which would leave a toggle
+        # here looking identical on and off.
         toolbar.setStyleSheet("""
             QToolBar { spacing: 4px; padding: 6px; border: none; }
             QToolBar QToolButton { padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; }
@@ -151,11 +149,9 @@ class MainWindow(QMainWindow):
         """)
         self._toolbar_actions = {}
         entries = [
-            ("start", "Start", "Watch the selected receiver without loading a panel database", self.start_measurement),
             ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
             ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
              self.disconnect_database),
-            ("passive", "Passive", "Passive: a measurement only listens, CAN Expert never transmits", None),
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
@@ -169,14 +165,7 @@ class MainWindow(QMainWindow):
         for name, label, hint, callback in entries:
             if name == "trace":
                 toolbar.addSeparator()
-            action = QAction(toolbar_icon(name), label, self)
-            if callback is not None:
-                action.triggered.connect(callback)
-            if name == "passive":
-                action.setCheckable(True)
-                action.setChecked(self._settings.value(PASSIVE, False, type=bool))
-                action.toggled.connect(self._on_passive_toggled)
-                self.passive_action = action
+            action = QAction(toolbar_icon(name), label, self, triggered=callback)
             action.setToolTip(hint)
             action.setStatusTip(hint)
             button = QToolButton()
@@ -191,8 +180,6 @@ class MainWindow(QMainWindow):
                 # Shown only while connected to a database.
                 self.flashing_toolbar_item = toolbar_item
                 toolbar_item.setVisible(False)
-            if name == "start":
-                self.start_btn = button
             if name == "connect":
                 self.connect_btn = button
             elif name == "disconnect":
@@ -563,9 +550,9 @@ class MainWindow(QMainWindow):
         exit_action = file_menu.addAction('Exit')
         exit_action.triggered.connect(self.close)
 
-        # Measurement menu: what runs on the bus, and what is written to or read from a file
-        measurement_menu = menubar.addMenu('Measurement')
-        for name in ("start", "connect", "disconnect", "passive"):
+        # Connection menu: the session, and what is written to or read from a file
+        measurement_menu = menubar.addMenu('Connection')
+        for name in ("connect", "disconnect"):
             measurement_menu.addAction(self._toolbar_actions[name])
         measurement_menu.addSeparator()
         self._record_action = measurement_menu.addAction('Record to file...')
@@ -785,7 +772,7 @@ class MainWindow(QMainWindow):
     def open_uds_console(self):
         """UDS Console pane: any ISO 14229 service and the fault memory, without an ODX file."""
         widget, _ = self.open_tool("console", "UDS Console",
-                                   lambda: UdsConsoleWindow(self, self.measurement_session))
+                                   lambda: UdsConsoleWindow(self, self.active_session))
         return widget
 
     def open_diagnostic_window(self):
@@ -967,17 +954,6 @@ class MainWindow(QMainWindow):
 
     def on_connect_clicked(self):
         """Connect: load the active configuration's panel database and run its script on the bus."""
-        self._start_session(with_database=True)
-
-    def start_measurement(self):
-        """Start: open the selected receiver and watch it, with no panel database and no script.
-
-        Nothing is transmitted on its own (TesterPresent belongs to a database session or to the ECU
-        check); with Passive on, CAN Expert does not transmit at all.
-        """
-        self._start_session(with_database=False)
-
-    def _start_session(self, with_database: bool):
         if self.can_bus is not None:
             return
         if self.activity_scanner and self.activity_scanner.isRunning():
@@ -986,83 +962,60 @@ class MainWindow(QMainWindow):
         if not self.active_config or not self.selected_channel_config:
             QMessageBox.warning(self, "Connection", "Select a configuration and a CAN receiver first.")
             return
-        self.stop_ecu_monitor()  # a database session sends TesterPresent itself; a measurement stays quiet
-        passive = with_database is False and self.passive_action.isChecked()
+        self.stop_ecu_monitor()  # the session sends TesterPresent itself
         try:
             config = validate_config(self.active_config)
-            database = None
-            if with_database:
-                database = load_application_database(config["database_family"], DATABASES_DIR)
-                if database is None:
-                    raise ValueError("No matching database. Create a panel in Form Designer first.")
-                # Validate/build before opening hardware, so errors leave a usable UI.
-                self.build_application_ui(database)
+            database = load_application_database(config["database_family"], DATABASES_DIR)
+            if database is None:
+                raise ValueError("No matching database. Create a panel in Form Designer first.")
+            # Validate/build before opening hardware, so errors leave a usable UI.
+            self.build_application_ui(database)
             cfg = self.selected_channel_config
-            self.can_bus = open_channel(cfg, config["bitrate"], passive=passive)
+            self.can_bus = open_channel(cfg, config["bitrate"])
             self.session_config = config
             self.connected_channel_config = dict(cfg)
-            self.measurement_only = database is None
-            self.passive_measurement = passive
             self._remember_channel(cfg)
             self.session_generation += 1
             generation = self.session_generation
-            worker = CanWorker(self.can_bus, config, tester_present=database is not None)
+            worker = CanWorker(self.can_bus, config)
+            mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
+            worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
             worker.message_sent.connect(lambda cid, data, g=generation: self.dispatch_frame(time.time(), "TX", cid, data) if g == self.session_generation else None)
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
             self.workers["main"] = worker
-            if database is not None:
-                mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
-                worker.add_mailbox(mailbox)
-                runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
-                runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
-                runtime.logged.connect(self.log_verbose)
-                runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
-                runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
-                runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
-                self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
-                self.script_runtime = runtime
+            runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
+            runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
+            runtime.logged.connect(self.log_verbose)
+            runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
+            runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
+            runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
+            self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
+            self.script_runtime = runtime
             worker.start()
-            if database is not None:
-                script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
-                self.script_runtime.dbc = self.panel.dbc
-                self.script_runtime.handlers = self.panel.handlers()
-                self.script_runtime.start(script_path)
-                self._set_flashing_available(False)
-                self.flashing_toolbar_item.setVisible(True)
-                self.database_dock.show()
-                self.resizeDocks([self.config_dock, self.database_dock], [280, 700], Qt.Horizontal)
-                self._minimize_side_panels()
-            self.start_btn.setEnabled(False)
+            script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
+            runtime.dbc = self.panel.dbc
+            runtime.handlers = self.panel.handlers()
+            runtime.start(script_path)
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
+            self._set_flashing_available(False)
+            self.flashing_toolbar_item.setVisible(True)
             self.config_list.setEnabled(False)
+            self.database_dock.show()
             self.channels_dock.show()
+            self.resizeDocks([self.config_dock, self.database_dock], [280, 700], Qt.Horizontal)
+            self._minimize_side_panels()
             self.refresh_channel_list()
-            if database is not None:
-                self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
-                self.log_verbose(f"Loaded {database['source_path']}")
-            else:
-                mode = "passive, nothing is transmitted" if passive else "no database"
-                self._set_status(f"Measurement running ({mode})", "green")
-                self.log_verbose(f"Measurement started on {cfg['interface']} channel {cfg.get('channel', 0)} ({mode})")
+            self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
+            self.log_verbose(f"Loaded {database['source_path']}")
         except Exception as exc:
             self.on_disconnect_clicked()
             self._set_status(f"Connection failed: {exc}", "red")
             self.log_verbose(str(exc))
 
-    def _on_passive_toggled(self, passive):
-        self._settings.setValue(PASSIVE, bool(passive))
-        self.passive_action.setToolTip(
-            "Passive is on: CAN Expert does not transmit at all. Press again to allow transmitting."
-            if passive else "Passive: a measurement only listens, CAN Expert never transmits")
-        if self.can_bus is not None:
-            self._set_status("Passive mode applies to the next measurement", "orange")
-        else:
-            self._set_status("Passive: nothing will be transmitted" if passive else "Passive off", "gray")
-
-    def measurement_session(self):
-        """(bus, worker, configuration) while a measurement runs, for the UDS console; else None."""
+    def active_session(self):
+        """(bus, worker, configuration) while connected, for the UDS console; else None."""
         worker = self.workers.get("main")
         if self.can_bus is None or worker is None or self.session_config is None:
             return None
@@ -1091,11 +1044,8 @@ class MainWindow(QMainWindow):
         self.can_bus = None
         self.session_config = None
         self.connected_channel_config = None
-        self.measurement_only = False
-        self.passive_measurement = False
         self.stop_recording()
         self._label_channels()
-        self.start_btn.setEnabled(True)
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self.config_list.setEnabled(True)
@@ -1110,11 +1060,10 @@ class MainWindow(QMainWindow):
 
     def disconnect_database(self):
         """Toolbar Disconnect: close the database session, then keep checking its ECUs so the CAN Channels
-        tree still shows which ones respond. A measurement simply stops: it never asked anything of the bus."""
+        tree still shows which ones respond."""
         channel, config = self.connected_channel_config, self.session_config
-        had_database = not self.measurement_only
         self.on_disconnect_clicked()
-        if channel and config and had_database:
+        if channel and config:
             self.start_ecu_monitor(channel, config)
 
     def start_ecu_monitor(self, channel_config, config):
@@ -1290,9 +1239,7 @@ class MainWindow(QMainWindow):
 
     def send_can_message(self, can_id, data, extended=None):
         if self.can_bus is None:
-            raise RuntimeError("Start a measurement or connect before sending CAN messages")
-        if self.passive_measurement:
-            raise RuntimeError("The measurement is passive: switch Passive off to transmit")
+            raise RuntimeError("Connect before sending CAN messages")
         if extended is None:
             extended = not self.session_config.get("identifier_11_bit", True)
         payload = bytes(data)

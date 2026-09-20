@@ -9,8 +9,8 @@ database XML, or the `_script.py` mechanism: where a feature has to remember som
 its own file or in QSettings. Three items would genuinely be better with one new optional configuration
 field, and they say so.
 
-**Status:** tier 1 items 1-6 and 8 are **implemented** (item 7, the test feature set, was left out on
-purpose). Each one is marked below; the rest of the list is untouched.
+**Status:** tier 1 items 2-6 and 8 are **implemented** (item 7, the test feature set, was left out on
+purpose; item 1 was built and then removed — see it below). Each one is marked; the rest is untouched.
 
 ---
 
@@ -19,7 +19,7 @@ purpose). Each one is marked below; the rest of the list is untouched.
 These are the differences that make CAN Expert a panel tool with CAN underneath rather than a bus
 analysis tool.
 
-### 1. A measurement that starts without a panel database, and a passive mode — **DONE**
+### 1. A measurement that starts without a panel database, and a passive mode — **REMOVED after trying it**
 *Effort: medium*
 
 **Was:** Connect refuses outright when no database matches
@@ -32,10 +32,11 @@ analysis tool.
 listen-only / silent option (no TesterPresent, no ACK). Everything below this line becomes easier once
 it exists.
 
-**Now:** a **Start** button runs a measurement on the selected receiver with no database and no script,
-and sends no TesterPresent; **Passive** stops CAN Expert transmitting at all and asks a Kvaser adapter
-for silent mode. **Connect** is unchanged and still loads a panel. `_start_session(with_database)` is
-the one path both take.
+**Now:** built as **Start** and **Passive**, then taken out again in use. Another tool already covers
+reading a bus without a database, and a running measurement blocked Connect while the node tree showed
+"Lost connection", because nothing sends TesterPresent during one. **Connect** is the only way to open a
+channel again. What the work left behind is still there and is what the rest of tier 1 stands on: one
+path for every frame, the frame history that fills a window opened later, and the adapter's timestamps.
 
 ### 2. A real Trace window — **DONE**
 *Effort: large — the biggest visible payoff*
@@ -419,10 +420,11 @@ exist.
 
 ## What has been done
 
-Tier 1 items **1, 2, 3, 4, 5, 6 and 8** are implemented, with `canexpert/trace_window.py`,
+Tier 1 items **2, 3, 4, 5, 6 and 8** are implemented, with `canexpert/trace_window.py`,
 `transmit_window.py`, `uds_console.py`, `recording.py` and `symbols.py` as new modules and the tool
 windows turned into panes of the main window. Item **7** (the test feature set) was deliberately left
-out. None of it changed the configuration, database or script formats.
+out, and item **1** was built and then removed again in use. None of it changed the configuration,
+database or script formats.
 
 The next things worth doing, in order: **item 19** (ISO-TP padding — a half-hour fix and the most likely
 reason a real ECU ignores CAN Expert), **item 11** (bus statistics, error frames and bus-off), **item 9**

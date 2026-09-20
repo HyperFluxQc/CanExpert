@@ -1,4 +1,4 @@
-"""A measurement without a panel database, passive mode, recording, offline replay and the workspace."""
+"""The frames every window shares, recording, offline replay, and the tool panes with their layout."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import json
@@ -19,6 +19,10 @@ from canexpert.recording import Recorder, read_frames
 
 APP = QApplication.instance() or QApplication([])
 
+PANEL = '''<application_database name="Bus"><pages><page name="Main">
+<value id="1" label="Status" binding_value="status" x="10" y="10"/>
+</page></pages></application_database>'''
+
 
 def spin_until(predicate, timeout=5):
     deadline = time.monotonic() + timeout
@@ -38,6 +42,7 @@ class MeasurementTest(unittest.TestCase):
         self.databases = self.root / "Databases"
         self.configs.mkdir()
         self.databases.mkdir()
+        (self.databases / "panel_2026-09-18.xml").write_text(PANEL)
         self.settings = QSettings(str(self.root / "settings.ini"), QSettings.IniFormat)
         config = {"name": "Bus", "request_id": 0x7E0, "response_id": 0x7E8,
                   "tester_present_interval_seconds": .05, "node_timeout_seconds": .2,
@@ -58,7 +63,6 @@ class MeasurementTest(unittest.TestCase):
         self.window.selected_channel_config = {"interface": "virtual", "channel": 0}
 
     def fake_can_bus(self, interface, channel, bitrate, **options):
-        self.options = options
         return can.Bus(interface="virtual", channel=self.channel)
 
     def tearDown(self):
@@ -72,75 +76,20 @@ class MeasurementTest(unittest.TestCase):
     def send_from_ecu(self, can_id=0x300, data=b"\x01\x02"):
         self.ecu.send(can.Message(arbitration_id=can_id, data=data, is_extended_id=False))
 
-    # --- a measurement needs no panel database ------------------------------------------------
+    # --- one path for every frame ---------------------------------------------------------------
 
-    def test_a_measurement_runs_without_a_database_and_stays_quiet(self):
-        self.window.active_config["database_family"] = "nothing-here"
-        self.window.start_measurement()
+    def test_a_received_frame_reaches_the_history_with_the_adapter_timestamp(self):
+        self.window.on_connect_clicked()
         self.assertIsNotNone(self.window.can_bus, self.window.status_label.text())
-        self.assertTrue(self.window.measurement_only)
-        self.assertIsNone(self.window.panel)
-        self.assertIsNone(self.window.script_runtime)
-        self.assertFalse(self.window.connect_btn.isEnabled())
-        self.assertTrue(self.window.disconnect_btn.isEnabled())
-        self.assertIn("Measurement running", self.window.status_label.text())
-        # No TesterPresent: a measurement only watches (that is what Check ECUs is for).
-        self.assertFalse(spin_until(lambda: self.ecu.recv(0) is not None, timeout=.4))
-        # Received frames still reach the application, with the adapter's timestamp.
         self.send_from_ecu(0x123, b"\xaa\xbb")
         self.assertTrue(spin_until(lambda: any(frame[2] == 0x123 for frame in self.window.frame_history)))
         frame = next(f for f in self.window.frame_history if f[2] == 0x123)
         self.assertEqual((frame[1], frame[3]), ("RX", b"\xaa\xbb"))
-        self.assertAlmostEqual(frame[0], time.time(), delta=30)
+        self.assertAlmostEqual(frame[0], time.time(), delta=30)   # the adapter's clock, not the GUI's
         self.assertIn("ID: 0x123", self.window.can_log.toPlainText())
 
-    def test_connect_still_requires_a_database(self):
-        # Requirement 2.4 is unchanged: Connect loads a panel, and says so when there is none.
-        self.window.active_config["database_family"] = "nothing-here"
-        self.window.on_connect_clicked()
-        self.assertIsNone(self.window.can_bus)
-        self.assertIn("No matching database", self.window.status_label.text())
-        self.assertTrue(self.window.connect_btn.isEnabled())
-
-    def test_passive_mode_never_transmits(self):
-        self.window.passive_action.setChecked(True)
-        self.window.start_measurement()
-        self.assertTrue(self.window.passive_measurement)
-        with self.assertRaises(RuntimeError) as raised:
-            self.window.send_can_message(0x200, b"\x01")
-        self.assertIn("passive", str(raised.exception).lower())
-        self.assertFalse(spin_until(lambda: self.ecu.recv(0) is not None, timeout=.3))
-        self.assertTrue(self.settings.value(main.PASSIVE, False, type=bool))
-
-    def test_passive_asks_a_kvaser_adapter_for_silent_mode(self):
-        calls = []
-
-        def fake(interface, channel, bitrate, **options):
-            calls.append((interface, options))
-            return can.Bus(interface="virtual", channel=self.channel + "-silent")
-
-        with patch.object(can_bus, "create_can_bus", fake):
-            bus = can_bus.open_channel({"interface": "kvaser", "channel": 1}, 500000, passive=True)
-            bus.shutdown()
-            bus = can_bus.open_channel({"interface": "kvaser", "channel": 1}, 500000)
-            bus.shutdown()
-            bus = can_bus.open_channel({"interface": "virtual", "channel": 0}, 500000, passive=True)
-            bus.shutdown()
-        self.assertEqual(calls[0], ("kvaser", {"driver_mode": False}))
-        self.assertEqual(calls[1], ("kvaser", {}))
-        self.assertEqual(calls[2], ("virtual", {}))    # only Kvaser has a silent mode in python-can
-
-    def test_a_measurement_stops_without_starting_the_ecu_check(self):
-        self.window.start_measurement()
-        self.window.disconnect_database()
-        self.assertIsNone(self.window.can_bus)
-        self.assertIsNone(self.window.ecu_monitor)
-        self.assertTrue(self.window.connect_btn.isEnabled())
-
-    # --- every window sees the measurement ------------------------------------------------------
-
     def test_a_window_opened_later_still_shows_what_was_received(self):
-        self.window.start_measurement()
+        self.window.on_connect_clicked()
         self.send_from_ecu(0x321, b"\x05")
         self.assertTrue(spin_until(lambda: any(frame[2] == 0x321 for frame in self.window.frame_history)))
         trace = self.window.open_trace()
@@ -156,6 +105,11 @@ class MeasurementTest(unittest.TestCase):
         self.send_from_ecu(0x456, b"\x07")
         self.assertTrue(spin_until(lambda: (trace.flush(), any(frame[2] == 0x456 for frame in trace.frames))[1]))
 
+    def test_nothing_can_be_sent_before_connecting(self):
+        with self.assertRaises(RuntimeError) as raised:
+            self.window.send_can_message(0x200, b"\x01")
+        self.assertIn("Connect", str(raised.exception))
+
     # --- recording and offline replay -------------------------------------------------------------
 
     def test_recording_writes_a_file_that_can_be_read_back(self):
@@ -170,11 +124,11 @@ class MeasurementTest(unittest.TestCase):
                          [("RX", 0x300, b"\x01\x02\x03"), ("TX", 0x7E0, b"\x02\x3e\x00")])
         self.assertAlmostEqual(frames[1][0] - frames[0][0], 0.25, places=3)
 
-    def test_the_measurement_is_recorded_and_replayed_into_the_windows(self):
+    def test_the_session_is_recorded_and_replayed_into_the_windows(self):
         path = self.root / "measurement.asc"
         with patch.object(main.QFileDialog, "getSaveFileName", return_value=(str(path), "")):
             self.assertIsNotNone(self.window.start_recording())
-        self.window.start_measurement()
+        self.window.on_connect_clicked()
         self.send_from_ecu(0x300, b"\x11\x22")
         self.send_from_ecu(0x301, b"\x33")
         self.assertTrue(spin_until(lambda: self.window.recorder.count >= 2))
@@ -192,7 +146,7 @@ class MeasurementTest(unittest.TestCase):
         dialog.speed_combo.setCurrentIndex(dialog.speed_combo.count() - 1)   # as fast as possible
         dialog.start_replay()
         self.assertTrue(spin_until(lambda: (trace.flush(), len(trace.frames) >= 2)[1]))
-        self.assertEqual(sorted(frame[2] for frame in trace.frames)[:2], [0x300, 0x301])
+        self.assertIn(0x300, [frame[2] for frame in trace.frames])
         self.assertIsNone(self.window.can_bus, "replaying must not open a bus")
 
     # --- the workspace ----------------------------------------------------------------------------

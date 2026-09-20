@@ -9,7 +9,7 @@ This document describes the architecture, threads and data flows of **CAN Expert
 **CAN Expert** is a PyQt5 desktop application that:
 
 - Connects to CAN hardware (**Kvaser**, **Vector**, **IXXAT**) via **python-can**
-- Runs a **measurement** on a channel with or without a panel database, optionally **passive** (nothing is transmitted at all), and distributes every frame to the tool windows and to an optional recording
+- Distributes every frame of the session - received, sent, or replayed from a file - to the tool windows and to an optional recording
 - Selects the newest dated **panel database** (`Databases/family_YYYY-MM-DD.xml`) for the active configuration and builds its UI before opening the adapter
 - Sends periodic **TesterPresent** and shows responding ECUs beneath the selected receiver, marking lost nodes with a red cross
 - Runs the panel's **Python script** (`DatabaseMainFunction(api)`) on a background thread with an API for CAN, UDS over ISO-TP, DLL calls and UI values
@@ -66,7 +66,7 @@ flowchart LR
 
 | Module | Role |
 |--------|------|
-| **main_window.py** | Main window: configuration list, receiver/node tree, Start (measurement) / Connect (panel session) / Disconnect and Passive, `dispatch_frame()` (the one path every frame takes: history, recording, CAN monitor, Trace, Logger, Diagnostics), the ECU check that keeps node status live after Disconnect, recording and replay, Flashing button and progress, the tool panes and their saved layouts, CAN and debug logs, theme. |
+| **main_window.py** | Main window: configuration list, receiver/node tree, Connect/Disconnect, `dispatch_frame()` (the one path every frame takes: history, recording, CAN monitor, Trace, Logger, Diagnostics), the ECU check that keeps node status live after Disconnect, recording and replay, Flashing button and progress, the tool panes and their saved layouts, CAN and debug logs, theme. |
 | **can_bus.py** | `open_channel()`/`create_can_bus()`, `CanWorker` (the session's only bus reader, which also sends TesterPresent), `ReceiveMailbox` (bus facade for code off the GUI thread), `ChannelActivityScanner`. |
 | **config.py** | Configuration defaults, `validate_config()`, `diagnostic_request_id()`/`uds_transport()` (the IDs and timing a configuration implies), `read_configurations()`/`save_configuration()`, and `ConfigurationDialog`. |
 | **paths.py** | The data folders (`Configurations/`, `Databases/`, `DBC/`, `ODX/`, `examples/`), next to `main.py` or next to a frozen executable. |
@@ -156,21 +156,6 @@ sequenceDiagram
 ```
 
 Any failure before or during start-up calls `on_disconnect_clicked()`, which leaves Connect available. A `session_generation` counter discards signals from a previous session.
-
-### Start: a measurement without a database
-
-`on_connect_clicked()` and `start_measurement()` are the same call, `_start_session(with_database)`:
-
-| | Connect | Start |
-|---|---|---|
-| Panel database | required (`No matching database` otherwise) | none |
-| Script runtime | started | none |
-| TesterPresent | sent at the configuration's interval (`CanWorker(tester_present=True)`) | never |
-| Transmitting | panel, scripts, transmit list, UDS console | transmit list and UDS console, unless passive |
-| Passive | not offered | `open_channel(passive=True)` (Kvaser silent mode) and `send_can_message()` refuses |
-
-`Disconnect` after a database session hands the channel to the ECU check, as before; after a measurement
-it simply stops, because a measurement never asked the bus for anything.
 
 ### One path for every frame
 
@@ -292,7 +277,6 @@ settings or a file of their own:
 | Key | Holds |
 |---|---|
 | `theme`, `last_configuration`, `last_channel`, `used_channels` | Appearance and what was in use last |
-| `passive_measurement` | The Passive toggle |
 | `symbol_databases` | The DBC paths every window shares (`symbols.py`) |
 | `transmit_list` | The transmit rows (`transmit_window.py`); **Save list...** writes a JSON file instead |
 | `layout/geometry`, `layout/state`, `layout/desktops/<name>` | The window arrangement and the saved desktops |
@@ -323,7 +307,7 @@ python -B -m unittest discover -s tests -v
 - `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC, flow control (WAIT, block size, STmin, overflow) and flashing behaviour, and its settings: RequestDownload formats, memory ranges, block length and full blocks, RequestUpload read-back, security level/seed/mask, P2/P2* and response pending on a slow response.
 - `tests/test_dummy_ecu_window.py`: the Dummy ECU window connecting and disconnecting on a virtual bus (channel lock included), settings applied while connected, invalid text fields not applied, the log and frame trace, profiles and remembered settings.
 
-- `tests/test_measurement.py`: a measurement without a panel database, Connect still refusing without one, passive mode (nothing transmitted, Kvaser silent mode), the ECU check feeding the Trace, the frame history filling a window opened later, recording to a file and replaying it offline, the tool panes and the saved layout and desktops.
+- `tests/test_recording_and_workspace.py`: the frame history with the adapter's timestamps, the ECU check feeding the Trace, a window opened later filled from the history, recording to a file and replaying it offline, the tool panes and the saved layout and desktops.
 - `tests/test_trace_window.py`: symbolic rows and lazily decoded signals, the three time modes, pass and stop filters, pause, find, CSV export, colours, and `SymbolDatabases` (decoding, a broken file, adding and removing).
 - `tests/test_transmit_window.py`: editing rows, rejecting bad input, a database message and its signal editor, sending once and cyclically, a failing row switching itself off, and the list surviving a restart.
 - `tests/test_uds_console.py`: the service tree, forms built from each function's signature (order, defaults, byte parameters, the security key, a missing required parameter), and a live exchange with the simulated ECU: a multi-frame VIN, an NRC named, session and security, and the fault memory read and cleared.

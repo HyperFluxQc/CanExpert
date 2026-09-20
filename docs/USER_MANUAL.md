@@ -27,9 +27,9 @@ the same window, so you can arrange them side by side (see *Arranging the window
 Each panel has a **–** button to shrink it to a strip and **×** to close it; the *File* menu brings a
 closed one back. While a database is loaded, the side panels shrink automatically to leave it room.
 
-A button that switches an option on — **Passive** in the toolbar, and the toggles in the Trace window,
-the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for as long as
-that option is active, so you can see at a glance what is switched on.
+A button that switches an option on — the toggles in the Trace window, the CAN Logger and the Form
+Designer — stays pressed in with a coloured line under it for as long as that option is active, so you
+can see at a glance what is switched on.
 
 At startup CAN Expert selects the receiver you used last, shows every receiver you have connected to
 before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below).
@@ -93,20 +93,6 @@ Under a responding ECU, CAN Expert also lists the database that configuration wo
 One caution: TesterPresent keeps the ECU's diagnostic session alive. If the ECU was in an extended or
 programming session, it stays there while it is being checked; stop the check to let it time out.
 
-## Watching a bus without a panel
-
-**Start** opens the selected receiver and simply watches it. No panel database is needed, no script runs,
-and nothing is sent on its own — it is the quickest way to see what a bus is doing. The Trace window, the
-CAN Logger, the Transmit list and the UDS Console all work during a measurement, and **Disconnect** stops
-it.
-
-**Passive** (the eye) goes further: while it is on, CAN Expert never transmits at all, and a Kvaser
-adapter is put into silent mode, so it does not even acknowledge frames. Use it on a live vehicle when
-you must not disturb the bus. The transmit list and the UDS Console will refuse to send, and say so.
-
-Passive applies to **Start**. **Connect** always transmits, because a panel session sends TesterPresent
-and runs the panel's script.
-
 ## Symbol databases
 
 **Tools → Symbol databases...** holds the DBC files the whole application uses: the Trace window names
@@ -118,7 +104,7 @@ Panels keep their own DBC (set in the Form Designer), so a panel is self-contain
 
 ## Trace window
 
-**Tools → Trace...** shows every frame of the measurement, newest at the bottom.
+**Tools → Trace...** shows every frame on the bus while you are connected, newest at the bottom.
 
 | Column | Meaning |
 |---|---|
@@ -251,13 +237,13 @@ Frames are timed by the adapter, so the Logger, the Trace window and a recorded 
   stops everything. *Sent* counts what went out.
 - **Save list...** and **Load list...** keep sets of rows as JSON files; the current list is remembered.
 
-A row that cannot be sent — no measurement, or Passive — switches itself off and shows why, instead of
-repeating the error. Closing the pane stops every cyclic row.
+A row that cannot be sent — because nothing is connected, say — switches itself off and shows why,
+instead of repeating the error. Closing the pane stops every cyclic row.
 
 ## UDS Console
 
-**Tools → UDS Console...** sends any ISO 14229 service without needing an ODX file. It works during a
-measurement as well as a panel session.
+**Tools → UDS Console...** sends any ISO 14229 service without needing an ODX file, using the session
+the main window has open.
 
 - The tree lists every service by functional unit, exactly as the panel scripts see them. Pick one and its
   parameters appear as a form, with the defaults filled in; press **Send**.
@@ -302,11 +288,11 @@ Keep the connection and ECU power stable until it finishes.
 
 ## Recording and replaying
 
-**Measurement → Record to file...** writes every frame to a file while the measurement runs; the format
+**Connection → Record to file...** writes every frame to a file while you are connected; the format
 follows the name you give it — `.blf` (Vector binary), `.asc` (Vector ASCII), `.csv`, `.log` or `.trc`.
 **Stop recording** closes it, and so does Disconnect. The status bar says how many frames were written.
 
-**Measurement → Replay a recorded file...** plays a file back into the Trace window, the CAN Logger and
+**Connection → Replay a recorded file...** plays a file back into the Trace window, the CAN Logger and
 the panels, with no bus involved at all: the Trace header shows **Offline**. Choose the speed — real
 time, 2x, 5x, 10x, or as fast as possible — then **Start**; **Stop** ends it. Nothing is transmitted, so
 you can study a recording made in a vehicle at your desk.
@@ -365,11 +351,7 @@ CAN Expert supports Kvaser, Vector and IXXAT through python-can. Press **Refresh
 powered. **Scan Activity** tells you whether anything is talking on a channel at all.
 
 **"No matching database"** — the configuration's *Database family* does not match any file in
-`Databases/`. Clear the field to load the newest panel, or build one in the Form Designer. To watch the
-bus without any panel, press **Start** instead of Connect.
-
-**Nothing can be sent** — the measurement is passive (the eye in the toolbar is pressed), or no
-measurement is running. Switch Passive off and start again.
+`Databases/`. Clear the field to load the newest panel, or build one in the Form Designer.
 
 **The Trace shows identifiers but no names** — no symbol database describes those messages. Add the DBC
 under *Tools → Symbol databases...*.
