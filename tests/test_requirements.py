@@ -270,6 +270,18 @@ class RequirementsTest(unittest.TestCase):
         self.assertTrue(spin_until(lambda: "loaded" in self.window.database_items[key].text(0)))
         self.assertIs(self.window.database_items[key].parent(), self.window.channel_items[key])  # the tree was rebuilt
 
+    def test_the_manual_button_opens_the_user_manual(self):
+        button = self.window.manual_btn
+        self.assertEqual(button.text(), "")                                  # a symbol at the top right
+        self.assertFalse(button.icon().isNull())
+        self.assertEqual(button.accessibleName(), "User manual")
+        self.assertIs(button.parent().parent(), self.window.menuBar().cornerWidget().parent())
+        manual = self.window.open_manual()
+        self.addCleanup(manual.close)
+        self.assertTrue(manual.isVisible())
+        self.assertIn("CAN Expert", manual.browser.toPlainText())
+        self.assertIs(self.window.open_manual(), manual)                     # one window, raised again
+
     def test_switching_theme_keeps_every_label_readable(self):
         from PyQt5.QtGui import QPalette
         from PyQt5.QtWidgets import QToolButton

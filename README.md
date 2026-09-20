@@ -41,7 +41,7 @@ pip install -r requirements.txt
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 
-See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+The [user manual](docs/USER_MANUAL.md) walks through the main window, the Form Designer, the CAN Logger and the Diagnostic Window; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
 ## Application Database (XML)
 
@@ -158,7 +158,7 @@ CanExpert/
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
 ├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
 ├── examples/                   # Runnable panel + script pair, demo firmware
-├── docs/                       # DOCUMENTATION.md, REQUIREMENTS_STATUS.md, Requirements.docx
+├── docs/                       # USER_MANUAL.md, DOCUMENTATION.md, REQUIREMENTS_STATUS.md
 ├── tests/                      # Hardware-free acceptance, UDS and UI tests
 └── requirements.txt
 ```

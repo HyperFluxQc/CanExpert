@@ -47,12 +47,16 @@ from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
 from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
                                 update_progress)
+from canexpert.help_window import show_manual
 from canexpert.panel.database import load_application_database, select_database
 from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
-from canexpert.ui_common import DockTitleBar, app_settings, toolbar_icon
+from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
 
+# A question mark in a circle, for the manual button beside the Help menu.
+MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
+               '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
 
@@ -531,10 +535,6 @@ class MainWindow(QMainWindow):
         self.dark_mode_action.setCheckable(True)
         self.dark_mode_action.triggered.connect(lambda: self.apply_theme('dark'))
         theme_group.addAction(self.dark_mode_action)
-        # Restore saved preference
-        settings = app_settings()
-        saved_theme = settings.value("theme", "light", type=str)
-        self.apply_theme(saved_theme, restore=True)
 
         # Help menu on the far right (corner widget; avoid nesting a second QMenuBar)
         help_corner = QWidget()
@@ -545,10 +545,28 @@ class MainWindow(QMainWindow):
         help_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         help_btn.setPopupMode(QToolButton.InstantPopup)
         help_menu = QMenu(help_btn)
+        help_menu.addAction("User manual", self.open_manual)
         help_menu.addAction("About", self.show_about)
         help_btn.setMenu(help_menu)
+        self.manual_btn = QToolButton()
+        self.manual_btn.setAutoRaise(True)
+        self.manual_btn.setIconSize(QSize(18, 18))
+        self.manual_btn.setAccessibleName("User manual")
+        self.manual_btn.setToolTip("User manual: how to use the main window, Form Designer, CAN Logger and "
+                                   "Diagnostic Window")
+        self.manual_btn.clicked.connect(self.open_manual)
+        help_corner_layout.addWidget(self.manual_btn)
         help_corner_layout.addWidget(help_btn)
         menubar.setCornerWidget(help_corner, Qt.TopRightCorner)
+        # Last, so every button that follows the theme already exists.
+        self.apply_theme(app_settings().value("theme", "light", type=str), restore=True)
+
+    def _refresh_manual_icon(self):
+        self.manual_btn.setIcon(line_icon(MANUAL_ICON, self.palette().color(QPalette.WindowText)))
+
+    def open_manual(self):
+        """Show the user manual (docs/USER_MANUAL.md)."""
+        return show_manual(self)
 
     def show_about(self):
         """Show About dialog with app info."""
@@ -603,6 +621,7 @@ class MainWindow(QMainWindow):
                     widget.style().polish(widget)
         for name, action in self._toolbar_actions.items():
             action.setIcon(toolbar_icon(name, dark=theme == "dark"))
+        self._refresh_manual_icon()
         if not restore:
             settings = app_settings()
             settings.setValue("theme", theme)
