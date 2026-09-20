@@ -69,17 +69,18 @@ flowchart LR
 | **designer/canvas.py** | The page canvas: widgets to move, resize, select and order, the drop target for palette items and DBC signals, layout tools, clipboard and undo/redo. |
 | **designer/side_panels.py** | Control palette, DBC symbol list and the schema-driven property editor, with the designer's shared constants and naming helpers. |
 | **designer/code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals, UDS functions), syntax check; `UdsFunctionPanel` lists the UDS functions by ISO 14229 functional unit and inserts calls. |
-| **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, follow/pause/fit, Lock X / Lock Y for mouse zoom and pan, two measurement cursors with per-signal values and Δ, a dotted hover crosshair with a time/value readout, CSV export of all decoded data. |
+| **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, a symbol toolbar (clear, pause/resume, follow, fit, Lock X / Lock Y for mouse zoom and pan, measurement cursors) whose icons follow the theme, two white dashed measurement cursors labelled #1 and #2 with per-signal values and Δ, a dotted hover crosshair with a time/value readout, Graph options (drawing style: step line, line with dots or dots; follow window; exact time and value ranges), CSV export of all decoded data. |
 | **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors the ECU's CAN IDs. |
 | **simulator/ecu.py** | The simulated UDS ECU (sessions, security, DIDs, DTCs, flashing with RequestDownload/RequestUpload, ISO-TP flow control, periodic frames) for Kvaser virtual channels or any python-can interface. `EcuConfig` holds every setting and is read for each frame, so changes apply while running; `load_profile()`/`save_profile()` store it as JSON; `main()` opens the window, or runs headless with `--console`. |
 | **simulator/window.py** | Dummy ECU window: connection (interface, channel detection, bit rate, Connect/Disconnect with the one-ECU-per-channel lock), settings tabs (addressing, flow control, UDS timing and security, flashing, periodic frames) applied live and remembered in QSettings, ECU status, log with an optional frame trace, JSON profiles. |
+| **help_window.py** | The user manual window: renders `docs/USER_MANUAL.md` with a list of its sections and a find box; `show_manual()` keeps one window and raises it. |
 | **ui_common.py** | Shared Qt helpers: `app_settings()` (persistent QSettings, migrating the legacy `EZCan2/KvaserCAN` store once), `toolbar_icon()`, `CaptionButton`, `SplitterPanel` and `DockTitleBar`. |
 
 ---
 
 ## 3. Files and Folders
 
-
+```
 CanExpert/
 ├── main.py                     # Start CAN Expert
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
@@ -100,7 +101,7 @@ CanExpert/
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
 ├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
 ├── examples/                   # Runnable panel + script pair, demo firmware
-├── docs/                       # DOCUMENTATION.md, REQUIREMENTS_STATUS.md, Requirements.docx
+├── docs/                       # USER_MANUAL.md, DOCUMENTATION.md, REQUIREMENTS_STATUS.md
 ├── tests/                      # Hardware-free acceptance, UDS and UI tests
 └── requirements.txt
 ```
@@ -253,6 +254,7 @@ python -B -m unittest discover -s tests -v
 - `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC, flow control (WAIT, block size, STmin, overflow) and flashing behaviour, and its settings: RequestDownload formats, memory ranges, block length and full blocks, RequestUpload read-back, security level/seed/mask, P2/P2* and response pending on a slow response.
 - `tests/test_dummy_ecu_window.py`: the Dummy ECU window connecting and disconnecting on a virtual bus (channel lock included), settings applied while connected, invalid text fields not applied, the log and frame trace, profiles and remembered settings.
 
+- `tests/test_help_window.py`: the manual covers every window it promises and names what the user clicks; the help window lists its sections, jumps to a heading, finds text, and says so when the file is missing.
 - `tests/test_can_bus.py`: opening adapters, so that a channel dictionary from `can.detect_available_configs()` (with its device name, serial and dongle channel) opens as it is and only adapter options reach python-can.
 
 No hardware is contacted by the suite above. `python tests/kvaser_end_to_end.py` is the hardware check: it starts `dummy_ecu.py` on Kvaser virtual channel 1 and drives the real main window on channel 0 through connecting, node status, a panel database, flashing (comparing the received image), the CAN Logger with live traffic, the activity scan, the ECU check after Disconnect and reconnecting. It is not collected by `unittest discover` (its name does not start with `test`), and it uses a temporary Configurations folder and QSettings. Bus electrical conditions and real ECU timing still need an acceptance run on a vehicle.

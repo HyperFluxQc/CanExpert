@@ -47,11 +47,18 @@ from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
 from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
                                 update_progress)
-from canexpert.panel.database import load_application_database
+from canexpert.help_window import show_manual
+from canexpert.panel.database import load_application_database, select_database
 from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
-from canexpert.ui_common import DockTitleBar, app_settings, toolbar_icon
+from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
+
+# A question mark in a circle, for the manual button beside the Help menu.
+MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
+               '<path d="M12 17.4h.01" stroke-width="2.2"/>')
+LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
+USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
 
 
 class MainWindow(QMainWindow):
@@ -81,9 +88,12 @@ class MainWindow(QMainWindow):
         self.node_states = {}
         self.channel_items = {}
         self.node_items = {}
+        self.database_items = {}   # channel key -> the database entry offered under a responding channel
         self.session_generation = 0
         # Checks the ECUs with TesterPresent while no database is connected (after Disconnect, or on request).
         self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
+        self.last_channel, self.used_channels = None, set()
+        self._read_channel_history()
 
         self.init_ui()
         self.load_configurations()
@@ -91,6 +101,7 @@ class MainWindow(QMainWindow):
         self.node_timer.setInterval(100)
         self.node_timer.timeout.connect(self._update_nodes)
         self.node_timer.start()
+        self.check_last_channel()
 
     # --- UI setup ---
 
@@ -240,6 +251,47 @@ class MainWindow(QMainWindow):
         self.refresh_channel_list()
         self.log_verbose("Application started.")
 
+    # --- The channels used before ---------------------------------------------------
+
+    def _read_channel_history(self):
+        """The channel used last and every channel connected before, as saved by _remember_channel()."""
+        settings = app_settings()
+        try:
+            used = json.loads(settings.value(USED_CHANNELS, "[]") or "[]")
+            last = json.loads(settings.value(LAST_CHANNEL, "null") or "null")
+        except ValueError:
+            used, last = [], None
+        self.used_channels = {tuple(key) for key in used if isinstance(key, list)}
+        self.last_channel = tuple(last) if isinstance(last, list) else None
+
+    def _remember_channel(self, channel_config):
+        """Keep the channel as the one to select and check at the next start."""
+        key = channel_key(channel_config)
+        self.last_channel = key
+        self.used_channels.add(key)
+        settings = app_settings()
+        settings.setValue(LAST_CHANNEL, json.dumps(list(key)))
+        settings.setValue(USED_CHANNELS, json.dumps([list(used) for used in self.used_channels]))
+
+    def check_last_channel(self):
+        """At startup: select the channel used last and start checking its ECUs with TesterPresent, so a
+        responding ECU and the database it can load appear without connecting first."""
+        item = self.channel_items.get(self.last_channel)
+        if item is None or self.can_bus is not None or not self.active_config:
+            return
+        self.on_channel_selected(item)
+        self.check_ecus(item.data(0, Qt.UserRole))
+
+    def _matching_database(self):
+        """The panel database Connect would load for the active configuration, or None."""
+        if not self.active_config:
+            return None
+        try:
+            return select_database(DATABASES_DIR, str(self.active_config.get("database_family", "")))
+        except (OSError, ValueError) as exc:
+            self.log_verbose(f"Database selection: {exc}")
+            return None
+
     def _set_status(self, text: str, color: str = "gray"):
         """Update status label text and optional color (gray, green, red, orange)."""
         self.status_label.setText(text)
@@ -284,13 +336,23 @@ class MainWindow(QMainWindow):
         for in_use in (self.connected_channel_config, self.monitor_channel if self.ecu_monitor else None):
             if in_use and not any(channel_key(c) == channel_key(in_use) for c in self.can_channels):
                 self.can_channels.append(in_use)
+        self.database_items.clear()
         for cfg in self.can_channels:
             item = QTreeWidgetItem([self._channel_label(cfg)])
             item.setData(0, Qt.UserRole, cfg)
+            key = channel_key(cfg)
+            if key in self.used_channels:  # channels connected before stand out
+                font = item.font(0)
+                font.setBold(True)
+                item.setFont(0, font)
             self.channel_list.addTopLevelItem(item)
-            self.channel_items[channel_key(cfg)] = item
+            self.channel_items[key] = item
         if not self.can_channels:
             self.channel_list.addTopLevelItem(QTreeWidgetItem(["No CAN receivers found"]))
+        remembered = self.channel_items.get(self.last_channel)
+        if remembered is not None and self.can_bus is None:
+            self.channel_list.setCurrentItem(remembered)
+            self.selected_channel_config = remembered.data(0, Qt.UserRole)
         self._update_nodes()
 
     def _channel_label(self, cfg):
@@ -319,7 +381,7 @@ class MainWindow(QMainWindow):
         return self.ecu_monitor is not None and key == channel_key(self.monitor_channel)
 
     def _update_nodes(self):
-        now = time.monotonic()
+        now, responding = time.monotonic(), set()
         for (channel, can_id), state in self.node_states.items():
             parent = self.channel_items.get(channel)
             if parent is None:
@@ -335,9 +397,30 @@ class MainWindow(QMainWindow):
                 symbol, status, colour = "✗", "Lost connection", "red"
             else:
                 symbol, status, colour = "●", "Responding", "green"
+                responding.add(channel)
             item.setText(0, f"{symbol} ECU 0x{can_id:X} — {status}")
             item.setForeground(0, QColor(colour))
             item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))
+        self._update_databases(responding)
+
+    def _update_databases(self, responding):
+        """Offer the database that Connect would load under every channel with a responding ECU."""
+        database = self._matching_database() if responding else None
+        for key, parent in self.channel_items.items():
+            item = self.database_items.get(key)
+            if database is None or key not in responding:
+                if item is not None:
+                    parent.removeChild(item)
+                    del self.database_items[key]
+                continue
+            if item is None:
+                item = QTreeWidgetItem(parent)
+                self.database_items[key] = item
+                parent.setExpanded(True)
+            loaded = (self.app_database or {}).get("source_path") == str(database.resolve())
+            item.setText(0, f"▣ {database.stem} — {'loaded' if loaded else 'double-click to load'}")
+            item.setForeground(0, QColor("#1566ae"))
+            item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))  # double-click connects this channel
 
     def scan_channel_activity(self):
         """Scan channels for CAN activity (when disconnected)."""
@@ -377,6 +460,8 @@ class MainWindow(QMainWindow):
         cfg = item.data(0, Qt.UserRole)
         if cfg:
             self.selected_channel_config = cfg
+            self.last_channel = channel_key(cfg)
+            app_settings().setValue(LAST_CHANNEL, json.dumps(list(self.last_channel)))
             self.status_label.setText(f"Selected {cfg['interface']} channel {cfg.get('channel', 0)}")
 
     def on_channel_double_clicked(self, item, column=0):
@@ -450,10 +535,6 @@ class MainWindow(QMainWindow):
         self.dark_mode_action.setCheckable(True)
         self.dark_mode_action.triggered.connect(lambda: self.apply_theme('dark'))
         theme_group.addAction(self.dark_mode_action)
-        # Restore saved preference
-        settings = app_settings()
-        saved_theme = settings.value("theme", "light", type=str)
-        self.apply_theme(saved_theme, restore=True)
 
         # Help menu on the far right (corner widget; avoid nesting a second QMenuBar)
         help_corner = QWidget()
@@ -464,10 +545,28 @@ class MainWindow(QMainWindow):
         help_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         help_btn.setPopupMode(QToolButton.InstantPopup)
         help_menu = QMenu(help_btn)
+        help_menu.addAction("User manual", self.open_manual)
         help_menu.addAction("About", self.show_about)
         help_btn.setMenu(help_menu)
+        self.manual_btn = QToolButton()
+        self.manual_btn.setAutoRaise(True)
+        self.manual_btn.setIconSize(QSize(18, 18))
+        self.manual_btn.setAccessibleName("User manual")
+        self.manual_btn.setToolTip("User manual: how to use the main window, Form Designer, CAN Logger and "
+                                   "Diagnostic Window")
+        self.manual_btn.clicked.connect(self.open_manual)
+        help_corner_layout.addWidget(self.manual_btn)
         help_corner_layout.addWidget(help_btn)
         menubar.setCornerWidget(help_corner, Qt.TopRightCorner)
+        # Last, so every button that follows the theme already exists.
+        self.apply_theme(app_settings().value("theme", "light", type=str), restore=True)
+
+    def _refresh_manual_icon(self):
+        self.manual_btn.setIcon(line_icon(MANUAL_ICON, self.palette().color(QPalette.WindowText)))
+
+    def open_manual(self):
+        """Show the user manual (docs/USER_MANUAL.md)."""
+        return show_manual(self)
 
     def show_about(self):
         """Show About dialog with app info."""
@@ -486,7 +585,9 @@ class MainWindow(QMainWindow):
     def apply_theme(self, theme: str, restore: bool = False):
         """Apply light or dark theme to the application."""
         app = QApplication.instance()
-        palette = QPalette()
+        # The style's own palette, not QPalette(): a default one copies the palette in use, so switching
+        # back to light would keep the dark theme's white text on light buttons.
+        palette = app.style().standardPalette()
         if theme == 'dark':
             palette.setColor(QPalette.Window, QColor(53, 53, 53))
             palette.setColor(QPalette.WindowText, Qt.white)
@@ -509,11 +610,18 @@ class MainWindow(QMainWindow):
             palette.setColor(QPalette.Shadow, QColor(15, 15, 15))
             self.dark_mode_action.setChecked(True)
         else:
-            palette = QPalette()
             self.light_mode_action.setChecked(True)
         app.setPalette(palette)
+        # A widget with its own stylesheet keeps the palette it was polished with, which left the toolbar
+        # labels white on the light theme; re-polishing picks the new colours up.
+        for owner in (self, *self.findChildren(QWidget)):  # includes the tool windows, which are children
+            if owner.styleSheet():
+                for widget in (owner, *owner.findChildren(QWidget)):  # the children inherit the stylesheet
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
         for name, action in self._toolbar_actions.items():
             action.setIcon(toolbar_icon(name, dark=theme == "dark"))
+        self._refresh_manual_icon()
         if not restore:
             settings = app_settings()
             settings.setValue("theme", theme)
@@ -622,6 +730,7 @@ class MainWindow(QMainWindow):
             self.can_bus = open_channel(cfg, config["bitrate"])
             self.session_config = config
             self.connected_channel_config = dict(cfg)
+            self._remember_channel(cfg)
             self.session_generation += 1
             generation = self.session_generation
             worker = CanWorker(self.can_bus, config)

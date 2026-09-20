@@ -1,9 +1,0 @@
-<?xml version='1.0' encoding='utf-8'?>
-<application_database name="WARP">
-    <description>WARP</description>
-    <pages>
-        <page name="Main">
-            <button x="131" y="22" width="100" height="30" variable="" type="button" id="1" label="Button 1" can_id="0" data="00 00 00 00 00 00 00 00" />
-        </page>
-    </pages>
-</application_database>

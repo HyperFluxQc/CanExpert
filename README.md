@@ -11,7 +11,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
 - **Channel Selection & Bitrate**: Configure CAN channel and speed per interface
-- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, with follow, pause, fit, X/Y axis locks, measurement cursors, a hover crosshair with time/value readout and CSV export
+- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, with small symbol buttons for clear, pause, follow, fit, the X/Y axis locks and the measurement cursors, a hover crosshair with time/value readout and CSV export. **Graph options** chooses how signals are drawn (step line, line with a dot per sample, or dots only), the follow window, and exact time and value ranges (for example 50.0134 s to 55.2455 s)
 - **Firmware flashing**: While connected, the **Flashing** toolbar button asks for an S-record or Intel HEX file, asks for confirmation and runs the database script's `Flashing(api, firmware)` with a progress dialog; a sample ISO 14229 sequence and test images (`examples/firmware/demo_app.s19` / `.hex`) are in `examples/`, and the Form Designer's Test panel can flash the simulated ECU
 
 ## Requirements
@@ -31,16 +31,17 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. The application lists configurations and restores the last selected one.
-2. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
-3. Select a CAN receiver and click **Connect**. The newest matching database is loaded before communication starts.
-4. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again. After **Disconnect** the ECUs are still checked: CAN Expert keeps sending TesterPresent at the configuration's interval (the channel shows **[Checking ECUs]**), so each ECU stays **Responding** while it answers and shows **Lost connection** when it stops. Right-click the channel to stop, or to **Check ECUs** with the selected configuration without connecting; unchecked ECUs show **Not checked**. Connecting again hands the channel back to the session.
-5. Use the panel's controls; their named Python callbacks handle CAN sends and UI updates.
-6. Click **Disconnect** to stop reception, periodic requests and the panel script.
+1. The application lists configurations and restores the last selected one. The CAN receiver used last is selected again and shown in **bold** (as is every receiver connected before), and CAN Expert starts checking it with TesterPresent straight away.
+2. An ECU that answers appears under its receiver, together with the database that configuration can load: **double-click that entry** (or the receiver) to load it, exactly as **Connect** does.
+3. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
+4. Or select a CAN receiver yourself and click **Connect**. The newest matching database is loaded before communication starts.
+5. Responding ECU IDs appear beneath the receiver. A timed-out node receives a red cross and returns to green when it responds again. After **Disconnect** the ECUs are still checked: CAN Expert keeps sending TesterPresent at the configuration's interval (the channel shows **[Checking ECUs]**), so each ECU stays **Responding** while it answers and shows **Lost connection** when it stops. Right-click the channel to stop, or to **Check ECUs** with the selected configuration without connecting; unchecked ECUs show **Not checked**. Connecting again hands the channel back to the session.
+6. Use the panel's controls; their named Python callbacks handle CAN sends and UI updates.
+7. Click **Disconnect** to stop reception, periodic requests and the panel script.
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 
-See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+The [user manual](docs/USER_MANUAL.md) walks through the main window, the Form Designer, the CAN Logger and the Diagnostic Window; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
 ## Application Database (XML)
 
@@ -136,7 +137,7 @@ See [Requirements implementation](docs/REQUIREMENTS_STATUS.md#panel-scripts) for
 
 ## File structure
 
-
+```
 CanExpert/
 ├── main.py                     # Start CAN Expert
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
@@ -157,7 +158,7 @@ CanExpert/
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
 ├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
 ├── examples/                   # Runnable panel + script pair, demo firmware
-├── docs/                       # DOCUMENTATION.md, REQUIREMENTS_STATUS.md, Requirements.docx
+├── docs/                       # USER_MANUAL.md, DOCUMENTATION.md, REQUIREMENTS_STATUS.md
 ├── tests/                      # Hardware-free acceptance, UDS and UI tests
 └── requirements.txt
 ```
