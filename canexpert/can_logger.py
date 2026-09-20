@@ -12,6 +12,7 @@ from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QMenu,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -66,6 +67,8 @@ TOOL_ICONS = {
               '<path d="M6 3v18"/><path d="M3.5 5.5 6 3l2.5 2.5"/><path d="M3.5 18.5 6 21l2.5-2.5"/>',
     "cursors": '<path d="M8 7v14M16 7v14"/><path d="M5.5 4h5l-2.5 3z" fill="currentColor"/>'
                '<path d="M13.5 4h5l-2.5 3z" fill="currentColor"/>',
+    "combine": '<rect x="3" y="4" width="18" height="16" rx="2"/>'
+               '<path d="M4.5 16l4-5 3 3 3-6 3 4 2-3"/><path d="M4.5 19h15"/>',
 }
 
 CURVE_STYLES = ("Line", "Line + dots", "Dots")
@@ -227,8 +230,10 @@ class CANLoggerWindow(QDialog):
         self._decoders = {}         # frame id -> (message, [(signal name, display name)])
         self._plotted = []          # checked signals, in the order they were ticked
         self._colors = {}           # "Message.Signal" -> palette index while plotted
-        self._plots = {}            # "Message.Signal" -> (PlotItem, curve, cursor 1, cursor 2)
-        self._hover = {}            # "Message.Signal" -> (dotted vertical line, dotted horizontal line, readout)
+        self._plots = {}            # "Message.Signal" -> (PlotItem, curve)
+        self._groups = {}           # "Message.Signal" -> the signal whose graph it is drawn in
+        self._group_plots = []      # one (PlotItem, cursor 1, cursor 2) per graph, top to bottom
+        self._hover = {}            # graph row -> (dotted vertical line, dotted horizontal line, readout)
         self._new_curve_data = set()     # signals whose graph needs redrawing
         self._new_values = set()         # signals whose Value column needs refreshing
         self._t0 = None
@@ -319,6 +324,10 @@ class CANLoggerWindow(QDialog):
         self.cursors_btn = self._tool_button("cursors", "Cursors: two measurement cursors across all graphs",
                                              checkable=True, toggled=self._on_cursors_toggled)
         bar.addWidget(self.cursors_btn)
+        self.combine_btn = self._tool_button("combine", "Combine: draw every signal in one graph "
+                                             "(right-click a signal to group them by hand)",
+                                             checkable=True, toggled=self._on_combine_toggled)
+        bar.addWidget(self.combine_btn)
         self._refresh_tool_icons()
         bar.addWidget(self._separator())
         options_btn = QPushButton("Graph options...")
@@ -359,6 +368,8 @@ class CANLoggerWindow(QDialog):
             self.signal_tree.setColumnWidth(column, 70)
             self.signal_tree.setColumnHidden(column, True)
         self.signal_tree.itemChanged.connect(self._on_item_changed)
+        self.signal_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.signal_tree.customContextMenuRequested.connect(self._signal_menu)
         signals_layout.addWidget(self.signal_tree)
         splitter.addWidget(SplitterPanel("Signals (tick to add a graph)", signals_group, Qt.Horizontal))
 
@@ -471,6 +482,7 @@ class CANLoggerWindow(QDialog):
         self.path_status.setStyleSheet(f"QLineEdit {{ border: none; background: transparent;{colour} }}")
         self._plotted.clear()
         self._colors.clear()
+        self._groups.clear()
         self._items.clear()
         self._units.clear()
         self._decoders.clear()
@@ -527,10 +539,15 @@ class CANLoggerWindow(QDialog):
             used = set(self._colors.values())
             self._colors[name] = next(i for i in range(len(self._plotted) + 1) if i not in used)
             self._plotted.append(name)
+            self._groups[name] = self._plotted[0] if self.combine_btn.isChecked() else name
             item.setIcon(COL_SIGNAL, self._swatch(self._color(name)))
         elif not checked and name in self._plotted:
             self._plotted.remove(name)
             del self._colors[name]
+            self._groups.pop(name, None)
+            for other, group in list(self._groups.items()):     # a graph named after it keeps its signals
+                if group == name:
+                    self._groups[other] = self._plotted[0] if self._plotted else other
             item.setIcon(COL_SIGNAL, QIcon())
             for column_index in (COL_C1, COL_C2, COL_DELTA):
                 item.setText(column_index, "")
@@ -543,26 +560,67 @@ class CANLoggerWindow(QDialog):
         """Tick or untick a signal in the list (adds or removes its graph)."""
         self._items[display_name].setCheckState(COL_SIGNAL, Qt.Checked if plotted else Qt.Unchecked)
 
+    # --- which signals share a graph ------------------------------------------------------
+
+    def graph_groups(self):
+        """The graphs, in the order they were first ticked: a list of lists of signal names."""
+        order = []
+        for name in self._plotted:
+            group = self._groups.get(name, name)
+            if group not in order:
+                order.append(group)
+        return [[name for name in self._plotted if self._groups.get(name, name) == group] for group in order]
+
+    def set_graph_group(self, name: str, other: str | None = None):
+        """Put a signal in the graph of another signal, or (other=None) back in a graph of its own."""
+        self._groups[name] = self._groups.get(other, other) if other else name
+        self.combine_btn.setChecked(len(self.graph_groups()) <= 1 and len(self._plotted) > 1)
+        self._rebuild_strips()
+
+    def _on_combine_toggled(self, combined):
+        """Combine: every signal in one graph; off again gives each one its own."""
+        first = self._plotted[0] if self._plotted else None
+        for name in self._plotted:
+            self._groups[name] = first if combined else name
+        self._rebuild_strips()
+
+    def _signal_menu(self, position):
+        """Right-click a plotted signal: choose which graph it is drawn in."""
+        item = self.signal_tree.itemAt(position)
+        name = item.data(COL_SIGNAL, Qt.UserRole) if item is not None else None
+        if not name or name not in self._plotted:
+            return
+        menu = QMenu(self)
+        menu.addAction("Graph of its own", lambda: self.set_graph_group(name))
+        for group in self.graph_groups():
+            others = [other for other in group if other != name]
+            if others:
+                label = ", ".join(other.split(".", 1)[1] for other in others[:3])
+                menu.addAction(f"Draw together with {label}", lambda o=others[0]: self.set_graph_group(name, o))
+        menu.exec_(self.signal_tree.viewport().mapToGlobal(position))
+
     def _rebuild_strips(self):
-        """One PlotItem per plotted signal, stacked, with linked time axes and synced cursors."""
+        """One PlotItem per graph - a graph holds one signal, or several sharing its axes - stacked with
+        linked time axes and the measurement cursors across all of them."""
         if not HAS_PG:
             return
         previous_range = None
-        if self._plots:
-            previous_range = next(iter(self._plots.values()))[0].getViewBox().viewRange()[0]
+        if self._group_plots:
+            previous_range = self._group_plots[0][0].getViewBox().viewRange()[0]
         self.graph.clear()
         self._plots.clear()
+        self._group_plots.clear()
         self._hover.clear()
         self.graph_stack.setCurrentIndex(1 if self._plotted else 0)
         if not self._plotted:
             return
         theme = self._theme_colors()
+        groups = self.graph_groups()
         self.graph.setBackground(theme["background"])
-        self.graph.setMinimumHeight(STRIP_MIN_HEIGHT * len(self._plotted) + 30)
+        self.graph.setMinimumHeight(STRIP_MIN_HEIGHT * len(groups) + 30)
         first = None
-        last_row = len(self._plotted) - 1
-        for row, name in enumerate(self._plotted):
-            color = self._color(name)
+        last_row = len(groups) - 1
+        for row, group in enumerate(groups):
             plot = self.graph.addPlot(row=row, col=0)
             plot.showGrid(x=True, y=True, alpha=0.25)
             plot.setDownsampling(auto=True, mode="peak")
@@ -574,11 +632,10 @@ class CANLoggerWindow(QDialog):
                 plot.enableAutoRange(axis="y")
             left = plot.getAxis("left")
             left.setWidth(AXIS_WIDTH)
-            left.setPen(pg.mkPen(color))
-            left.setTextPen(pg.mkPen(color))
-            signal_name = name.split(".", 1)[1]
-            unit = self._units.get(name)
-            left.setLabel(f"{signal_name} [{unit}]" if unit else signal_name, color=color)
+            colour = self._color(group[0]) if len(group) == 1 else theme["axis"]
+            left.setPen(pg.mkPen(colour))
+            left.setTextPen(pg.mkPen(colour))
+            left.setLabel(self._axis_label(group), color=colour if len(group) == 1 else theme["text"].name())
             bottom = plot.getAxis("bottom")
             bottom.setPen(pg.mkPen(theme["axis"]))
             bottom.setTextPen(pg.mkPen(theme["text"]))
@@ -587,7 +644,15 @@ class CANLoggerWindow(QDialog):
             else:
                 bottom.setStyle(showValues=False)
                 bottom.setHeight(4)
-            curve = plot.plot(**_curve_args(color, self._curve_style))
+            if len(group) > 1:
+                # A shared graph says which curve is which; a single one is named by its axis.
+                legend = plot.addLegend(offset=(-8, 8), labelTextColor=theme["text"])
+                legend.setParentItem(plot.getViewBox())
+            for name in group:
+                curve = plot.plot(name=name.split(".", 1)[1] if len(group) > 1 else None,
+                                  **_curve_args(self._color(name), self._curve_style))
+                self._plots[name] = (plot, curve)
+                self._update_curve(name)
             cursors = []
             for index in range(2):
                 pen = pg.mkPen(theme["cursor"], width=1)
@@ -604,22 +669,30 @@ class CANLoggerWindow(QDialog):
                 first = plot
             else:
                 plot.setXLink(first)
-            self._plots[name] = (plot, curve, cursors[0], cursors[1])
-            self._hover[name] = self._make_hover_items(plot, theme)
-            self._update_curve(name)
+            self._group_plots.append((plot, cursors[0], cursors[1]))
+            self._hover[row] = self._make_hover_items(plot, theme)
         if previous_range is not None:
             first.setXRange(*previous_range, padding=0)
         self._apply_fixed_ranges()
         self._update_cursor_readout()
 
+    def _axis_label(self, group):
+        """The left axis of a graph: the signal and its unit, or the units the signals share."""
+        if len(group) == 1:
+            name = group[0].split(".", 1)[1]
+            unit = self._units.get(group[0])
+            return f"{name} [{unit}]" if unit else name
+        units = sorted({self._units.get(name, "") for name in group} - {""})
+        return " / ".join(units) if units else ""
+
     def _apply_fixed_ranges(self):
         """Show exactly the time and value ranges set in Graph options."""
-        if not self._plots:
+        if not self._group_plots:
             return
         if self._x_range is not None:
-            next(iter(self._plots.values()))[0].setXRange(*self._x_range, padding=0)
+            self._group_plots[0][0].setXRange(*self._x_range, padding=0)
         if self._y_range is not None:
-            for plot, *_rest in self._plots.values():
+            for plot, *_rest in self._group_plots:
                 plot.disableAutoRange(axis="y")
                 plot.setYRange(*self._y_range, padding=0)
 
@@ -647,15 +720,16 @@ class CANLoggerWindow(QDialog):
         return lines[0], lines[1], readout
 
     def _on_mouse_moved(self, scene_pos):
-        for name, (plot, *_rest) in self._plots.items():
-            vertical, horizontal, readout = self._hover[name]
+        for row, (plot, *_rest) in enumerate(self._group_plots):
+            vertical, horizontal, readout = self._hover[row]
             view = plot.getViewBox()
             inside = view.sceneBoundingRect().contains(scene_pos)
             if inside:
                 point = view.mapSceneToView(scene_pos)
                 vertical.setValue(point.x())
                 horizontal.setValue(point.y())
-                unit = self._units.get(name)
+                units = sorted({self._units.get(name, "") for name in self.graph_groups()[row]} - {""})
+                unit = units[0] if len(units) == 1 else ""
                 readout.setText(f"{point.x():.3f} s   {point.y():.4g}{' ' + unit if unit else ''}")
             for item in (vertical, horizontal, readout):
                 item.setVisible(inside)
@@ -742,10 +816,10 @@ class CANLoggerWindow(QDialog):
                     item.setText(COL_VALUE, _format(self._series[name].last()))
             self._new_values.clear()
             self._update_cursor_readout()
-        if self.follow_btn.isChecked() and self._plots:
+        if self.follow_btn.isChecked() and self._group_plots:
             latest = self._latest_time()
             if latest is not None:
-                first = next(iter(self._plots.values()))[0]
+                first = self._group_plots[0][0]
                 first.setXRange(max(0.0, latest - self._window_seconds), max(latest, self._window_seconds),
                                 padding=0)
 
@@ -765,7 +839,7 @@ class CANLoggerWindow(QDialog):
     def _apply_axis_locks(self, *_):
         """Lock X / Lock Y: stop mouse zoom and pan from changing that axis on every graph."""
         lock_x, lock_y = self.lock_x_btn.isChecked(), self.lock_y_btn.isChecked()
-        for plot, *_rest in self._plots.values():
+        for plot, *_rest in self._group_plots:
             plot.getViewBox().setMouseEnabled(x=not lock_x, y=not lock_y)
             if lock_y and self._autoscale and self._y_range is None:
                 plot.enableAutoRange(axis="y")  # back to fitted values after a manual Y zoom
@@ -773,7 +847,7 @@ class CANLoggerWindow(QDialog):
     def fit_all(self):
         self.follow_btn.setChecked(False)
         self._x_range = self._y_range = None      # Fit shows everything, so the fixed ranges are dropped
-        for plot, *_ in self._plots.values():
+        for plot, *_ in self._group_plots:
             plot.enableAutoRange(axis="x")
             if self._autoscale:
                 plot.enableAutoRange(axis="y")
@@ -782,12 +856,12 @@ class CANLoggerWindow(QDialog):
     # --- cursors ----------------------------------------------------------------------------
 
     def _on_cursors_toggled(self, enabled):
-        if enabled and self._plots:
-            start, end = next(iter(self._plots.values()))[0].getViewBox().viewRange()[0]
+        if enabled and self._group_plots:
+            start, end = self._group_plots[0][0].getViewBox().viewRange()[0]
             self._cursor_pos = [start + (end - start) / 3, start + 2 * (end - start) / 3]
             self._move_cursor_lines()
             self.follow_btn.setChecked(False)  # measuring needs a still picture
-        for _, _, line_a, line_b in self._plots.values():
+        for _, line_a, line_b in self._group_plots:
             line_a.setVisible(enabled)
             line_b.setVisible(enabled)
         for column in (COL_C1, COL_C2, COL_DELTA):
@@ -798,7 +872,7 @@ class CANLoggerWindow(QDialog):
     def _move_cursor_lines(self):
         self._syncing_cursors = True
         try:
-            for _, _, line_a, line_b in self._plots.values():
+            for _, line_a, line_b in self._group_plots:
                 line_a.setValue(self._cursor_pos[0])
                 line_b.setValue(self._cursor_pos[1])
         finally:
@@ -839,8 +913,8 @@ class CANLoggerWindow(QDialog):
         dialog.window_spin.setValue(self._window_seconds)
         # Start from what is on screen, so a range can be fine-tuned instead of typed from scratch.
         x_range, y_range = self._x_range, self._y_range
-        if self._plots:
-            view = next(iter(self._plots.values()))[0].getViewBox().viewRange()
+        if self._group_plots:
+            view = self._group_plots[0][0].getViewBox().viewRange()
             x_range, y_range = x_range or tuple(view[0]), y_range or tuple(view[1])
         for checkbox, values, spins in ((dialog.fixed_x_cb, x_range, (dialog.x_start, dialog.x_end)),
                                         (dialog.fixed_y_cb, y_range, (dialog.y_start, dialog.y_end))):

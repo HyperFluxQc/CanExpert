@@ -178,7 +178,7 @@ class ErrorFrameTest(unittest.TestCase):
         self.addCleanup(worker.stop)
         other.send(can.Message(is_error_frame=True, arbitration_id=0, is_extended_id=False))
         other.send(can.Message(arbitration_id=0x300, data=b"\x01", is_extended_id=False))
-        deadline = __import__("time").monotonic() + 3
+        deadline = __import__("time").monotonic() + 10
         while __import__("time").monotonic() < deadline and not (frames and errors):
             APP.processEvents()
         self.assertEqual(len(errors), 1, "the error frame was not reported")

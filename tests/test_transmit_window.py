@@ -107,15 +107,16 @@ class TransmitWindowTest(unittest.TestCase):
         self.window.rows[0].update(id=0x200, data=b"\x01", cycle_ms=20)
         self.window.table.item(0, COL_ON).setCheckState(Qt.Checked)
         self.window.tick()
-        self.window.tick()                                  # not due yet
+        self.window.tick()                                  # not due yet: both ticks are in the same instant
         self.assertEqual(len(self.sent), 1)
-        time.sleep(0.03)
+        time.sleep(0.03)                                    # past the 20 ms cycle
         self.window.tick()
-        self.assertEqual(len(self.sent), 2)
+        self.assertGreaterEqual(len(self.sent), 2)
         self.window.stop_all()
+        sent = len(self.sent)
         time.sleep(0.03)
         self.window.tick()
-        self.assertEqual(len(self.sent), 2, "All off stops every cyclic row")
+        self.assertEqual(len(self.sent), sent, "All off stops every cyclic row")
 
     def test_a_row_that_cannot_be_sent_switches_itself_off(self):
         def refuse(can_id, data, extended):

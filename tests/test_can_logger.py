@@ -46,13 +46,14 @@ class CanLoggerTest(unittest.TestCase):
 
     def test_the_toolbar_is_small_symbol_buttons(self):
         buttons = self.logger._tool_buttons
-        self.assertEqual(list(buttons), ["clear", "pause", "follow", "fit", "lock_x", "lock_y", "cursors"])
+        self.assertEqual(list(buttons),
+                         ["clear", "pause", "follow", "fit", "lock_x", "lock_y", "cursors", "combine"])
         for button in buttons.values():
             self.assertEqual(button.text(), "")                                  # the symbol carries the meaning
             self.assertFalse(button.icon().isNull())
             self.assertTrue(button.toolTip().startswith(button.accessibleName()))  # "Fit: show all recorded data"
         self.assertEqual([button.isCheckable() for button in buttons.values()],
-                         [False, True, True, False, True, True, True])
+                         [False, True, True, False, True, True, True, True])
         pause = self.logger.pause_btn
         symbol = pause.icon().pixmap(18, 18).toImage()
         pause.setChecked(True)                                                   # Pause becomes Resume
@@ -78,10 +79,10 @@ class CanLoggerTest(unittest.TestCase):
 
         use("#121212", "#e0e0e0")                                            # dark theme
         self.assertLess(self.logger._theme_colors()["background"].lightness(), 60)
-        self.assertEqual(self.logger._plots[TEMP][2].pen.color().name(), "#ffffff")   # white cursors
+        self.assertEqual(self.logger._group_plots[0][1].pen.color().name(), "#ffffff")  # white cursors
         use("#ffffff", "#000000")                                            # light theme, window already open
         self.assertGreater(self.logger._theme_colors()["background"].lightness(), 200)
-        self.assertLess(self.logger._plots[TEMP][2].pen.color().lightness(), 60)      # dark cursors instead
+        self.assertLess(self.logger._group_plots[0][1].pen.color().lightness(), 60)    # dark cursors instead
 
     def test_graph_options_set_exact_ranges_and_the_drawing_style(self):
         self.logger.set_signal_plotted(TEMP)
@@ -129,8 +130,9 @@ class CanLoggerTest(unittest.TestCase):
         self.feed((0.0, 0x300, engine_frame(20.0, 1.0)), (1.0, 0x300, engine_frame(30.0, 2.0)))
         self.logger.cursors_btn.setChecked(True)
         colour = self.logger._theme_colors()["cursor"]
-        for row, name in enumerate((TEMP, PRESSURE)):
-            for index, line in enumerate(self.logger._plots[name][2:]):
+        self.assertEqual(len(self.logger._group_plots), 2)
+        for row, (_plot, *lines) in enumerate(self.logger._group_plots):
+            for index, line in enumerate(lines):
                 pen = line.pen
                 self.assertEqual(pen.color().name(), colour.name())
                 self.assertEqual([float(dash) for dash in pen.dashPattern()], [30.0, 10.0])
@@ -186,9 +188,9 @@ class CanLoggerTest(unittest.TestCase):
         self.assertEqual((item.text(COL_C1), item.text(COL_C2), item.text(COL_DELTA)), ("20", "30", "10"))
         self.assertIn("Δt: 1.400 s", self.logger.cursor_label.text())
         self.logger.set_signal_plotted(PRESSURE)                               # new strip gets the cursors too
-        self.assertEqual([line.value() for line in self.logger._plots[PRESSURE][2:]], [0.5, 1.9])
-        self.logger._plots[PRESSURE][3].setValue(1.2)                          # dragging one moves all
-        self.assertEqual(self.logger._plots[TEMP][3].value(), 1.2)
+        self.assertEqual([line.value() for line in self.logger._group_plots[1][1:]], [0.5, 1.9])
+        self.logger._group_plots[1][2].setValue(1.2)                           # dragging one moves all
+        self.assertEqual(self.logger._group_plots[0][2].value(), 1.2)
 
     def test_hover_crosshair_and_readout(self):
         from PyQt5.QtCore import QEvent, QPointF
@@ -201,7 +203,7 @@ class CanLoggerTest(unittest.TestCase):
         view.setRange(xRange=(0, 4), yRange=(20, 40), padding=0)
         APP.processEvents()
         self.logger._on_mouse_moved(view.mapViewToScene(QPointF(1.5, 30.0)))
-        vertical, horizontal, readout = self.logger._hover[TEMP]
+        vertical, horizontal, readout = self.logger._hover[0]
         self.assertTrue(vertical.isVisible() and horizontal.isVisible() and readout.isVisible())
         self.assertAlmostEqual(vertical.value(), 1.5, places=1)
         self.assertAlmostEqual(horizontal.value(), 30.0, places=0)
@@ -210,11 +212,11 @@ class CanLoggerTest(unittest.TestCase):
         self.assertTrue(value_text.endswith(" degC"))
         self.assertAlmostEqual(float(value_text.split()[0]), 30.0, places=0)
         self.assertEqual((readout.pos().x(), readout.pos().y()), (view.width() - 4, view.height() - 4))
-        self.assertFalse(any(item.isVisible() for item in self.logger._hover[PRESSURE]))  # hovered graph only
+        self.assertFalse(any(item.isVisible() for item in self.logger._hover[1]))  # hovered graph only
         pressure_view = self.logger._plots[PRESSURE][0].getViewBox()
         self.logger._on_mouse_moved(pressure_view.mapViewToScene(pressure_view.viewRect().center()))
         self.assertFalse(vertical.isVisible())                                  # moved to the other graph
-        self.assertTrue(self.logger._hover[PRESSURE][0].isVisible())
+        self.assertTrue(self.logger._hover[1][0].isVisible())
         self.logger.eventFilter(self.logger.graph, QEvent(QEvent.Leave))
         self.assertFalse(any(item.isVisible() for items in self.logger._hover.values() for item in items))
 
@@ -344,6 +346,67 @@ class SharedSymbolsTest(unittest.TestCase):
             self.assertEqual(logger.signal_tree.topLevelItemCount(), 3)
             self.assertIn("Command.Value", logger._items)
             self.assertIn(second.name, logger.path_status.text())
+
+class GraphGroupTest(unittest.TestCase):
+    """Several signals can share one graph, as they do in CANoe."""
+
+    def setUp(self):
+        self.logger = CANLoggerWindow()
+        self.logger.load_dbc_from_path(DBC)
+        for name in (TEMP, PRESSURE, RUNNING):
+            self.logger.set_signal_plotted(name)
+
+    def tearDown(self):
+        self.logger.close()
+
+    def test_each_signal_starts_in_a_graph_of_its_own(self):
+        self.assertEqual(self.logger.graph_groups(), [[TEMP], [PRESSURE], [RUNNING]])
+        self.assertEqual(len(self.logger._group_plots), 3)
+
+    def test_combine_draws_them_all_in_one_graph_with_a_legend(self):
+        self.logger.combine_btn.setChecked(True)
+        self.assertEqual(self.logger.graph_groups(), [[TEMP, PRESSURE, RUNNING]])
+        self.assertEqual(len(self.logger._group_plots), 1)
+        plot = self.logger._group_plots[0][0]
+        self.assertEqual({name for name in self.logger._plots}, {TEMP, PRESSURE, RUNNING})
+        self.assertTrue(all(self.logger._plots[name][0] is plot for name in (TEMP, PRESSURE, RUNNING)))
+        self.assertIsNotNone(plot.legend, "a shared graph needs a legend to say which curve is which")
+        self.assertEqual({label.text for _sample, label in plot.legend.items},
+                         {name.split(".", 1)[1] for name in (TEMP, PRESSURE, RUNNING)})
+        # Every curve keeps its own colour.
+        colours = {self.logger._plots[name][1].opts["pen"].color().name() for name in (TEMP, PRESSURE, RUNNING)}
+        self.assertEqual(len(colours), 3)
+
+        self.logger.combine_btn.setChecked(False)
+        self.assertEqual(self.logger.graph_groups(), [[TEMP], [PRESSURE], [RUNNING]])
+
+    def test_two_signals_can_be_put_together_by_hand(self):
+        self.logger.set_graph_group(PRESSURE, TEMP)
+        self.assertEqual(self.logger.graph_groups(), [[TEMP, PRESSURE], [RUNNING]])
+        self.assertIs(self.logger._plots[PRESSURE][0], self.logger._plots[TEMP][0])
+        self.assertIsNot(self.logger._plots[RUNNING][0], self.logger._plots[TEMP][0])
+        self.logger.set_graph_group(PRESSURE)                      # back to a graph of its own
+        self.assertEqual(self.logger.graph_groups(), [[TEMP], [PRESSURE], [RUNNING]])
+
+    def test_the_axis_says_what_the_graph_holds(self):
+        self.assertEqual(self.logger._axis_label([TEMP]), "Temperature [degC]")
+        self.assertEqual(self.logger._axis_label([TEMP, PRESSURE]), "bar / degC")   # the units shared
+        self.assertEqual(self.logger._axis_label([RUNNING]), "Running")             # a signal without a unit
+
+    def test_unticking_a_signal_leaves_the_others_together(self):
+        self.logger.combine_btn.setChecked(True)
+        self.logger.set_signal_plotted(TEMP, False)                # the graph was named after it
+        self.assertEqual(self.logger.graph_groups(), [[PRESSURE, RUNNING]])
+        self.assertEqual(len(self.logger._group_plots), 1)
+
+    def test_the_cursors_cross_every_graph_however_they_are_grouped(self):
+        self.logger.set_graph_group(PRESSURE, TEMP)
+        self.logger.cursors_btn.setChecked(True)
+        self.logger._on_cursor_moved(0, 0.4)
+        self.assertEqual(len(self.logger._group_plots), 2)
+        for _plot, first, second in self.logger._group_plots:
+            self.assertAlmostEqual(first.value(), 0.4, places=6)
+            self.assertTrue(first.isVisible() and second.isVisible())
 
 
 if __name__ == "__main__":
