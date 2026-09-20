@@ -10,11 +10,36 @@ This document describes the workflow implemented from `Requirements.docx`. CAN E
 | 2.2 | TesterPresent sent immediately on connection and at the configured interval, using the configured request ID, CAN identifier width and optional address byte | Repeated heartbeat and extended-address tests |
 | 2.3 | Responding configured node IDs shown as children of the selected receiver; timeout produces a red cross; renewed traffic restores green status. After Disconnect (or with right-click **Check ECUs**) TesterPresent continues on the channel, so the status keeps following the ECU's replies; right-click **Stop checking ECUs** ends it (nodes then show Not checked) | Multiple-node, loss and recovery tests; ECU check after disconnect (responding, silent, back, stopped, handed back to a session) |
 | 2.3.1 | The receiver used last is remembered and selected at the next start, receivers connected before are shown in bold, and its ECUs are checked with TesterPresent immediately; a responding ECU also lists the database the active configuration would load, which double-clicking loads exactly as Connect does | Remembered-channel restart test; database entry and double-click test |
-| 2.4 | Database selected, parsed and panel built before the hardware connection is opened; invalid/missing database leaves Connect available | Failure/recovery tests |
+| 2.4 | Database selected, parsed and panel built before the hardware connection is opened; invalid/missing database leaves Connect available. **Start** opens the same channel without a database (no script, no TesterPresent) for analysis only | Failure/recovery tests; measurement tests |
 | 2.5 | Newest valid date in the matching database filename selected deterministically | Date and family-selection tests |
 | 3 | Buttons, checkboxes, sliders, combo boxes and editable text/I/O controls emit named events; scripts update values, labels, LEDs and progress/gauge controls | Script control and panel tests |
 | 4 | Drag/drop designer retains control geometry, names, script bindings, DBC bindings and legacy byte mappings across save/load | XML round-trip tests |
 | 4.2 | Database Python scripts run on a background thread with startup, input, CAN and timer callbacks | Callback, timer, error isolation and cancellation tests |
+
+## Measurement, analysis and diagnostics beyond the requirements
+
+These were added for bench and vehicle work; none of them changes the configuration files, the panel
+databases or the panel scripts. Anything that has to be remembered lives in the application settings or
+in a file of its own.
+
+- **Start** runs a measurement on the selected receiver with no panel database: no script, and no
+  TesterPresent (the ECU check remains the way to ask an ECU whether it is there). **Connect** is
+  unchanged and still requires a database.
+- **Passive** stops CAN Expert transmitting altogether and asks a Kvaser adapter for silent mode, so a
+  live vehicle bus is not disturbed; the transmit list and the UDS console refuse to send and say why.
+- Every frame, from a session, a measurement, the ECU check or a replayed file, goes through one path
+  that keeps the last 20000 frames, writes the optional recording and feeds the Trace window, the CAN
+  Logger and the Diagnostic Window. Received frames carry the adapter's timestamp.
+- **Trace window**: symbolic names and decoded signals from the shared symbol databases, absolute,
+  relative and delta time, pass/stop filters, find and CSV export.
+- **Transmit list**: raw or database messages, one-shot or cyclic, edited signal by signal.
+- **UDS Console**: every ISO 14229 service (the same catalogue the scripts use) with a generated request
+  form, session control, SecurityAccess and a fault-memory tab, without an ODX file.
+- **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
+  windows offline and never touches a bus.
+- **Symbol databases**: one DBC list shared by the Trace window, the CAN Logger and the transmit list.
+- **Workspace**: the tool windows are panes of the main window; the arrangement is saved and can be kept
+  as named desktops.
 
 ## Configuration
 

@@ -9,10 +9,12 @@ This document describes the architecture, threads and data flows of **CAN Expert
 **CAN Expert** is a PyQt5 desktop application that:
 
 - Connects to CAN hardware (**Kvaser**, **Vector**, **IXXAT**) via **python-can**
+- Runs a **measurement** on a channel with or without a panel database, optionally **passive** (nothing is transmitted at all), and distributes every frame to the tool windows and to an optional recording
 - Selects the newest dated **panel database** (`Databases/family_YYYY-MM-DD.xml`) for the active configuration and builds its UI before opening the adapter
 - Sends periodic **TesterPresent** and shows responding ECUs beneath the selected receiver, marking lost nodes with a red cross
 - Runs the panel's **Python script** (`DatabaseMainFunction(api)`) on a background thread with an API for CAN, UDS over ISO-TP, DLL calls and UI values
-- Provides a **Form Designer**, a DBC-aware **CAN Logger**, and an ODX-driven **Diagnostic Window**
+- Provides a symbolic **Trace window**, a DBC-aware **CAN Logger**, a **Transmit list**, a **UDS Console**, a **Form Designer** and an ODX-driven **Diagnostic Window**, all as panes of one window whose arrangement is saved
+- **Records** the measurement to BLF/ASC/CSV and **replays** a recorded file back into those windows offline
 
 ---
 
@@ -27,9 +29,19 @@ flowchart LR
     main --> panel_runtime["panel/runtime.py"]
     main --> form_designer["designer/form_designer.py"]
     main --> can_logger["can_logger.py"]
+    main --> trace["trace_window.py"]
+    main --> transmit["transmit_window.py"]
+    main --> console["uds_console.py"]
+    main --> recording["recording.py"]
+    main --> symbols["symbols.py"]
     main --> diagnostic_window["diagnostic_window.py"]
     main --> flashing["flashing.py"]
     main --> ui_common["ui_common.py"]
+    trace --> symbols
+    transmit --> symbols
+    can_logger --> symbols
+    console --> uds_client
+    console --> can_bus
     form_designer --> canvas["designer/canvas.py"]
     form_designer --> side_panels["designer/side_panels.py"]
     form_designer --> code_editor["designer/code_editor.py"]
@@ -54,7 +66,7 @@ flowchart LR
 
 | Module | Role |
 |--------|------|
-| **main_window.py** | Main window: configuration list, receiver/node tree, Connect/Disconnect, the ECU check that keeps node status live after Disconnect, Flashing button and progress, tool windows, CAN and debug logs, theme. |
+| **main_window.py** | Main window: configuration list, receiver/node tree, Start (measurement) / Connect (panel session) / Disconnect and Passive, `dispatch_frame()` (the one path every frame takes: history, recording, CAN monitor, Trace, Logger, Diagnostics), the ECU check that keeps node status live after Disconnect, recording and replay, Flashing button and progress, the tool panes and their saved layouts, CAN and debug logs, theme. |
 | **can_bus.py** | `open_channel()`/`create_can_bus()`, `CanWorker` (the session's only bus reader, which also sends TesterPresent), `ReceiveMailbox` (bus facade for code off the GUI thread), `ChannelActivityScanner`. |
 | **config.py** | Configuration defaults, `validate_config()`, `diagnostic_request_id()`/`uds_transport()` (the IDs and timing a configuration implies), `read_configurations()`/`save_configuration()`, and `ConfigurationDialog`. |
 | **paths.py** | The data folders (`Configurations/`, `Databases/`, `DBC/`, `ODX/`, `examples/`), next to `main.py` or next to a frozen executable. |
@@ -70,6 +82,11 @@ flowchart LR
 | **designer/side_panels.py** | Control palette, DBC symbol list and the schema-driven property editor, with the designer's shared constants and naming helpers. |
 | **designer/code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals, UDS functions), syntax check; `UdsFunctionPanel` lists the UDS functions by ISO 14229 functional unit and inserts calls. |
 | **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, a symbol toolbar (clear, pause/resume, follow, fit, Lock X / Lock Y for mouse zoom and pan, measurement cursors) whose icons follow the theme, two white dashed measurement cursors labelled #1 and #2 with per-signal values and Δ, a dotted hover crosshair with a time/value readout, Graph options (drawing style: step line, line with dots or dots; follow window; exact time and value ranges), CSV export of all decoded data. |
+| **trace_window.py** | The Trace: frames buffered and flushed to a tree on a timer, symbolic names and lazily decoded signals from `symbols.py`, absolute/relative/delta time, pass and stop filters (`parse_filter()`), find, colour per identifier, CSV export; at most `MAX_ROWS` frames. |
+| **transmit_window.py** | The transmit list: rows (raw or bound to a database message) in a table, `tick()` sends the ones whose cycle time has come, `SignalEditor` re-encodes a message signal by signal, rows stored as JSON in the settings or a file. A row that fails to send switches itself off; hiding the pane stops every cyclic row. |
+| **uds_console.py** | The UDS console: a service tree built from `uds.client.FUNCTIONS`, a request form generated from each function's signature (`_field()`/`_arguments()`), exchanges on a background thread over a private mailbox, session/security bar, and a fault-memory tab (`status_text()` spells out the DTC status bits). |
+| **recording.py** | `Recorder` (python-can writers, format by file name), `read_frames()`, `ReplayWorker` (a thread that hands frames back at their recorded spacing) and `ReplayDialog`. |
+| **symbols.py** | `SymbolDatabases`: the DBC files the application shares (paths in the settings), frame id → message, `decode()`, `signal_names()`, `unit()`, and the dialog that edits the list. A file that cannot be read lands in `errors` without failing the others. |
 | **diagnostic_window.py** | Loads ODX/PDX/CDD, builds request forms, runs UDS exchanges on a background thread, monitors the ECU's CAN IDs. |
 | **simulator/ecu.py** | The simulated UDS ECU (sessions, security, DIDs, DTCs, flashing with RequestDownload/RequestUpload, ISO-TP flow control, periodic frames) for Kvaser virtual channels or any python-can interface. `EcuConfig` holds every setting and is read for each frame, so changes apply while running; `load_profile()`/`save_profile()` store it as JSON; `main()` opens the window, or runs headless with `--console`. |
 | **simulator/window.py** | Dummy ECU window: connection (interface, channel detection, bit rate, Connect/Disconnect with the one-ECU-per-channel lock), settings tabs (addressing, flow control, UDS timing and security, flashing, periodic frames) applied live and remembered in QSettings, ECU status, log with an optional frame trace, JSON profiles. |
@@ -91,6 +108,11 @@ CanExpert/
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
 │   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
 │   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
+│   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable
+│   ├── transmit_window.py      # Transmit list: one-shot and cyclic messages
+│   ├── uds_console.py          # UDS Console: every ISO 14229 service and the fault memory
+│   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
+│   ├── symbols.py              # The DBC files every window shares
 │   ├── diagnostic_window.py    # ODX Diagnostic Window
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
@@ -134,6 +156,30 @@ sequenceDiagram
 ```
 
 Any failure before or during start-up calls `on_disconnect_clicked()`, which leaves Connect available. A `session_generation` counter discards signals from a previous session.
+
+### Start: a measurement without a database
+
+`on_connect_clicked()` and `start_measurement()` are the same call, `_start_session(with_database)`:
+
+| | Connect | Start |
+|---|---|---|
+| Panel database | required (`No matching database` otherwise) | none |
+| Script runtime | started | none |
+| TesterPresent | sent at the configuration's interval (`CanWorker(tester_present=True)`) | never |
+| Transmitting | panel, scripts, transmit list, UDS console | transmit list and UDS console, unless passive |
+| Passive | not offered | `open_channel(passive=True)` (Kvaser silent mode) and `send_can_message()` refuses |
+
+`Disconnect` after a database session hands the channel to the ECU check, as before; after a measurement
+it simply stops, because a measurement never asked the bus for anything.
+
+### One path for every frame
+
+`dispatch_frame(timestamp, direction, id, data, extended)` is the single point every frame passes
+through, wherever it comes from — the session worker, the ECU check, a frame CAN Expert sent, or a file
+being replayed. It appends to `frame_history` (the last `FRAME_HISTORY` frames, so a window opened later
+can be filled in), writes to the `Recorder` if one is running, and hands the frame to the CAN monitor,
+the Trace window, the CAN Logger and the Diagnostic Window. Received frames carry the adapter's
+timestamp (`message.timestamp`), so every window shares one clock.
 
 ---
 
@@ -240,9 +286,32 @@ Control types (see `panel.controls.CONTROLS`): `button`, `switch`, `checkbox`, `
 
 `ui_common.app_settings()` returns `QSettings("CanExpert", "CanExpert")`. On first use it copies any keys saved under the previous `EZCan2/KvaserCAN` name, so existing theme and last-configuration choices survive the rename.
 
+Nothing below is written to a configuration or panel file; features that must remember something use the
+settings or a file of their own:
+
+| Key | Holds |
+|---|---|
+| `theme`, `last_configuration`, `last_channel`, `used_channels` | Appearance and what was in use last |
+| `passive_measurement` | The Passive toggle |
+| `symbol_databases` | The DBC paths every window shares (`symbols.py`) |
+| `transmit_list` | The transmit rows (`transmit_window.py`); **Save list...** writes a JSON file instead |
+| `layout/geometry`, `layout/state`, `layout/desktops/<name>` | The window arrangement and the saved desktops |
+
+## 10. The workspace
+
+Tool windows are `QDialog`s placed inside `QDockWidget`s by `MainWindow.open_tool(name, title, factory,
+area)`, which builds each one on first use, gives it an object name (needed by `saveState`) and the
+shared `DockTitleBar`. `tool_widget(name)` returns an already-open pane, and is what `dispatch_frame()`
+uses to decide who needs the frame.
+
+`restoreState()` only places docks that exist, so `_apply_layout()` re-applies the saved arrangement
+whenever a pane is created later; `_default_state` is captured before the first restore, which is what
+**Reset layout** goes back to. An embedded dialog's `finished` signal (Esc) closes its pane instead of
+leaving an empty one.
+
 ---
 
-## 10. Testing
+## 11. Testing
 
 ```
 python -B -m unittest discover -s tests -v
@@ -254,6 +323,10 @@ python -B -m unittest discover -s tests -v
 - `tests/test_dummy_ecu.py`: the simulated ECU's session, security, functional addressing, S3 timeout, DTC, flow control (WAIT, block size, STmin, overflow) and flashing behaviour, and its settings: RequestDownload formats, memory ranges, block length and full blocks, RequestUpload read-back, security level/seed/mask, P2/P2* and response pending on a slow response.
 - `tests/test_dummy_ecu_window.py`: the Dummy ECU window connecting and disconnecting on a virtual bus (channel lock included), settings applied while connected, invalid text fields not applied, the log and frame trace, profiles and remembered settings.
 
+- `tests/test_measurement.py`: a measurement without a panel database, Connect still refusing without one, passive mode (nothing transmitted, Kvaser silent mode), the ECU check feeding the Trace, the frame history filling a window opened later, recording to a file and replaying it offline, the tool panes and the saved layout and desktops.
+- `tests/test_trace_window.py`: symbolic rows and lazily decoded signals, the three time modes, pass and stop filters, pause, find, CSV export, colours, and `SymbolDatabases` (decoding, a broken file, adding and removing).
+- `tests/test_transmit_window.py`: editing rows, rejecting bad input, a database message and its signal editor, sending once and cyclically, a failing row switching itself off, and the list surviving a restart.
+- `tests/test_uds_console.py`: the service tree, forms built from each function's signature (order, defaults, byte parameters, the security key, a missing required parameter), and a live exchange with the simulated ECU: a multi-frame VIN, an NRC named, session and security, and the fault memory read and cleared.
 - `tests/test_help_window.py`: the manual covers every window it promises and names what the user clicks; the help window lists its sections, jumps to a heading, finds text, and says so when the file is missing.
 - `tests/test_can_bus.py`: opening adapters, so that a channel dictionary from `can.detect_available_configs()` (with its device name, serial and dongle channel) opens as it is and only adapter options reach python-can.
 

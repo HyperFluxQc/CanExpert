@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication, QDialog
 
 from canexpert import can_logger
@@ -300,6 +301,49 @@ class CanLoggerTest(unittest.TestCase):
         self.logger.clear_data()
         self.assertEqual(self.logger._series, {})
         self.assertEqual(self.logger._items[TEMP].text(COL_VALUE), "")
+
+    def test_a_frame_is_timed_by_the_adapter_when_it_says_when_it_arrived(self):
+        # Without a timestamp the frame is timed as it reaches the logger, which includes the GUI delay.
+        self.logger.on_can_message(0x300, engine_frame(20.0, 1.0), 1000.0)
+        self.logger.on_can_message(0x300, engine_frame(21.0, 1.0), 1000.5)
+        self.clock += 99                                   # the GUI clock moved on; the graph must not
+        self.logger.on_can_message(0x300, engine_frame(22.0, 1.0), 1001.0)
+        self.assertEqual(list(self.logger._series[TEMP].times()), [0.0, 0.5, 1.0])
+
+
+class SharedSymbolsTest(unittest.TestCase):
+    """The logger shows the application's symbol databases, and Load DBC... adds to them."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.settings = QSettings(str(Path(self.temp.name) / "settings.ini"), QSettings.IniFormat)
+
+    def test_the_application_databases_are_shown_and_followed(self):
+        from canexpert.symbols import SymbolDatabases
+        symbols = SymbolDatabases([], settings=self.settings)
+        logger = CANLoggerWindow(symbols=symbols)
+        self.addCleanup(logger.close)
+        self.assertEqual(logger.signal_tree.topLevelItemCount(), 0)
+        symbols.set_paths([str(DBC)])                      # changed() reaches the logger
+        self.assertEqual(logger.signal_tree.topLevelItemCount(), 2)
+        self.assertIn(TEMP, logger._items)
+
+        logger.load_dbc_from_path(DBC)                     # its own button feeds the shared list
+        self.assertEqual(symbols.paths, [str(DBC)])
+        self.assertIn(DBC.name, logger.path_status.text())
+
+    def test_several_databases_are_shown_together(self):
+        from canexpert.symbols import SymbolDatabases
+        with tempfile.TemporaryDirectory() as folder:
+            second = Path(folder) / "extra.dbc"
+            second.write_text('BO_ 512 Command: 1 Tester\n SG_ Value : 0|8@1+ (1,0) [0|255] "" Ecu\n',
+                              encoding="utf-8")
+            logger = CANLoggerWindow(symbols=SymbolDatabases([str(DBC), str(second)], settings=self.settings))
+            self.addCleanup(logger.close)
+            self.assertEqual(logger.signal_tree.topLevelItemCount(), 3)
+            self.assertIn("Command.Value", logger._items)
+            self.assertIn(second.name, logger.path_status.text())
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.paths import DBC_DIR
-from canexpert.ui_common import SplitterPanel, enable_maximize, line_icon
+from canexpert.ui_common import SplitterPanel, enable_maximize, is_dark_theme, line_icon
 
 try:
     import numpy as np
@@ -89,10 +89,8 @@ def _curve_args(color, style):
 
 
 def _is_dark(widget) -> bool:
-    """Dark theme when the window colour is darker than the text on it. Read from the palette in use, so the
-    graphs match the rest of the window even when the theme changes while the logger is open."""
-    palette = widget.palette()
-    return palette.color(QPalette.Window).lightness() < palette.color(QPalette.WindowText).lightness()
+    """Dark theme, so the graphs match the rest of the window even when it changes while the logger is open."""
+    return is_dark_theme(widget)
 
 
 def _format(value) -> str:
@@ -212,7 +210,7 @@ class _Series:
 class CANLoggerWindow(QDialog):
     """CANoe-style graphics window: tick DBC signals to add one strip chart per signal."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, symbols=None):
         super().__init__(parent)
         self.setWindowTitle("CAN Logger")
         enable_maximize(self)
@@ -220,6 +218,9 @@ class CANLoggerWindow(QDialog):
         self.resize(1200, 750)
         self.db = None
         self.dbc_path = None
+        # The application's symbol databases, when it has any: Load DBC... then adds to that list and
+        # every window sees the same symbols.
+        self.symbols = symbols
         self._series = {}           # "Message.Signal" -> _Series, for every decoded signal
         self._units = {}
         self._items = {}            # "Message.Signal" -> QTreeWidgetItem
@@ -240,6 +241,10 @@ class CANLoggerWindow(QDialog):
         self._syncing_cursors = False
         self._ticks = 0
         self._build_ui()
+        if symbols is not None:
+            symbols.changed.connect(lambda: self.load_databases(symbols.paths))
+            if symbols.paths:
+                self.load_databases(symbols.paths)
         self._timer = QTimer(self)
         self._timer.setInterval(REDRAW_INTERVAL_MS)
         self._timer.timeout.connect(self._redraw)
@@ -439,21 +444,30 @@ class CANLoggerWindow(QDialog):
             self.load_dbc_from_path(path)
 
     def load_dbc_from_path(self, path: str | Path):
-        """Load DBC from path (called from file dialog or from main when config has DBC)."""
+        """Load one DBC. With the application's symbol databases, the file joins that list instead, so the
+        Trace window and the transmit list see it too."""
+        if self.symbols is not None:
+            self.symbols.add(path)     # changed() comes back as load_databases()
+        else:
+            self.load_databases([path])
+
+    def load_databases(self, paths):
+        """Show the signals of these DBC files; the ticked signals and the recorded data are reset."""
         if not HAS_CANTOOLS:
             return
-        path = Path(path)
-        try:
-            db = cantools.database.load_file(str(path))
-        except Exception as e:
-            prefix = "DBC file error" if "cantools" in type(e).__module__ else "Load error"
-            self.path_status.setText(f"{prefix}: {e}")
-            self.path_status.setStyleSheet("QLineEdit { border: none; background: transparent; color: red; }")
-            return
-        self.db = db
-        self.dbc_path = str(path)
-        self.path_status.setText(path.name)
-        self.path_status.setStyleSheet("QLineEdit { border: none; background: transparent; }")
+        databases, problems = [], []
+        for path in paths:
+            try:
+                databases.append((Path(path), cantools.database.load_file(str(path))))
+            except Exception as exc:
+                prefix = "DBC file error" if "cantools" in type(exc).__module__ else "Load error"
+                problems.append(f"{prefix} in {Path(path).name}: {exc}")
+        self.db = databases[-1][1] if databases else None
+        self.dbc_path = str(databases[-1][0]) if databases else None
+        self.path_status.setText("; ".join(problems) if problems else
+                                 (", ".join(path.name for path, _ in databases) or "No DBC loaded"))
+        colour = " color: red;" if problems else ""
+        self.path_status.setStyleSheet(f"QLineEdit {{ border: none; background: transparent;{colour} }}")
         self._plotted.clear()
         self._colors.clear()
         self._items.clear()
@@ -462,7 +476,8 @@ class CANLoggerWindow(QDialog):
         self.clear_data()
         self.signal_tree.blockSignals(True)
         self.signal_tree.clear()
-        for msg in sorted(db.messages, key=lambda m: m.name.lower()):
+        messages = [message for _, database in databases for message in database.messages]
+        for msg in sorted(messages, key=lambda m: m.name.lower()):
             parent = QTreeWidgetItem(self.signal_tree, [f"{msg.name}  (0x{msg.frame_id:X})"])
             parent.setFlags(Qt.ItemIsEnabled)
             names = []
@@ -476,7 +491,7 @@ class CANLoggerWindow(QDialog):
                 self._items[display_name] = item
                 self._units[display_name] = sig.unit or ""
                 names.append((sig.name, display_name))
-            self._decoders[msg.frame_id] = (msg, names)
+            self._decoders.setdefault(msg.frame_id, (msg, names))   # the first database wins
         self.signal_tree.blockSignals(False)
         self._apply_filter()
         self._rebuild_strips()
@@ -665,8 +680,12 @@ class CANLoggerWindow(QDialog):
 
     # --- data -----------------------------------------------------------------------------
 
-    def on_can_message(self, arb_id: int, data: bytes | list):
-        """Called by main window when a CAN message is received; decode with DBC and append to series."""
+    def on_can_message(self, arb_id: int, data: bytes | list, timestamp: float | None = None):
+        """Called by the main window for every received frame; decode with the DBC and append to the series.
+
+        timestamp is the adapter's (or the recorded one when a file is replayed); without it the frame is
+        timed as it arrives here, which includes the delay through the GUI thread.
+        """
         decoder = self._decoders.get(arb_id)
         if decoder is None:
             return
@@ -675,7 +694,7 @@ class CANLoggerWindow(QDialog):
             decoded = message.decode(bytes(data), decode_choices=False, allow_truncated=True)
         except Exception:
             return
-        now = time.monotonic()
+        now = float(timestamp) if timestamp is not None else time.monotonic()
         if self._t0 is None:
             self._t0 = now
         t = now - self._t0
