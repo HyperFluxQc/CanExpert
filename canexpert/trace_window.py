@@ -207,6 +207,8 @@ class TraceWindow(QDialog):
         """Record one frame; it reaches the view at the next flush."""
         self._pending.append((float(timestamp), str(direction), int(can_id), bytes(data), bool(extended)))
 
+    on_frame = add_frame        # what the main window hands every window of the measurement
+
     def set_source(self, text: str):
         """Name what is being traced, e.g. a replayed file."""
         self.offline_label.setText(text)

@@ -709,6 +709,11 @@ class CANLoggerWindow(QDialog):
                 self._new_curve_data.add(display_name)
                 self._new_values.add(display_name)
 
+    def on_frame(self, timestamp, direction, can_id, data, extended=False):
+        """A frame of the measurement: only received ones carry signal values to plot."""
+        if direction == "RX":
+            self.on_can_message(can_id, data, timestamp)
+
     def clear_data(self):
         self._series.clear()
         self._new_curve_data.clear()

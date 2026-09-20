@@ -55,6 +55,7 @@ from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
 from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
+from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
 from canexpert.trace_window import TraceWindow
 from canexpert.transmit_window import TransmitWindow
@@ -72,7 +73,7 @@ LAYOUT_STATE = "layout/state"
 LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
-TOOL_PANES = ("trace", "logger", "transmit", "console", "diagnostics")   # toolbar buttons that open a pane
+TOOL_PANES = ("trace", "logger", "statistics", "transmit", "console", "diagnostics")   # windows with a switch
 
 
 class MainWindow(QMainWindow):
@@ -116,6 +117,7 @@ class MainWindow(QMainWindow):
         self.recorder = None
         self.replay = None
         self.tool_panes = {}
+        self._bus_state = "unknown"
 
         self.init_ui()
         self.load_configurations()
@@ -158,6 +160,8 @@ class MainWindow(QMainWindow):
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
+            ("statistics", "Statistics", "Frames per identifier, their rate and cycle time, and the bus load",
+             self.open_statistics),
             ("transmit", "Transmit", "Send messages once or cyclically", self.open_transmit),
             ("console", "UDS Console", "Send any UDS service and read the fault memory (no ODX file needed)",
              self.open_uds_console),
@@ -774,6 +778,21 @@ class MainWindow(QMainWindow):
                     logger.on_can_message(can_id, data, timestamp)
         return logger
 
+    def open_statistics(self):
+        """Statistics window, counting from the frames already recorded."""
+        statistics, created = self.open_tool("statistics", "Statistics",
+                                             lambda: StatisticsWindow(self, self.symbols, self.session_bitrate))
+        if created:
+            for frame in list(self.frame_history):
+                statistics.on_frame(*frame)
+            statistics.refresh()
+        return statistics
+
+    def session_bitrate(self) -> int:
+        """The bit rate the measurement runs at, for the bus load; 0 when nothing is connected."""
+        config = self.session_config or self.active_config or {}
+        return int(config.get("bitrate", 0)) if self.can_bus is not None else 0
+
     def open_transmit(self):
         """Transmit window: send messages once or cyclically."""
         widget, _ = self.open_tool("transmit", "Transmit",
@@ -1009,6 +1028,8 @@ class MainWindow(QMainWindow):
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
             worker.message_sent.connect(lambda cid, data, g=generation: self.dispatch_frame(time.time(), "TX", cid, data) if g == self.session_generation else None)
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
+            worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
+            worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
             self.workers["main"] = worker
             runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
@@ -1289,15 +1310,27 @@ class MainWindow(QMainWindow):
                 self.log_verbose(f"Recording stopped: {exc}")
                 self.stop_recording()
         self.log_can(direction, can_id, data)
-        trace = self.tool_widget("trace")
-        if trace is not None:
-            trace.add_frame(timestamp, direction, can_id, data, extended)
-        logger = self.tool_widget("logger")
-        if logger is not None and direction == "RX":
-            logger.on_can_message(can_id, data, timestamp)
-        diagnostics = self.tool_widget("diagnostics")
-        if diagnostics is not None:
-            diagnostics.on_can_message(can_id, data, direction)
+        # Every open window that wants frames declares on_frame(); nothing else needs to know who is open.
+        for name in list(self.tool_panes):
+            handler = getattr(self.tool_widget(name), "on_frame", None)
+            if handler is not None:
+                handler(timestamp, direction, can_id, data, extended)
+
+    def _on_error_frame(self, timestamp):
+        """An error frame: no data, so it is counted rather than listed."""
+        statistics = self.tool_widget("statistics")
+        if statistics is not None:
+            statistics.on_error_frame(timestamp)
+
+    def _on_bus_status(self, status):
+        """The adapter's error state, read while the session runs."""
+        statistics = self.tool_widget("statistics")
+        if statistics is not None:
+            statistics.on_bus_status(status)
+        if status.get("state") == "bus off" and self._bus_state != "bus off":
+            self.log_verbose("The adapter reports bus off: no frames are being sent or received")
+            self._set_status("Bus off — check the wiring, the bit rate and the termination", "red")
+        self._bus_state = status.get("state", "unknown")
 
     def replay_frames(self, frames):
         """Frames read back from a recorded file (offline mode): they reach the windows, not the bus."""

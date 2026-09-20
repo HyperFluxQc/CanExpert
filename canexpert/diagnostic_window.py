@@ -308,6 +308,10 @@ class DiagnosticWindow(QDialog):
         if hasattr(self, "send_btn"):
             self.send_btn.setEnabled(True)
 
+    def on_frame(self, timestamp, direction, can_id, data, extended=False):
+        """A frame of the measurement; the monitor keeps the ones addressed to or from the ECU."""
+        self.on_can_message(can_id, data, direction)
+
     def on_can_message(self, arb_id: int, data: bytes | list, direction: str = "RX"):
         """Called by the main window for every frame; logs the ones addressed to or from the ECU."""
         main = self.main

@@ -71,6 +71,8 @@ _PATHS = {
     "transmit": '<path d="M12 3v10"/><path d="M8.5 6.5 12 3l3.5 3.5"/>'
                 '<path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
     "console": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9.5l3 2.5-3 2.5M13 15h4"/>',
+    "statistics": '<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/>'
+                  '<rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>',
 }
 _COLORS = {
     "connect": ("#15803d", "#6ee7a0"),
@@ -82,6 +84,7 @@ _COLORS = {
     "trace": ("#1f6feb", "#8ab4ff"),
     "transmit": ("#b45309", "#fbbf24"),
     "console": ("#7c3aed", "#c4b5fd"),
+    "statistics": ("#0e7490", "#67e8f9"),
 }
 
 
