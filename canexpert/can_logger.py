@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.paths import DBC_DIR
-from canexpert.ui_common import SplitterPanel, enable_maximize, is_dark_theme, line_icon
+from canexpert.ui_common import SplitterPanel, enable_maximize, is_dark_theme, line_icon, style_toggle
 
 try:
     import numpy as np
@@ -266,7 +266,7 @@ class CANLoggerWindow(QDialog):
         if toggled is not None:
             button.toggled.connect(toggled)
         self._tool_buttons[name] = button
-        return button
+        return style_toggle(button)
 
     @staticmethod
     def _separator():
@@ -281,6 +281,7 @@ class CANLoggerWindow(QDialog):
             symbol = "play" if name == "pause" and button.isChecked() else name
             body = TOOL_ICONS[symbol].replace('fill="currentColor"', f'fill="{colour.name()}"')
             button.setIcon(line_icon(body, colour))
+            style_toggle(button)          # the style sheet's palette(...) is resolved when it is set
 
     def _build_ui(self):
         layout = QVBoxLayout(self)

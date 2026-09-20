@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from canexpert.ui_common import enable_maximize, is_dark_theme, line_icon
+from canexpert.ui_common import enable_maximize, is_dark_theme, line_icon, style_toggle
 
 MAX_ROWS = 20000            # frames kept; the oldest are dropped
 FLUSH_INTERVAL_MS = 80      # how often buffered frames reach the view
@@ -108,7 +108,7 @@ class TraceWindow(QDialog):
         if toggled is not None:
             button.toggled.connect(toggled)
         self._tool_buttons[name] = button
-        return button
+        return style_toggle(button)
 
     @staticmethod
     def _separator():
@@ -123,6 +123,7 @@ class TraceWindow(QDialog):
             symbol = "play" if name == "pause" and button.isChecked() else name
             body = TOOL_ICONS[symbol].replace('fill="currentColor"', f'fill="{colour.name()}"')
             button.setIcon(line_icon(body, colour))
+            style_toggle(button)          # the style sheet's palette(...) is resolved when it is set
 
     def _build_ui(self):
         layout = QVBoxLayout(self)

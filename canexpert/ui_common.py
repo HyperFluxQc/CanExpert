@@ -120,6 +120,24 @@ def line_icon(body, color):
                      sizes=(16, 20, 24, 32))
 
 
+# A button that switches an option on stays pressed in, with an accent line under it, so the state is
+# visible at a glance. Qt's own checked look is a faint grey box, and a style sheet that names other
+# states suppresses it altogether - which left the toolbar's Passive button looking identical on and off.
+TOGGLE_STYLE = """
+    QToolButton { border: 1px solid transparent; border-radius: 4px; }
+    QToolButton:hover { background: palette(midlight); }
+    QToolButton:checked { background: palette(mid); border: 1px solid palette(dark);
+                          border-bottom: 2px solid palette(highlight); }
+    QToolButton:checked:hover { background: palette(midlight); }
+"""
+
+
+def style_toggle(button):
+    """Give a tool button the pressed-in look. Setting it again re-reads palette(...) after a theme change."""
+    button.setStyleSheet(TOGGLE_STYLE)
+    return button
+
+
 # -----------------------------------------------------------------------------
 # CaptionButton: Windows 11-style panel buttons (minimize / restore / close)
 # -----------------------------------------------------------------------------

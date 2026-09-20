@@ -27,6 +27,10 @@ the same window, so you can arrange them side by side (see *Arranging the window
 Each panel has a **–** button to shrink it to a strip and **×** to close it; the *File* menu brings a
 closed one back. While a database is loaded, the side panels shrink automatically to leave it room.
 
+A button that switches an option on — **Passive** in the toolbar, and the toggles in the Trace window,
+the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for as long as
+that option is active, so you can see at a glance what is switched on.
+
 At startup CAN Expert selects the receiver you used last, shows every receiver you have connected to
 before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below).
 

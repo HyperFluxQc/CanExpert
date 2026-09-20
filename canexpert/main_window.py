@@ -138,11 +138,16 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(28, 28))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        # A checked button (Passive) keeps a pressed-in background with an accent line, so an option that
+        # is on can be seen without reading the tooltip.
         toolbar.setStyleSheet("""
             QToolBar { spacing: 4px; padding: 6px; border: none; }
-            QToolBar QToolButton { padding: 6px 8px; border-radius: 6px; }
+            QToolBar QToolButton { padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; }
             QToolBar QToolButton:hover { background: palette(midlight); }
             QToolBar QToolButton:pressed { background: palette(mid); }
+            QToolBar QToolButton:checked { background: palette(mid); border: 1px solid palette(dark);
+                                           border-bottom: 3px solid palette(highlight); }
+            QToolBar QToolButton:checked:hover { background: palette(midlight); }
         """)
         self._toolbar_actions = {}
         entries = [
@@ -1048,8 +1053,13 @@ class MainWindow(QMainWindow):
 
     def _on_passive_toggled(self, passive):
         self._settings.setValue(PASSIVE, bool(passive))
+        self.passive_action.setToolTip(
+            "Passive is on: CAN Expert does not transmit at all. Press again to allow transmitting."
+            if passive else "Passive: a measurement only listens, CAN Expert never transmits")
         if self.can_bus is not None:
             self._set_status("Passive mode applies to the next measurement", "orange")
+        else:
+            self._set_status("Passive: nothing will be transmitted" if passive else "Passive off", "gray")
 
     def measurement_session(self):
         """(bus, worker, configuration) while a measurement runs, for the UDS console; else None."""
