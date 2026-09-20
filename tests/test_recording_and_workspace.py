@@ -162,6 +162,40 @@ class MeasurementTest(unittest.TestCase):
             self.assertFalse(dock.isHidden(), name)   # the test window itself is never shown
             self.assertIs(opener(), widget, f"{name} must be reused, not rebuilt")
 
+    def test_a_tool_button_stays_pressed_while_its_pane_is_open(self):
+        action = self.window._toolbar_actions["trace"]
+        self.assertTrue(action.isCheckable())
+        self.assertFalse(action.isChecked())
+
+        action.trigger()                                  # a press on the toolbar button
+        self.assertTrue(action.isChecked())
+        dock = self.window.tool_docks["trace"]
+        self.assertFalse(dock.isHidden())
+
+        action.trigger()                                  # pressing it again closes the pane
+        self.assertFalse(action.isChecked())
+        self.assertTrue(dock.isHidden())
+
+        # Closing the pane by its own button lets the toolbar button go, and what it recorded is kept.
+        trace = self.window.open_trace()
+        self.assertTrue(action.isChecked())
+        trace.add_frame(1000.0, "RX", 0x321, b"\x01")
+        trace.flush()
+        dock.close()
+        self.assertFalse(action.isChecked())
+        self.assertIs(self.window.open_trace(), trace)
+        self.assertEqual(len(trace.frames), 1)
+
+    def test_every_pane_button_follows_its_pane(self):
+        for name in main.TOOL_PANES:
+            action = self.window._toolbar_actions[name]
+            action.trigger()
+            self.assertTrue(action.isChecked(), name)
+            self.assertFalse(self.window.tool_docks[name].isHidden(), name)
+            action.trigger()
+            self.assertFalse(action.isChecked(), name)
+            self.assertTrue(self.window.tool_docks[name].isHidden(), name)
+
     def test_the_layout_is_remembered_and_desktops_can_be_saved(self):
         self.window.open_trace()
         self.window.save_desktop("Analysis")

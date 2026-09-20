@@ -288,6 +288,13 @@ area)`, which builds each one on first use, gives it an object name (needed by `
 shared `DockTitleBar`. `tool_widget(name)` returns an already-open pane, and is what `dispatch_frame()`
 uses to decide who needs the frame.
 
+The toolbar action of each pane in `TOOL_PANES` is checkable and works as a switch: `_toggle_tool()`
+opens the pane or closes (hides) it, and `eventFilter()` follows the dock's `ShowToParent` and
+`HideToParent` events to keep the button in step whichever way the pane was opened or closed - its own
+close button, a saved desktop or Reset layout. Those two events arrive even while the main window is
+hidden, which `visibilityChanged` does not. A closed pane is hidden rather than destroyed, so it keeps
+what it recorded.
+
 `restoreState()` only places docks that exist, so `_apply_layout()` re-applies the saved arrangement
 whenever a pane is created later; `_default_state` is captured before the first restore, which is what
 **Reset layout** goes back to. An embedded dialog's `finished` signal (Esc) closes its pane instead of

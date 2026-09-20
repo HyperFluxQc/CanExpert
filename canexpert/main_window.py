@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 import can
-from PyQt5.QtCore import QSize, Qt, QTimer
+from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import (
     QAction,
@@ -70,6 +70,7 @@ LAYOUT_GEOMETRY = "layout/geometry"
 LAYOUT_STATE = "layout/state"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
+TOOL_PANES = ("trace", "logger", "transmit", "console", "diagnostics")   # toolbar buttons that open a pane
 
 
 class MainWindow(QMainWindow):
@@ -165,7 +166,15 @@ class MainWindow(QMainWindow):
         for name, label, hint, callback in entries:
             if name == "trace":
                 toolbar.addSeparator()
-            action = QAction(toolbar_icon(name), label, self, triggered=callback)
+            action = QAction(toolbar_icon(name), label, self)
+            if name in TOOL_PANES:
+                # A tool button works as a switch: it stays pressed while its pane is open, pressing it
+                # again closes the pane, and closing the pane by its own button lets the toolbar go.
+                action.setCheckable(True)
+                action.toggled.connect(lambda shown, n=name, show=callback: self._toggle_tool(n, shown, show))
+                hint = f"{hint}\nPress again to close the pane"
+            else:
+                action.triggered.connect(callback)
             action.setToolTip(hint)
             action.setStatusTip(hint)
             button = QToolButton()
@@ -565,11 +574,8 @@ class MainWindow(QMainWindow):
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
         tools_menu.addAction('Form Designer').triggered.connect(self.open_form_designer)
-        tools_menu.addAction('Trace...').triggered.connect(self.open_trace)
-        tools_menu.addAction('CAN Logger...').triggered.connect(self.open_can_logger)
-        tools_menu.addAction('Transmit...').triggered.connect(self.open_transmit)
-        tools_menu.addAction('UDS Console...').triggered.connect(self.open_uds_console)
-        tools_menu.addAction('Diagnostic Window...').triggered.connect(self.open_diagnostic_window)
+        for name in TOOL_PANES:
+            tools_menu.addAction(self._toolbar_actions[name])   # checked while the pane is open
         tools_menu.addSeparator()
         tools_menu.addAction('Symbol databases...').triggered.connect(self.edit_symbol_databases)
 
@@ -732,6 +738,7 @@ class MainWindow(QMainWindow):
             self.addDockWidget(area, dock)
             self.tool_docks[name] = dock
             created = True
+            dock.installEventFilter(self)   # keeps the toolbar button in step (see eventFilter)
             if isinstance(widget, QDialog):
                 # Esc in an embedded dialog would hide it inside its pane and leave an empty one;
                 # close the pane and keep the widget ready for the next time it is opened.
@@ -740,6 +747,26 @@ class MainWindow(QMainWindow):
         dock.show()
         dock.raise_()
         return dock.widget(), created
+
+    def eventFilter(self, watched, event):
+        """A tool pane opened or closed by any route - its own close button, a saved desktop, Reset
+        layout - keeps its toolbar button in step. These two events arrive even while the main window
+        itself is hidden, which visibilityChanged does not."""
+        if event.type() in (QEvent.ShowToParent, QEvent.HideToParent):
+            for name, dock in self.tool_docks.items():
+                action = self._toolbar_actions.get(name)
+                if dock is watched and action is not None and action.isCheckable():
+                    action.setChecked(event.type() == QEvent.ShowToParent)
+                    break
+        return super().eventFilter(watched, event)
+
+    def _toggle_tool(self, name, shown, show):
+        """The toolbar switch of a tool pane: open it, or close the one that is open."""
+        dock = self.tool_docks.get(name)
+        if shown:
+            show()
+        elif dock is not None:
+            dock.close()      # hidden, not destroyed: reopening shows what it recorded meanwhile
 
     def open_trace(self):
         """Trace pane: every frame of the measurement, with the frames already recorded."""

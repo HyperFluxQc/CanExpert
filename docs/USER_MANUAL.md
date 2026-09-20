@@ -22,14 +22,18 @@ The main window has a toolbar and four panels:
 | **Log** | *Debug / Verbose* for application messages, *CAN Monitor* for the frames sent and received. |
 
 The tool windows — Trace, CAN Logger, Transmit, UDS Console, Diagnostics — open as further panels of
-the same window, so you can arrange them side by side (see *Arranging the windows*).
+the same window, so you can arrange them side by side (see *Arranging the windows*). Their toolbar
+buttons are switches: the button **stays pressed in** while its panel is open, pressing it again closes
+the panel, and closing the panel with its own **×** lets the button go. A panel that is closed keeps
+what it had, so reopening it shows everything recorded meanwhile.
 
 Each panel has a **–** button to shrink it to a strip and **×** to close it; the *File* menu brings a
-closed one back. While a database is loaded, the side panels shrink automatically to leave it room.
+closed built-in panel back. While a database is loaded, the side panels shrink automatically to leave
+it room.
 
-A button that switches an option on — the toggles in the Trace window, the CAN Logger and the Form
-Designer — stays pressed in with a coloured line under it for as long as that option is active, so you
-can see at a glance what is switched on.
+Options inside the windows work the same way: a button that switches something on — the toggles in the
+Trace window, the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for
+as long as that option is active, so you can see at a glance what is switched on.
 
 At startup CAN Expert selects the receiver you used last, shows every receiver you have connected to
 before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below).
