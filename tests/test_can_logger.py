@@ -11,7 +11,7 @@ from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication, QDialog
 
 from canexpert import can_logger
-from canexpert.can_logger import CANLoggerWindow, COL_C1, COL_C2, COL_DELTA, COL_VALUE, VALUE_REFRESH_TICKS
+from canexpert.can_logger import CANLoggerWindow, COL_C1, COL_C2, COL_DELTA, READOUT_REFRESH_TICKS
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parent.parent / "DBC" / "dummy_ecu.dbc"
@@ -41,7 +41,7 @@ class CanLoggerTest(unittest.TestCase):
             self.logger.on_can_message(arb_id, data)
 
     def redraw(self):
-        for _ in range(VALUE_REFRESH_TICKS):
+        for _ in range(READOUT_REFRESH_TICKS):
             self.logger._redraw()
 
     def test_the_toolbar_is_small_symbol_buttons(self):
@@ -169,8 +169,8 @@ class CanLoggerTest(unittest.TestCase):
         x, y = self.logger._plots[TEMP][1].getData()
         self.assertEqual(list(x), [0.0, 0.5])
         self.assertEqual(list(y), [20.0, 25.5])
-        self.assertEqual(self.logger._items[TEMP].text(COL_VALUE), "25.5")
-        self.assertEqual(self.logger._items[RUNNING].text(COL_VALUE), "1")     # recorded even if not plotted
+        self.assertEqual(self.logger._series[TEMP].last(), 25.5)
+        self.assertEqual(self.logger._series[RUNNING].last(), 1.0)             # recorded even if not plotted
         self.logger.set_signal_plotted(PRESSURE)                               # history appears at once
         self.assertEqual(list(self.logger._plots[PRESSURE][1].getData()[1]), [1.0, 1.5])
 
@@ -302,7 +302,6 @@ class CanLoggerTest(unittest.TestCase):
         self.assertIn(["0.25", PRESSURE, "1.25"], rows)
         self.logger.clear_data()
         self.assertEqual(self.logger._series, {})
-        self.assertEqual(self.logger._items[TEMP].text(COL_VALUE), "")
 
     def test_a_frame_is_timed_by_the_adapter_when_it_says_when_it_arrived(self):
         # Without a timestamp the frame is timed as it reaches the logger, which includes the GUI delay.

@@ -50,7 +50,6 @@ class StatisticsTest(unittest.TestCase):
         self.assertAlmostEqual(rows[0x300]["max"], 100.0, places=3)
         self.assertAlmostEqual(rows[0x300]["rate"], 11.0, places=3)      # within the one-second window
         self.assertEqual(rows[0x7E0]["direction"], "TX")
-        self.assertEqual(rows[0x300]["data"], b"\x01\x02")
 
     def test_a_jittery_cycle_shows_its_spread(self):
         for timestamp in (1000.0, 1000.1, 1000.35, 1000.4):

@@ -62,10 +62,11 @@ CURVE_STYLES = ("Line", "Line + dots", "Dots")
 CURSOR_DASH = [30, 10]      # dash and gap of the measurement cursors, in pixels
 
 STRIP_MIN_HEIGHT = 110      # px per signal graph; more strips than fit make the graph area scroll
-REDRAW_INTERVAL_MS = 50     # curves; the value column refreshes every VALUE_REFRESH_TICKS redraws
-VALUE_REFRESH_TICKS = 4
+REDRAW_INTERVAL_MS = 50     # curves; the cursor readout refreshes every READOUT_REFRESH_TICKS redraws
+READOUT_REFRESH_TICKS = 4
 AXIS_WIDTH = 64             # fixed left-axis width keeps all strips' time axes aligned
-COL_SIGNAL, COL_VALUE, COL_UNIT, COL_C1, COL_C2, COL_DELTA, COL_MIN, COL_MAX, COL_MEAN, COL_STD = range(10)
+# The signals' current values are the Data window's; the list here is for choosing and measuring.
+COL_SIGNAL, COL_UNIT, COL_C1, COL_C2, COL_DELTA, COL_MIN, COL_MAX, COL_MEAN, COL_STD = range(9)
 CURSOR_COLUMNS = (COL_C1, COL_C2, COL_DELTA, COL_MIN, COL_MAX, COL_MEAN, COL_STD)
 DEFAULT_SAMPLE_LIMIT = 1_000_000     # per signal: 16 MB of time and value, about 3 hours at 100 Hz
 EXPORT_FORMATS = {"Values in rows (CSV)": "long_csv", "One column per signal (CSV)": "wide_csv",
@@ -308,7 +309,6 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         self._group_plots = []      # one (PlotItem, cursor 1, cursor 2) per graph, top to bottom
         self._hover = {}            # graph row -> (dotted vertical line, dotted horizontal line, readout)
         self._new_curve_data = set()     # signals whose graph needs redrawing
-        self._new_values = set()         # signals whose Value column needs refreshing
         self._t0 = None
         self._curve_style = CURVE_STYLES[0]
         self._x_range = None        # fixed time range from Graph options, else None
@@ -404,12 +404,11 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         filter_row.addWidget(self.plotted_only_cb)
         signals_layout.addLayout(filter_row)
         self.signal_tree = QTreeWidget()
-        self.signal_tree.setHeaderLabels(["Signal", "Value", "Unit", "Cursor 1", "Cursor 2", "Δ",
+        self.signal_tree.setHeaderLabels(["Signal", "Unit", "Cursor 1", "Cursor 2", "Δ",
                                           "Min", "Max", "Mean", "σ"])
         self.signal_tree.headerItem().setToolTip(COL_MEAN, "Mean of the samples between the cursors")
         self.signal_tree.headerItem().setToolTip(COL_STD, "Standard deviation of the samples between the cursors")
         self.signal_tree.setColumnWidth(COL_SIGNAL, 230)
-        self.signal_tree.setColumnWidth(COL_VALUE, 80)
         self.signal_tree.setColumnWidth(COL_UNIT, 50)
         for column in CURSOR_COLUMNS:
             self.signal_tree.setColumnWidth(column, 70)
@@ -543,7 +542,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
             names = []
             for sig in sorted(msg.signals, key=lambda s: s.name.lower()):
                 display_name = f"{msg.name}.{sig.name}"
-                item = QTreeWidgetItem(parent, [sig.name, "", sig.unit or ""])
+                item = QTreeWidgetItem(parent, [sig.name, sig.unit or ""])
                 item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
                 item.setCheckState(COL_SIGNAL, Qt.Unchecked)
                 item.setData(COL_SIGNAL, Qt.UserRole, display_name)
@@ -826,7 +825,6 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
                     series = self._series[display_name] = _Series(self._sample_limit)
                 series.append(t, float(value))
                 self._new_curve_data.add(display_name)
-                self._new_values.add(display_name)
 
     def _graph_time(self, timestamp):
         """A timestamp as a time on the graph's axis."""
@@ -854,7 +852,6 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
             series = self._series[name] = _Series(self._sample_limit)
         series.append(self._graph_time(timestamp), number)
         self._new_curve_data.add(name)
-        self._new_values.add(name)
 
     def _add_sysvar_item(self, name, unit):
         branch = next((self.signal_tree.topLevelItem(index) for index in range(self.signal_tree.topLevelItemCount())
@@ -866,7 +863,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
                 branch.setFlags(Qt.ItemIsEnabled)
                 branch.setData(COL_SIGNAL, Qt.UserRole + 1, "sysvars")
                 branch.setExpanded(True)
-            item = QTreeWidgetItem(branch, [name, "", unit])
+            item = QTreeWidgetItem(branch, [name, unit])
             item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
             item.setCheckState(COL_SIGNAL, Qt.Unchecked)
             item.setData(COL_SIGNAL, Qt.UserRole, name)
@@ -885,10 +882,9 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
     def clear_data(self):
         self._series.clear()
         self._new_curve_data.clear()
-        self._new_values.clear()
         self._t0 = None
         for item in self._items.values():
-            for column in (COL_VALUE, *CURSOR_COLUMNS):
+            for column in CURSOR_COLUMNS:
                 item.setText(column, "")
         for name in self._plots:
             self._update_curve(name)
@@ -903,12 +899,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         for name in self._new_curve_data & self._plots.keys():
             self._update_curve(name)
         self._new_curve_data.clear()
-        if self._ticks % VALUE_REFRESH_TICKS == 0:
-            for name in self._new_values:
-                item = self._items.get(name)
-                if item is not None:
-                    item.setText(COL_VALUE, _format(self._series[name].last()))
-            self._new_values.clear()
+        if self._ticks % READOUT_REFRESH_TICKS == 0:
             self._update_cursor_readout()
         if self.follow_btn.isChecked() and self._group_plots:
             latest = self._latest_time()
@@ -924,7 +915,6 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         self._refresh_tool_icons()
         if not paused:  # catch up with what was recorded while paused
             self._new_curve_data.update(self._series)
-            self._new_values.update(self._series)
 
     def _on_manual_range(self, mask=None):
         if mask is None or mask[0]:

@@ -29,8 +29,8 @@ from canexpert.ui_common import enable_maximize, write_tree_csv
 
 RATE_WINDOW = 3.0        # seconds of history the rates and the bus load are worked out over
 REFRESH_MS = 500
-COL_ID, COL_NAME, COL_DIR, COL_COUNT, COL_RATE, COL_CYCLE, COL_MIN, COL_MAX, COL_LOAD, COL_DATA = range(10)
-HEADERS = ["ID", "Name", "Dir", "Count", "Frames/s", "Cycle (ms)", "Min", "Max", "Bus load", "Last data"]
+COL_ID, COL_NAME, COL_DIR, COL_COUNT, COL_RATE, COL_CYCLE, COL_MIN, COL_MAX, COL_LOAD = range(9)
+HEADERS = ["ID", "Name", "Dir", "Count", "Frames/s", "Cycle (ms)", "Min", "Max", "Bus load"]
 # A classic CAN frame carries this many bits besides its data: identifier, control and CRC fields,
 # the acknowledge slot and the end of frame, plus the three-bit interframe space.
 FRAME_OVERHEAD_BITS = {False: 47, True: 67}
@@ -51,7 +51,7 @@ class Statistics:
 
     def __init__(self, window: float = RATE_WINDOW):
         self.window = window
-        self.frames = {}        # (id, extended) -> {"count", "direction", "times" deque, "data", "bits"}
+        self.frames = {}        # (id, extended) -> {"count", "direction", "times" deque, "bits"}
         self.total = 0
         self.error_frames = 0
         self.state = "unknown"
@@ -62,11 +62,10 @@ class Statistics:
         entry = self.frames.get((can_id, extended))
         if entry is None:
             entry = self.frames[(can_id, extended)] = {"count": 0, "direction": direction,
-                                                       "times": deque(), "data": b"", "bits": 0}
+                                                       "times": deque(), "bits": 0}
         entry["count"] += 1
         entry["direction"] = direction if entry["direction"] == direction else "RX/TX"
         entry["times"].append(float(timestamp))
-        entry["data"] = bytes(data)
         entry["bits"] = frame_bits(len(data), extended)
         self.total += 1
         self.first = self.first if self.first is not None else float(timestamp)
@@ -102,7 +101,7 @@ class Statistics:
                          "direction": entry["direction"], "rate": rate,
                          "cycle": sum(gaps) / len(gaps) if gaps else None,
                          "min": min(gaps) if gaps else None, "max": max(gaps) if gaps else None,
-                         "load": rate * entry["bits"], "data": entry["data"]})
+                         "load": rate * entry["bits"]})
         return rows
 
     def bus_load(self, bitrate, now=None) -> float:
@@ -164,7 +163,8 @@ class StatisticsWindow(QDialog):
         for column, width in ((COL_ID, 90), (COL_NAME, 170), (COL_DIR, 50), (COL_COUNT, 70),
                               (COL_RATE, 80), (COL_CYCLE, 90), (COL_MIN, 70), (COL_MAX, 70), (COL_LOAD, 80)):
             self.tree.setColumnWidth(column, width)
-        self.tree.header().setSectionResizeMode(COL_DATA, QHeaderView.Stretch)
+        self.tree.header().setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
+        self.tree.header().setStretchLastSection(False)
         layout.addWidget(self.tree, 1)
 
         self.totals = QLabel("No frames")
@@ -210,8 +210,7 @@ class StatisticsWindow(QDialog):
                       "" if row["cycle"] is None else f"{row['cycle']:.1f}",
                       "" if row["min"] is None else f"{row['min']:.1f}",
                       "" if row["max"] is None else f"{row['max']:.1f}",
-                      f"{100.0 * row['load'] / self.bitrate():.2f} %" if self.bitrate() else "",
-                      row["data"].hex(" ").upper()]
+                      f"{100.0 * row['load'] / self.bitrate():.2f} %" if self.bitrate() else ""]
             item = QTreeWidgetItem(values)
             for column in (COL_COUNT, COL_RATE, COL_CYCLE, COL_MIN, COL_MAX, COL_LOAD):
                 item.setTextAlignment(column, Qt.AlignRight | Qt.AlignVCenter)
