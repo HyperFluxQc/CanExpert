@@ -76,6 +76,11 @@ _PATHS = {
     "data": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14.5h18M11 9v11"/>',
     "statistics": '<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/>'
                   '<rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>',
+    "write": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6.5 9h7M6.5 12.5h5M6.5 16h3"/>'
+             '<path d="m14 17 1-3 4.5-4.5 2 2L17 16l-3 1z"/>',
+    "sysvars": '<path d="M7 5c-2 0-2 2-2 3.5S4 11 3 12c1 1 2 1.5 2 3.5S5 19 7 19"/>'
+               '<path d="M17 5c2 0 2 2 2 3.5s1 2.5 2 3.5c-1 1-2 1.5-2 3.5S19 19 17 19"/>'
+               '<path d="M9 9l6 6M15 9l-6 6"/>',
 }
 _COLORS = {
     "connect": ("#15803d", "#6ee7a0"),
@@ -90,6 +95,8 @@ _COLORS = {
     "simulation": ("#0f766e", "#5eead4"),
     "data": ("#2563eb", "#93c5fd"),
     "statistics": ("#0e7490", "#67e8f9"),
+    "write": ("#4b5563", "#d1d5db"),
+    "sysvars": ("#9d174d", "#f9a8d4"),
 }
 
 

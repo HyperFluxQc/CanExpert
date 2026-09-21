@@ -11,18 +11,21 @@ from datetime import datetime
 from pathlib import Path
 
 import can
-from PyQt5.QtCore import QSize, Qt, QTimer
-from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
+from PyQt5.QtGui import QColor, QKeySequence, QPalette
 from PyQt5.QtWidgets import (
+    QAbstractSpinBox,
     QAction,
     QActionGroup,
     QApplication,
+    QComboBox,
     QDialog,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -32,6 +35,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QScrollArea,
     QTabWidget,
+    QTextEdit,
     QToolBar,
     QToolButton,
     QTreeWidget,
@@ -64,12 +68,14 @@ from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
 from canexpert.simulation_window import SimulationWindow
 from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
+from canexpert.sysvars import SystemVariables, SystemVariablesWindow
 from canexpert.trace_window import TraceWindow
 from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.transmit_window import TransmitWindow
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
 from canexpert.workspace import add_pane, create_workspace, make_pane
+from canexpert.write_window import WriteWindow
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
@@ -85,7 +91,8 @@ LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "simulation", "console",
-              "diagnostics")   # the windows with a switch on the toolbar
+              "diagnostics", "write", "sysvars")   # the windows with a switch on the toolbar
+WRITE_HISTORY = 5000               # Write window lines kept for when it is opened
 
 
 class MainWindow(QMainWindow):
@@ -129,6 +136,13 @@ class MainWindow(QMainWindow):
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
         # One clock for the monitor, the Trace, the Logger and the Diagnostic Window (clock.py).
         self.clock = MeasurementClock()
+        # System variables (sysvars.py), the script's Write output, and the bus state scripts react to.
+        self.sysvars = SystemVariables(self._settings, self)
+        self.sysvars.changed.connect(self._on_sysvar_changed)
+        self.sysvar_history = deque(maxlen=FRAME_HISTORY)      # (when, name, value) for a Logger opened later
+        self.write_history = deque(maxlen=WRITE_HISTORY)       # (when, level, text) for a Write window opened later
+        self._bus_state = None
+        self._keys_watched = False
         self.time_display = self._settings.value(TIME_DISPLAY, TIME_DISPLAYS[0], type=str)
         if self.time_display not in TIME_DISPLAYS:
             self.time_display = TIME_DISPLAYS[0]
@@ -189,6 +203,8 @@ class MainWindow(QMainWindow):
             ("console", "UDS Console", "Send any UDS service and read the fault memory (no ODX file needed)",
              self.open_uds_console),
             ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
+            ("write", "Write", "What the panel script writes, and its variables as it runs", self.open_write),
+            ("sysvars", "System Variables", "Values shared by the script, the windows and you", self.open_sysvars),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
             ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",
              self.open_flashing),
@@ -829,6 +845,77 @@ class MainWindow(QMainWindow):
         elif pane is not None:
             pane.toggleView(False)   # hidden, not destroyed: reopening shows what it recorded meanwhile
 
+    # --- the script's side: Write window, system variables, keys ---
+
+    def write_message(self, level: str, text: str):
+        """A line of the panel script's output. Errors go to the Debug log as well."""
+        entry = (time.time(), level, text)
+        self.write_history.append(entry)
+        window = self.tool_widget("write")
+        if window is not None:
+            window.add(*entry)
+        if level == "error":
+            self.log_verbose(text)
+
+    def script_watch(self):
+        """(the script's globals, the names CAN Expert put there), for the Write window's watch."""
+        runtime = self.script_runtime
+        return (runtime.namespace, runtime.hidden_names) if runtime is not None else ({}, ())
+
+    def open_write(self):
+        """Write window: the script's output and its variables."""
+        window, created = self.open_tool("write", "Write", lambda: WriteWindow(self, self.clock, self.script_watch),
+                                         "bottom")
+        if created:
+            for entry in list(self.write_history):
+                window.add(*entry)
+        return window
+
+    def open_sysvars(self):
+        """System variables: the values the script, the windows and the user share."""
+        window, _ = self.open_tool("sysvars", "System Variables", lambda: SystemVariablesWindow(self.sysvars, self))
+        return window
+
+    def _on_sysvar_changed(self, name, value, when):
+        """A system variable changed: numeric ones are kept for the Logger, which plots them."""
+        if isinstance(value, str):
+            return
+        definition = self.sysvars.definition(name)
+        unit = definition.unit if definition is not None else ""
+        self.sysvar_history.append((when, name, value, unit))
+        logger = self.tool_widget("logger")
+        if logger is not None:
+            logger.on_sysvar(name, value, when, unit)
+
+    def _watch_keys(self, on: bool):
+        """While a measurement runs, key presses reach the script's @on_key handlers."""
+        application = QApplication.instance()
+        if on and not self._keys_watched:
+            application.installEventFilter(self)
+        elif not on and self._keys_watched:
+            application.removeEventFilter(self)
+        self._keys_watched = on
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress and watched.isWindowType() and self.script_runtime is not None:
+            self._key_pressed(event)
+        return super().eventFilter(watched, event)
+
+    def _key_pressed(self, event):
+        """Hand a key to the script - unless it is being typed into a field, or a dialog is waiting."""
+        if event.isAutoRepeat() or QApplication.activeModalWidget() is not None:
+            return
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QAbstractSpinBox)) or \
+                (isinstance(focus, (QPlainTextEdit, QTextEdit)) and not focus.isReadOnly()) or \
+                (isinstance(focus, QComboBox) and focus.isEditable()):
+            return
+        text = event.text()
+        key = text if len(text) == 1 and text.isprintable() and not text.isspace() else \
+            QKeySequence(event.key()).toString()
+        if key:
+            self.script_runtime.post("key", key, None)
+
     def open_trace(self):
         """Trace window, with the frames already recorded."""
         trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols, self.clock), "bottom")
@@ -857,6 +944,8 @@ class MainWindow(QMainWindow):
             for timestamp, direction, can_id, data, _extended in list(self.frame_history):
                 if direction == "RX":
                     logger.on_can_message(can_id, data, timestamp)
+            for when, name, value, unit in list(self.sysvar_history):
+                logger.on_sysvar(name, value, when, unit)
         return logger
 
     def open_data(self):
@@ -1133,14 +1222,18 @@ class MainWindow(QMainWindow):
             worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
             worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
             self.workers["main"] = worker
-            runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
+            self.sysvars.reset()                   # every variable back to its initial value
+            runtime = ScriptRuntime(mailbox, config, self.panel.values(), self, sysvars=self.sysvars)
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
-            runtime.logged.connect(self.log_verbose)
+            runtime.message.connect(lambda level, text, g=generation: self.write_message(level, text)
+                                    if g == self.session_generation else None)
             runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
             runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
             runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
             self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
             self.script_runtime = runtime
+            self._bus_state = None
+            self._watch_keys(True)
             worker.start()
             script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
             runtime.dbc = self.panel.dbc
@@ -1184,6 +1277,7 @@ class MainWindow(QMainWindow):
 
     def on_disconnect_clicked(self):
         self.session_generation += 1
+        self._watch_keys(False)
         if self.flash_runner is not None:
             self.flash_runner.cancel()      # the bus is about to go away under it
         self._close_flash_dialog()
@@ -1423,6 +1517,7 @@ class MainWindow(QMainWindow):
         report_result(self, ok, text)
 
     def closeEvent(self, event):
+        self._watch_keys(False)
         self.save_layout()          # before the panes go away, so they come back where they were
         self.node_timer.stop()
         self.stop_ecu_monitor()
@@ -1486,6 +1581,8 @@ class MainWindow(QMainWindow):
 
     def _on_error_frame(self, timestamp):
         """An error frame: no data, so it is counted rather than listed."""
+        if self.script_runtime is not None:
+            self.script_runtime.post("error_frame", None, timestamp)
         statistics = self.tool_widget("statistics")
         if statistics is not None:
             statistics.on_error_frame(timestamp)
@@ -1498,7 +1595,10 @@ class MainWindow(QMainWindow):
         if status.get("state") == "bus off" and self._bus_state != "bus off":
             self.log_verbose("The adapter reports bus off: no frames are being sent or received")
             self._set_status("Bus off — check the wiring, the bit rate and the termination", "red")
-        self._bus_state = status.get("state", "unknown")
+        state = status.get("state", "unknown")
+        if self._bus_state is not None and state != self._bus_state and self.script_runtime is not None:
+            self.script_runtime.post("bus_state", None, state)      # @on_bus_state
+        self._bus_state = state
 
     def replay_frames(self, frames):
         """Frames read back from a recorded file (offline mode): they reach the windows, not the bus."""

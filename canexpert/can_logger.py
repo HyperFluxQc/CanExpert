@@ -775,7 +775,8 @@ class CANLoggerWindow(QDialog):
     def _axis_label(self, group):
         """The left axis of a graph: the signal and its unit, or the units the signals share."""
         if len(group) == 1:
-            name = group[0].split(".", 1)[1]
+            # "Message.Signal" is labelled with the signal; a system variable keeps its Namespace::Name.
+            name = group[0] if "::" in group[0] else group[0].split(".", 1)[-1]
             unit = self._units.get(group[0])
             return f"{name} [{unit}]" if unit else name
         units = sorted({self._units.get(name, "") for name in group} - {""})
@@ -865,13 +866,7 @@ class CANLoggerWindow(QDialog):
             decoded = message.decode(bytes(data), decode_choices=False, allow_truncated=True)
         except Exception:
             return
-        now = float(timestamp) if timestamp is not None else time.monotonic()
-        if self._t0 is None:
-            start = self.clock.start if self.clock is not None else None
-            # The measurement's start when it is on the same clock as the frame, so a time on the graph is
-            # the same number as the Trace's Relative time; the first frame otherwise.
-            self._t0 = start if start is not None and timestamp is not None and start <= now else now
-        t = now - self._t0
+        t = self._graph_time(timestamp)
         for signal_name, display_name in names:
             value = decoded.get(signal_name)
             if isinstance(value, (int, float)):
@@ -881,6 +876,55 @@ class CANLoggerWindow(QDialog):
                 series.append(t, float(value))
                 self._new_curve_data.add(display_name)
                 self._new_values.add(display_name)
+
+    def _graph_time(self, timestamp):
+        """A timestamp as a time on the graph's axis."""
+        now = float(timestamp) if timestamp is not None else time.monotonic()
+        if self._t0 is None:
+            start = self.clock.start if self.clock is not None else None
+            # The measurement's start when it is on the same clock as the frame, so a time on the graph is
+            # the same number as the Trace's Relative time; the first frame otherwise.
+            self._t0 = start if start is not None and timestamp is not None and start <= now else now
+        return now - self._t0
+
+    def on_sysvar(self, name: str, value, timestamp=None, unit: str = ""):
+        """A system variable changed: it can be plotted like a signal, from the System variables branch.
+        Text variables have nothing to plot and are left out."""
+        if isinstance(value, str):
+            return
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return
+        if name not in self._items:
+            self._add_sysvar_item(name, unit)
+        series = self._series.get(name)
+        if series is None:
+            series = self._series[name] = _Series(self._sample_limit)
+        series.append(self._graph_time(timestamp), number)
+        self._new_curve_data.add(name)
+        self._new_values.add(name)
+
+    def _add_sysvar_item(self, name, unit):
+        branch = next((self.signal_tree.topLevelItem(index) for index in range(self.signal_tree.topLevelItemCount())
+                       if self.signal_tree.topLevelItem(index).data(COL_SIGNAL, Qt.UserRole + 1) == "sysvars"), None)
+        self.signal_tree.blockSignals(True)
+        try:
+            if branch is None:
+                branch = QTreeWidgetItem(self.signal_tree, ["System variables"])
+                branch.setFlags(Qt.ItemIsEnabled)
+                branch.setData(COL_SIGNAL, Qt.UserRole + 1, "sysvars")
+                branch.setExpanded(True)
+            item = QTreeWidgetItem(branch, [name, "", unit])
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+            item.setCheckState(COL_SIGNAL, Qt.Unchecked)
+            item.setData(COL_SIGNAL, Qt.UserRole, name)
+            item.setToolTip(COL_SIGNAL, f"System variable {name}")
+            self._items[name] = item
+            self._units[name] = unit
+        finally:
+            self.signal_tree.blockSignals(False)
+        self._apply_filter()
 
     def on_frame(self, timestamp, direction, can_id, data, extended=False):
         """A frame of the measurement: only received ones carry signal values to plot."""

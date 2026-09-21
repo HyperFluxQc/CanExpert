@@ -727,6 +727,35 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         window.set_time_display("Absolute")
         self.assertNotIn("1.500  ", window.can_log.toPlainText(), "the monitor is redrawn in the new display")
 
+    def test_the_script_writes_to_its_own_window_hears_keys_and_shares_variables(self):
+        from PyQt5.QtCore import QEvent
+        from PyQt5.QtGui import QKeyEvent
+        (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_start
+def hello(api):
+    api.log("written by the script")
+    api.sysvar.set("Bench::Ready", 1)
+
+@on_key("k")
+def key(api, key):
+    api.log(f"key {key}")
+""")
+        self.window.on_connect_clicked()
+        self.assertTrue(self.window._keys_watched, "keys reach the script while the measurement runs")
+        write = self.window.open_write()
+        self.assertTrue(spin_until(lambda: any("written by the script" in line for line in write.lines())))
+        self.assertNotIn("written by the script", self.window.debug_log.toPlainText(),
+                         "the Debug log stays the application's")
+        self.window.show()
+        APP.processEvents()
+        QApplication.sendEvent(self.window.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
+        self.assertTrue(spin_until(lambda: any("key k" in line for line in write.lines())), write.lines())
+        self.assertEqual(self.window.sysvars.get("Bench::Ready"), 1)
+        logger = self.window.open_can_logger()                     # opened later: filled from the history
+        self.assertIn("Bench::Ready", logger._items)
+        self.window.on_disconnect_clicked()
+        self.assertFalse(self.window._keys_watched)
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)
