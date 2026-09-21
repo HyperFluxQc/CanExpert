@@ -288,6 +288,7 @@ class SimulationWindow(QDialog):
 
     def hideEvent(self, event):
         """Closing the window stops the simulation: nothing keeps sending out of sight."""
-        if self.stop_when_hidden:
+        # getattr: Qt also hides a window it is destroying, after Python has already cleared its attributes.
+        if getattr(self, "stop_when_hidden", False):
             self.start_btn.setChecked(False)
         super().hideEvent(event)

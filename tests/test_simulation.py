@@ -219,6 +219,17 @@ class TransmitPaneTest(unittest.TestCase):
         self.assertTrue(self.pane.messages.isVisibleTo(self.pane))
         self.assertEqual(closed, [QDialog.Rejected])
 
+    def test_a_page_qt_hides_while_destroying_it_does_not_raise(self):
+        # When the garbage collector frees a window, Python clears its attributes before Qt's destructor
+        # hides it; an exception there surfaced as a SystemError in whatever Qt call was running.
+        from PyQt5.QtGui import QHideEvent
+        from canexpert.transmit_window import TransmitWindow
+        symbols = SymbolDatabases([str(DBC)], settings=self.settings)
+        for page in (TransmitWindow(None, symbols, lambda *args: None, self.settings),
+                     SimulationWindow(None, symbols, lambda *args: None, self.settings)):
+            page.__dict__.clear()
+            page.hideEvent(QHideEvent())
+
 
 if __name__ == "__main__":
     unittest.main()

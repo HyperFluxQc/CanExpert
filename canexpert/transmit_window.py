@@ -434,6 +434,7 @@ class TransmitWindow(QDialog):
 
     def hideEvent(self, event):
         """Closing the window stops every cyclic row: nothing keeps sending out of sight."""
-        if self.stop_when_hidden:
+        # getattr: Qt also hides a window it is destroying, after Python has already cleared its attributes.
+        if getattr(self, "stop_when_hidden", False):
             self.stop_all()
         super().hideEvent(event)
