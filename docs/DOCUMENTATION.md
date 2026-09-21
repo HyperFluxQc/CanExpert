@@ -136,7 +136,7 @@ flowchart LR
 | **transmit_pane.py** | `TransmitPane`: the Transmit window, the transmit list and the simulated nodes as two tabs. Both pages are built with `stop_when_hidden=False`, so they keep sending behind another tab; the main window calls `stop_sending()` when the pane is closed. `open_transmit(nodes=True)` brings the nodes tab to the front. |
 | **uds_console.py** | The UDS console: a service tree built from `uds.client.FUNCTIONS`, a request form generated from each function's signature (`_field()`/`_arguments()`), exchanges on a background thread over a private mailbox (`uds.client.make_request()`), the ODX tab (`odx_services.OdxTab`) whose requests go through the same exchange and whose layer decodes every answer once a file is loaded, log lines with the measurement time, the session/security bar with the state strip (session, the P2/P2* the ECU asked for, lock state) and the key source (mask or seed & key DLL), and a fault-memory tab (`status_text()` spells out the DTC status bits). |
 | **recording.py** | `Recorder` (python-can writers, format by file name), `read_frames()`, `ReplayWorker` (a thread that hands frames back at their recorded spacing) and `ReplayDialog`. |
-| **workspace.py** | The central workspace: the Qt Advanced Docking System (PyQtAds) configured for CAN Expert (`create_workspace()`), the windows put into it (`make_pane()`, `add_pane()`, `set_content()` for a window made before its content), and `pane_names()` - the windows a saved state places. |
+| **workspace.py** | The central workspace: the Qt Advanced Docking System (PyQtAds) configured for CAN Expert (`create_workspace()`), the windows put into it (`make_pane()`, `add_pane()`, `set_content()` for a window made before its content), `pane_names()` - the windows a saved state places - and what a restored state needs put right: `put_back()` for a window it did not know, `drop_empty_floating()`, `fit_on_screen()` for a floating window too small or off every screen. |
 | **symbols.py** | `SymbolDatabases`: the DBC files the application shares (paths in the settings), frame id → message, `decode()`, `signal_names()`, `unit()`, and the dialog that edits the list. A file that cannot be read lands in `errors` without failing the others. |
 | **odx_services.py** | ODX with odxtools: `load_database()` (ODX/PDX/CDD), `first_layer()`, `services()`, `decoded()` (a reply decoded by the service that asked, or by the layer), and `OdxTab`, the console tab that lists a layer's services and builds their request forms. |
 | **simulator/ecu.py** | The simulated UDS ECU for Kvaser virtual channels or any python-can interface: sessions, security levels (mask or seed & key DLL, `security_levels()`), service rules (`service_rules()`), DID tables whose entries can follow a signal or need a session or a level (`data_tables()`), periodic data (0x2A, `_send_periodic()`), ResponseOnEvent (0x86, `_fire_events()`), I/O control (0x2F) over the signals, memory by address (0x23/0x3D, `write_memory()` merging segments), flashing with a bootloader that takes over after a reset with an invalid application and an optional CRC-32 check, ISO-TP flow control, and transport errors on purpose (`_Mistaken`, `_chance()`). `tick()` does what the ECU does by itself - application frames, periodic data, events, the operation cycle timer, the S3 timeout - and `serve()` runs it with the receive loop. The channel lock goes by request ID, so several can share a channel. `EcuConfig` holds every setting and is read for each frame, so changes apply while running (`refresh()` takes changed tables and signals); `load_profile()`/`save_profile()` store it as JSON, `check_config()` refuses a broken one; `main()` opens the window, or runs headless with `--console`. |
@@ -405,9 +405,15 @@ that pair. It first makes the page panes the state names (`pane_names()` reads t
 XML), and afterwards `_settle_panes()` applies what the state cannot know: a window with nothing to
 show - the Database with no database loaded, a tool not opened yet, a page the database does not have -
 is closed again, keeping its place, and a window the state does not know at all (saved before it
-existed) is put back at its usual place, since PyQtAds would otherwise leave it out of the workspace and
-reopen it floating. `_default_layout`, captured before the first restore, is what **Reset layout** goes
-back to. An embedded dialog's `finished` signal (Esc) closes its pane instead of leaving an empty one.
+existed) is put back at its usual place with `put_back()`: PyQtAds leaves such a window out of the
+workspace, marked closed - opened, it would float - and closing a window it already thinks closed does
+nothing, so docked again it would sit in a visible area with no tab. `put_back()` opens it for a moment
+to put the marks right, then closes it properly. `drop_empty_floating()` then removes the floating windows
+the state brought back with nothing in them, which PyQtAds would otherwise keep and save for ever.
+`open_tool()` and the page windows pass through `fit_on_screen()`, which gives a floating window too
+small to use, or off every screen, a usable size where it can be seen. `_default_layout`, captured before
+the first restore, is what **Reset layout** goes back to. An embedded dialog's `finished` signal (Esc)
+closes its pane instead of leaving an empty one.
 
 ---
 

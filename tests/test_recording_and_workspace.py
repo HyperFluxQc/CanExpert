@@ -333,6 +333,55 @@ class MeasurementTest(unittest.TestCase):
         APP.processEvents()
         self.assertFalse(self.window.tool_panes["logger"].isFloating())
 
+    def visible_areas(self):
+        return [name for name, pane in self.window.workspace.dockWidgetsMap().items()
+                if pane.dockAreaWidget() is not None and pane.dockAreaWidget().isVisible()]
+
+    def test_a_window_the_layout_did_not_know_leaves_no_empty_strip(self):
+        # A layout saved before a window existed: PyQtAds marks the window closed, and it used to come back
+        # docked in a visible area with no tab - an empty strip - because closing it again did nothing.
+        self.window.show()
+        workspace, logger = self.window.workspace, self.window._tool_slots["logger"]
+        workspace.removeDockWidget(logger)
+        older = self.window.layout_state()                     # a layout without the logger
+        add_back = workspace.addDockWidget(ads.CenterDockWidgetArea, logger, None)
+        self.assertIsNotNone(add_back)
+        self.window.apply_layout_state(older)
+        APP.processEvents()
+        self.assertEqual(self.visible_areas(), [], "nothing loaded, nothing open: nothing to see")
+        self.assertTrue(logger.isClosed())
+        self.window.open_can_logger()
+        APP.processEvents()
+        self.assertEqual(self.visible_areas(), ["pane_logger"])
+        self.assertFalse(logger.isFloating())
+        self.assertTrue(logger.tabWidget().isVisible() and logger.widget().isVisible())
+
+    def test_floating_windows_left_empty_go_and_a_sliver_is_made_usable(self):
+        self.window.show()
+        self.window.open_trace()
+        trace = self.window.tool_panes["trace"]
+        trace.setFloating()
+        APP.processEvents()
+        self.window.workspace.addDockWidget(ads.BottomDockWidgetArea, trace, self.window.database_pane.dockAreaWidget())
+        APP.processEvents()                                    # back in the workspace: its floating window is empty
+        self.window.apply_layout_state(self.window.layout_state())
+        APP.sendPostedEvents(None, main.QEvent.DeferredDelete)
+        self.assertEqual(self.window.workspace.floatingWidgets(), [], "the empty floating window is gone")
+
+        trace.setFloating()
+        APP.processEvents()
+        floating = trace.dockContainer().floatingWidget()
+        floating.setGeometry(20, 20, 600, 40)                   # a sliver, as a layout had saved it
+        trace.toggleView(False)
+        self.window.open_trace()
+        APP.processEvents()
+        self.assertGreaterEqual(floating.height(), min(300, APP.primaryScreen().availableGeometry().height()))
+        floating.move(20000, 20000)                            # a monitor that is not there any more
+        trace.toggleView(False)
+        self.window.open_trace()
+        APP.processEvents()
+        self.assertTrue(APP.primaryScreen().availableGeometry().intersects(floating.geometry()))
+
     def test_the_pages_of_a_database_after_reset_layout(self):
         (self.databases / "panel_2026-09-18.xml").write_text(PANEL.replace(
             "</page></pages>", '</page><page name="Body"><value id="2" label="Door" binding_value="door" '

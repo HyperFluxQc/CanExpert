@@ -70,7 +70,8 @@ from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
-from canexpert.workspace import add_pane, create_workspace, make_pane, pane_names, set_content
+from canexpert.workspace import (add_pane, create_workspace, drop_empty_floating, fit_on_screen, make_pane,
+                                 pane_names, put_back, set_content)
 from canexpert.write_window import WriteWindow
 
 # A question mark in a circle, for the manual button beside the Help menu.
@@ -88,7 +89,7 @@ DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement 
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
               "write", "sysvars")   # the windows with a switch on the toolbar
-TOOL_AREAS = {"trace": "bottom", "transmit": "bottom", "write": "bottom"}   # the others tab with the panel
+TOOL_AREAS = {"trace": "bottom", "transmit": "bottom", "write": "bottom"}   # the others: an area of their own
 PAGE_PANE = re.compile(r"pane_page_(\d+)$")
 WRITE_HISTORY = 5000               # Write window lines kept for when it is opened
 
@@ -308,6 +309,7 @@ class MainWindow(QMainWindow):
         # a saved arrangement places it when it is applied. Placing windows made later would mean
         # applying the arrangement again, which moves and reopens everything else too.
         self._tool_slots = {}
+        self._settling = False     # a layout is being put right: the toolbar switches do not act
         for name, label, _hint, _callback in entries:
             if name in TOOL_PANES:
                 area = TOOL_AREAS.get(name, "center")
@@ -762,10 +764,13 @@ class MainWindow(QMainWindow):
                 widget.finished.connect(lambda _result, p=pane, w=widget: (p.toggleView(False), w.show()))
         pane.toggleView(True)
         pane.setAsCurrentTab()
+        fit_on_screen(pane)
         return pane.widget(), created
 
     def _toggle_tool(self, name, shown, show):
         """The toolbar switch of a tool window: open it, or close the one that is open."""
+        if self._settling:
+            return
         pane = self.tool_panes.get(name)
         if shown:
             show()
@@ -948,25 +953,28 @@ class MainWindow(QMainWindow):
 
         A window it opened that has nothing to show - the Database with no database loaded, a tool not
         opened yet, a page the database does not have - is closed again, keeping its place. A window it
-        did not know at all (saved before that window existed) would otherwise be left out of the
-        workspace, and come back floating: it goes to its usual place instead."""
-        for name, pane in self._tool_slots.items():
-            if pane.dockAreaWidget() is None:
-                area = TOOL_AREAS.get(name, "center")
-                add_pane(self.workspace, pane, area, beside=self.database_pane if area != "center" else None)
-                pane.toggleView(False)
-            elif name not in self.tool_panes:
-                pane.toggleView(False)
-        for pane in self._page_slots:
-            if pane.dockAreaWidget() is None:
-                add_pane(self.workspace, pane, beside=self.database_pane)
-                pane.toggleView(pane in self.page_panes)
-            elif pane not in self.page_panes:
-                pane.toggleView(False)
-        if self.database_pane.dockAreaWidget() is None:
-            add_pane(self.workspace, self.database_pane)
-        if self.app_database is None:
-            self.database_pane.toggleView(False)
+        did not know at all (saved before that window existed) goes back to its usual place (put_back).
+        Floating windows it kept with nothing in them go."""
+        self._settling = True
+        try:
+            for name, pane in self._tool_slots.items():
+                if pane.dockAreaWidget() is None:
+                    area = TOOL_AREAS.get(name, "center")
+                    put_back(self.workspace, pane, area, beside=self.database_pane if area != "center" else None)
+                elif name not in self.tool_panes:
+                    pane.toggleView(False)
+            for pane in self._page_slots:
+                if pane.dockAreaWidget() is None:
+                    put_back(self.workspace, pane, beside=self.database_pane, open_=pane in self.page_panes)
+                elif pane not in self.page_panes:
+                    pane.toggleView(False)
+            if self.database_pane.dockAreaWidget() is None:
+                put_back(self.workspace, self.database_pane, open_=self.app_database is not None)
+            if self.app_database is None:
+                self.database_pane.toggleView(False)
+        finally:
+            self._settling = False
+        drop_empty_floating(self.workspace)
 
     def _page_slot(self, index):
         """The window for page index (1 onwards; page 0 is the Database window), made the first time."""
@@ -1196,6 +1204,7 @@ class MainWindow(QMainWindow):
             self.config_list.setEnabled(False)
             self.database_pane.toggleView(True)
             self.database_pane.setAsCurrentTab()
+            fit_on_screen(self.database_pane)
             self.channels_dock.show()
             self._minimize_side_panels()
             self.refresh_channel_list()
@@ -1557,6 +1566,7 @@ class MainWindow(QMainWindow):
             pane.setWindowTitle(name)
             set_content(pane, window)
             pane.toggleView(True)
+            fit_on_screen(pane)
             self.page_panes.append(pane)
         if self.page_panes:
             self.database_pane.setAsCurrentTab()

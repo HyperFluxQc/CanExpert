@@ -551,7 +551,8 @@ Workspace windows behave as they do in CANoe:
 - **Several windows in one area** share a tab bar. The **▾** button on the right of the area lists its
   tabs, the **⧉** button pulls the area out as a floating window, and **✕** closes it.
 - **Drag a tab out of the window** to float it on its own; a floating window can hold several tabs, and
-  dragging it back over the workspace docks it again.
+  dragging it back over the workspace docks it again. A floating window too small to use, or left on a
+  screen that is no longer there, opens at a usable size on a screen you have.
 - A **✕** on a tab closes that window. Closing keeps it: its toolbar button goes back to idle, and
   reopening it shows everything it recorded meanwhile.
 

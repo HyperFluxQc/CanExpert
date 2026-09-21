@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 
 from PyQt5.QtCore import QByteArray, qUncompress
+from PyQt5.QtGui import QGuiApplication
 from PyQt5.QtWidgets import QWidget
 # PyQtAds is a compiled binding against the Qt libraries PyQt5 ships, and importing PyQt5 is what puts
 # those libraries on the search path. This import must therefore stay below the one above.
@@ -36,6 +37,7 @@ AREAS = {
     "left": ads.LeftDockWidgetArea,
     "right": ads.RightDockWidgetArea,
 }
+MIN_FLOATING = (480, 300)   # a floating window smaller than this shows nothing useful
 
 
 def create_workspace(main_window) -> ads.CDockManager:
@@ -61,6 +63,48 @@ def add_pane(workspace, pane, area: str = "center", beside=None):
     """Put a pane in the workspace: tabbed with beside ('center'), or splitting off it."""
     target = beside.dockAreaWidget() if beside is not None else None
     return workspace.addDockWidget(AREAS.get(area, ads.CenterDockWidgetArea), pane, target)
+
+
+def put_back(workspace, pane, area: str = "center", beside=None, open_: bool = False):
+    """Dock a window a restored state did not know, open or closed.
+
+    PyQtAds leaves such a window out of the workspace and marks it closed, and closing a window it
+    already thinks closed does nothing. Docked again but still marked closed, it would sit in a visible
+    area with no tab - an empty strip - so it is opened for a moment, which puts the marks right, and
+    then closed properly, its area hiding with it."""
+    add_pane(workspace, pane, area, beside)
+    pane.toggleView(True)
+    if not open_:
+        pane.toggleView(False)
+
+
+def drop_empty_floating(workspace):
+    """Remove the floating windows a restored state brought back with nothing in them (PyQtAds keeps
+    one for every window ever floated, and saves them all)."""
+    for floating in workspace.floatingWidgets():
+        container = floating.dockContainer()
+        if container is not None and not container.dockWidgets():
+            floating.deleteLater()
+
+
+def fit_on_screen(pane, minimum=MIN_FLOATING):
+    """A floating window too small to show anything, or off every screen (a layout from another monitor
+    setup), is given a usable size where it can be seen. A docked window is left alone."""
+    container = pane.dockContainer()
+    if container is None or not container.isFloating() or container.floatingWidget() is None:
+        return
+    window = container.floatingWidget()
+    frame = window.geometry()
+    screen = QGuiApplication.screenAt(frame.center()) or QGuiApplication.primaryScreen()
+    if screen is None:
+        return
+    room = screen.availableGeometry()
+    width = min(max(frame.width(), minimum[0]), room.width())
+    height = min(max(frame.height(), minimum[1]), room.height())
+    x = min(max(frame.x(), room.left()), room.right() + 1 - width)
+    y = min(max(frame.y(), room.top()), room.bottom() + 1 - height)
+    if (x, y, width, height) != (frame.x(), frame.y(), frame.width(), frame.height()):
+        window.setGeometry(x, y, width, height)
 
 
 def set_content(pane, widget: QWidget):
