@@ -22,7 +22,7 @@ The main window has a toolbar and four panels:
 | **Log** | *Debug / Verbose* for application messages, *CAN Monitor* for the frames sent and received. |
 
 The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, Simulation, UDS Console,
-Diagnostics — open in the **workspace** in
+Diagnostics, Write, System Variables — open in the **workspace** in
 the middle, together with the Database panel, where they can be tabbed, split and floated (see
 *Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
 window is open, pressing it again closes the window, and closing the window with its own **×** lets the
@@ -47,7 +47,7 @@ A configuration describes how to talk to an ECU. Double-click one to edit it, or
 | Field | Meaning |
 |---|---|
 | **Name** | The name in the list, and the file name in `Configurations/`. |
-| **Bitrate** | Bus speed. It must match the vehicle or bench (500000 is the most common). |
+| **Bitrate** | Bus speed. It must match the vehicle or bench (500000 is the most common). Pick one of the list or type any value, e.g. `83333`. |
 | **Identifier size** | 11-bit (standard) or 29-bit (extended) CAN identifiers. |
 | **SERVER ID** | The identifier requests are sent to, e.g. `7E0` for one ECU, or `7DF` to address every ECU (OBD). |
 | **ECU ID** | The identifier the ECU answers on, e.g. `7E8`. |
@@ -60,6 +60,15 @@ A configuration describes how to talk to an ECU. Double-click one to edit it, or
 
 With SERVER ID `7DF`, "are you there" requests stay on `7DF`, but real UDS requests go to the ECU's own
 address (ECU ID − 8, so `7E0`), because a request spanning several frames may not be broadcast.
+
+The **ISO-TP** group under the fields is kept by CAN Expert itself, per configuration name — never in the
+configuration file:
+
+| Field | Meaning |
+|---|---|
+| **Padding** | Fill every frame CAN Expert sends to 8 bytes with this byte — requests, flow control and TesterPresent alike. On by default with `CC`: many ECUs ignore diagnostic frames shorter than 8 bytes. |
+| **Block size asked of the ECU** | When an ECU answers with a long message, how many consecutive frames it may send before waiting for the next flow control (*no limit* by default). |
+| **STmin asked of the ECU** | The gap it must leave between them: `00`-`7F` milliseconds, `F1`-`F9` 100-900 µs. The dialog says which. |
 
 **Import** and **Export** copy a configuration file in or out; the files live in `Configurations/`.
 
@@ -78,6 +87,14 @@ TesterPresent at the configured interval.
 the same as pressing Connect.
 
 **Disconnect** stops the script and the traffic, and closes the adapter.
+
+The **CAN Monitor** tab of the Log lists the frames, each with its own time — the adapter's for received
+frames — so a line there matches the same frame in the Trace. Its filter bar takes identifiers, ranges
+and names (`7E0-7EF, EngineData`), **Pass** or **Stop**, and **RX only** / **TX only**; a new filter applies
+to what was already seen too. **View → Time display** chooses between the time of day (**Absolute**) and
+seconds since the measurement started (**Relative**) for the monitor and the Diagnostic Window. The
+measurement starts when you connect, start the ECU check or replay a file, and the Trace's *Relative*
+time and the CAN Logger's time axis count from the same moment.
 
 ### Checking ECUs
 
@@ -98,6 +115,44 @@ Under a responding ECU, CAN Expert also lists the database that configuration wo
 
 One caution: TesterPresent keeps the ECU's diagnostic session alive. If the ECU was in an extended or
 programming session, it stays there while it is being checked; stop the check to let it time out.
+
+### Channel setup
+
+**Right-click a channel → Channel setup...** sets how that adapter channel is opened. It belongs to the
+channel, not to a configuration, and applies from the next connection.
+
+- **Sample point** and **SJW**: the bit timing is worked out for the adapter's clock as you type —
+  `BRP 2, TSEG1 13, TSEG2 2, SJW 2 - sample point 87.5 % on a 16 MHz clock`. *The adapter's default*
+  leaves it to the driver.
+- **Listen-only**: receive without acknowledging frames or sending anything — for a vehicle bus you must
+  not disturb. No TesterPresent is sent, anything that tries to send says the channel is listen-only, and
+  the channel shows **[listen-only]**.
+- **Receive only**: identifiers and ranges the channel lets through (`7E8, 300-3FF, 18DAF100x`), in the
+  adapter where it can. The configuration's ECU identifiers always get through, so diagnostics keep working.
+- **Find the bit rate**: listens at each common bit rate — listen-only, so a wrong guess never puts an
+  error frame on the bus — until one carries clean traffic.
+
+python-can offers the sample point and listen-only for **Kvaser** and **Vector** adapters; for **IXXAT**
+the dialog says they are not available rather than pretending.
+
+## Scanning for ECUs
+
+**Connection → Scan for ECUs...** (or right-click a channel → *Scan for ECUs on this channel...*) finds
+what is on the bus, without disconnecting:
+
+1. Choose the addressing — **11-bit identifiers** (`7E0` to `7E7` by default, any range) or **29-bit normal
+   fixed addressing** (`18DA<target><tester>`, targets `00` to `FF`, tester `F1`) — and press **Scan**.
+2. CAN Expert sends TesterPresent to each identifier and lists every ECU that answers, with the identifier
+   it answered on.
+3. Each one is then asked which of the **default** and **extended** sessions it accepts, and for its
+   **identification**: VIN, part and serial numbers, software and hardware versions, supplier. The
+   *programming* session is tried only when you tick it — on some ECUs it starts the bootloader. Every
+   ECU is left in the default session.
+
+While connected, the scan shares the session's bus and pauses its TesterPresent meanwhile, so an answer
+is never credited to the wrong identifier. **New configuration from this ECU...** opens the configuration
+dialog with its identifiers filled in, **Export...** saves the list as CSV, and **Find the bit rate** opens
+the channel setup.
 
 ## Symbol databases
 
@@ -127,7 +182,8 @@ The toolbar has **Clear**, **Pause** (freezes the view while recording continues
 newest frame in view) and **Colour** (gives each identifier its own colour).
 
 **Filter** takes identifiers, ranges and names: `7E0, 300-3FF, EngineData`. *Pass* shows only what
-matches, *Stop* hides it. **Find next** searches the rows shown, and **Export...** writes them to CSV.
+matches, *Stop* hides it, and **RX only** / **TX only** keeps one direction on top of either. **Find next**
+searches the rows shown, and **Export...** writes them to CSV.
 
 **Transport** turns the list from CAN frames into the diagnostic messages they carry. The ISO 15765-2
 frames of one request or response — single frame, or a first frame and its consecutive frames — become a
@@ -188,9 +244,15 @@ decoded as well, so a message you transmit shows the values you put in it.
 
 ## Using a panel
 
-The **Database** panel shows the controls of the loaded database. Buttons, switches, sliders and input
-boxes send what their script or DBC binding says; displays, gauges, LEDs and trends show what arrives.
-Everything the panel does is written in its Python script — see *Writing panel scripts*.
+Each page of the loaded database is a window of the workspace, as CANoe's panels are: the first page in
+the **Database** window, the others tabbed beside it. Drag a page's tab to put two pages side by side, or
+float one onto a second screen; the saved desktops keep where they are. Buttons, switches, sliders and
+input boxes send what their script or DBC binding says; displays, gauges, LEDs and trends show what
+arrives. Everything the panel does is written in its Python script — see *Writing panel scripts*.
+
+**Zoom** at the top of every page: **Fit** scales the page to its window and follows it as the window is
+resized; **50 %** to **200 %** keep it at that size and scroll. **Ctrl + mouse wheel** steps the zoom. A page
+keeps its zoom, also in a newer dated version of the database.
 
 ## Form Designer
 
@@ -242,14 +304,57 @@ def tick(api):
     api.ui.set_value("uptime", RDBI(0x0100).int)
 ```
 
+More events, as CAPL has them:
+
+```python
+@on_key("F5")                              # a key pressed in CAN Expert ("*": any key)
+def hotkey(api, key):
+    api.set_signal("EngineCommand.Start", 1)
+
+@on_error_frame                            # an error frame on the bus
+def trouble(api, timestamp):
+    api.warn("error frame")
+
+@on_bus_state                              # error active, error passive or bus off
+def state(api, state):
+    api.ui.set_value("bus", state)
+
+@on_sysvar("Engine::TargetSpeed")          # a system variable changed
+def target(api, value):
+    api.set_signal("EngineCommand.Speed", value)
+```
+
+Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
+
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.
-`api` gives you `api.can`, `api.uds`, `api.ui`, `api.signal/set_signal/send_message`, `api.log`,
-`api.every`, `api.sleep` and `api.dll`. Callbacks run one at a time on a background thread and stop when
-you disconnect.
+`api` gives you `api.can`, `api.uds`, `api.ui`, `api.signal/set_signal/send_message`, `api.sysvar`,
+`api.log` / `api.write` and `api.warn`, `api.every`, `api.sleep` and `api.dll`. Callbacks run one at a
+time on a background thread and stop when you disconnect.
+
+**Tools → Write** is the script's own window: what `api.log`, `api.write` and `api.warn` say, and the
+script's errors, each line with its time and a colour for warnings and errors. It can show only warnings
+and errors, find text, and save what it holds. Its **Script variables** tab lists the script's global
+variables and their values while it runs. The Debug log stays the application's; script errors appear in
+both.
 
 The full API is in [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts), and
 `examples/` holds a runnable panel and script.
+
+## System variables
+
+**Tools → System Variables** lists values the script, the windows and you share, named
+`Namespace::Name` (`Engine::TargetSpeed`), as CANoe's system variables are.
+
+- The script sets and reads them — `api.sysvar.set("Engine::TargetSpeed", 1200)`,
+  `api.sysvar["Engine::TargetSpeed"]` — and reacts with `@on_sysvar`. Setting one that does not exist
+  yet creates it.
+- **Double-click a value** in the window to type a new one; the script hears it at once.
+- **New...** defines one with its type (float, int, bool, text), initial value, unit and comment;
+  **Edit...**, **Remove**, and **Load...** / **Save...** as a JSON file to share a set.
+- The CAN Logger plots the numeric ones from its **System variables** branch, next to the bus signals.
+
+Every variable starts again from its initial value when you connect.
 
 ## CAN Logger
 
@@ -268,7 +373,7 @@ The toolbar uses small symbols:
 | **Fit** | four corner brackets | Shows everything recorded. |
 | **Lock X** | a padlock over the horizontal axis | Mouse zoom and pan leave the time axis alone. |
 | **Lock Y** | a padlock beside the vertical axis | Mouse zoom and pan leave the value axes alone. |
-| **Cursors** | two cursor markers | Two measurement cursors across all graphs. |
+| **Cursors** | two cursor markers | Two measurement cursors across all graphs, with the statistics between them. |
 | **Combine** | two curves in one frame | Draws every ticked signal in one graph instead of one each. |
 
 Every button keeps its name in the tooltip, so hovering tells you which is which.
@@ -282,7 +387,8 @@ throttle against engine speed, say — is what this is for.
 Hovering a graph shows a dotted crosshair with the time and value under the mouse.
 
 **Cursors** — turn them on and drag the two dashed lines marked **#1** and **#2**. The bar above the graphs
-shows both times and Δt, and the signal list gains *Cursor 1*, *Cursor 2* and *Δ* columns for every signal.
+shows both times and Δt, and the signal list gains *Cursor 1*, *Cursor 2* and *Δ* columns for every signal,
+and *Min*, *Max*, *Mean* and *σ* of its samples between the two cursors.
 
 **Graph options...**
 - *Draw signals as*: **Line** holds each value until the next one (how an ECU signal behaves),
@@ -291,7 +397,19 @@ shows both times and Δt, and the signal list gains *Cursor 1*, *Cursor 2* and *
 - *Fixed time range*: type exact bounds, e.g. from `50.0134 s` to `55.2455 s`. It turns Follow off.
 - *Autoscale* or a *Fixed value range* for every graph. **Fit** clears both fixed ranges.
 
-**Save CSV...** writes everything decoded — time, signal, value — not only what is on screen.
+**Export...** writes the data as
+- **Values in rows (CSV)** — time, signal, value, one row per sample;
+- **One column per signal (CSV)** — a row for every moment any signal changed, each column holding its
+  signal's value until the next sample;
+- **MDF 4 (.mf4)** — the measurement format CANoe, CANape and most analysis tools open, with units and the
+  measurement's start time;
+- **Picture of the graphs (PNG)**.
+
+For the data formats choose **Everything recorded**, **What is on screen** or **Between the cursors**, and
+all signals or only those with a graph.
+
+**Graph options...** also sets how many samples each signal keeps (1,000,000 by default); beyond that the
+oldest go, so a long measurement cannot fill the memory. To keep everything, record to a file.
 
 Frames are timed by the adapter, so the Logger, the Trace window and a recorded file all agree.
 
@@ -412,8 +530,9 @@ you can study a recording made in a vehicle at your desk.
 
 ## Arranging the windows
 
-The middle of the main window is the **workspace**, where the Database panel and the analysis windows —
-Trace, Statistics, Data, CAN Logger, Transmit, Simulation, UDS Console, Diagnostics — live. Configuration, CAN Channels and Log stay
+The middle of the main window is the **workspace**, where the pages of the loaded database and the
+analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, Simulation, UDS Console, Diagnostics,
+Write, System Variables — live. Configuration, CAN Channels and Log stay
 as fixed panels around it.
 
 Workspace windows behave as they do in CANoe:
@@ -449,8 +568,15 @@ security, and the flashing rules (TransferData size, accepted formats, memory ra
 apply immediately and can be saved as profiles. **Show CAN frames** logs every frame, flow control
 included.
 
-Only one dummy ECU can run per channel: a second one is refused, because two ECUs answering the same
-requests break security access and flashing.
+The **Data** tab edits what the ECU answers with, while it runs: the **DIDs** (data as hex, shown as text
+where it is text, each writable or not), the **DTCs** with their status, snapshot record and extended data
+record (so the UDS Console's *Snapshot* and *Extended data* buttons get answers), and **forced negative
+responses** — a service always answered `7F <service> <NRC>`, to see how a tester copes with a refusal.
+They are part of the ECU's profile.
+
+Several dummy ECUs can share a channel when each has its own identifiers (Addressing) and only one sends
+the periodic frames. A second ECU answering the *same* requests is refused, because two ECUs answering
+them break security access and flashing.
 
 ## Where things are kept
 
@@ -465,8 +591,9 @@ requests break security access and flashing.
 Recordings go wherever you save them; `.blf` is the most compact.
 
 The window arrangement and its saved desktops, the theme, the symbol databases, the transmit list, the
-messages ticked for simulation, the flashing sequence settings and the receiver used last are all
-remembered between runs.
+messages ticked for simulation, the flashing sequence settings, each configuration's ISO-TP settings, each
+channel's setup, the system variable definitions, the panel zooms, the time display and the receiver used
+last are all remembered between runs.
 
 ## If something does not work
 

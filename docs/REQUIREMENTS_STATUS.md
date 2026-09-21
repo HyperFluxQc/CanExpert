@@ -43,7 +43,21 @@ in a file of its own.
   windows offline and never touches a bus.
 - **Symbol databases**: one DBC list shared by the Trace window, the CAN Logger and the transmit list.
 - **Workspace**: the tool windows are panes of the main window; the arrangement is saved and can be kept
-  as named desktops.
+  as named desktops. Every page of a panel database is a window of it, zoomed or fitted to the window.
+- **Channel setup** (per adapter channel): sample point and SJW, listen-only, a receive filter in the
+  adapter, and bit rate detection by listening at each common rate.
+- **ISO-TP** (per configuration, in the settings): padding of every frame and the flow control the tester
+  asks for.
+- **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions
+  each ECU accepts and its identification DIDs, beside a running measurement.
+- **One measurement clock**: every window shows a frame's own timestamp, absolute or relative to the start
+  of the measurement; the CAN monitor filters like the Trace, which also filters by direction.
+- **System variables** shared by the script, the windows and the user; a **Write window** for the script's
+  output and variables; script events for keys, error frames and the bus state.
+- **CAN Logger exports**: CSV with a row per sample or a column per signal, MDF 4, PNG, of everything, the
+  screen or the cursor range; statistics between the cursors; a cap on the samples kept.
+- **Dummy ECU data**: editable DIDs, DTCs with snapshot and extended data, forced negative responses, and
+  several simulated ECUs on one channel.
 
 ## Configuration
 
@@ -89,7 +103,7 @@ def DatabaseMainFunction(api):
 ```
 
 - **Handler property**: a control calls the script function named in its Handler (the Form Designer creates `def on_<name>_<event>(api, value):` when you double-click the control). A function whose first parameter is named `api` receives the script API; other parameters receive the event's values.
-- **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`.
+- **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`, `@on_sysvar("Namespace::Name")` (a system variable changed; no name: any), `@on_key("a", "F5")` (a key pressed in CAN Expert while the measurement runs, not while typing into a field; `"*"`: any), `@on_error_frame` (argument: its timestamp) and `@on_bus_state` (argument: `error active`, `error passive` or `bus off`, on a change).
 - **UDS service functions**: every ISO 14229-1 service except Authentication (0x29) and SecuredDataTransmission (0x84) is a script function, e.g. `RDBI(0xFF99)` sends `22 FF 99`, `WDBI(did, data)`, `DSC(session)`, `SA(sub_function, key)`, `RC(sub_function, routine_id, data)`, `RD/TD/RTE`, `RDTCI(sub_function, ...)`, plus `UDS("raw hex")` and helpers (`SecurityUnlock`, `ReadDTCs`, `StartRoutine`...). They use the session's UDS transport and return a result that is true for a positive response, with `data` (after the SID and echoed parameters), `text`, `int`, `raw`, `nrc`, `nrc_name` and `error`. Sub-function services accept `suppress=True` (suppressPosRspMsgIndicationBit; sent without waiting). The Form Designer's script tab lists them by ISO 14229 functional unit and inserts calls.
 - `api.signal("Message.Signal")`: latest received (or sent) physical value. `api.set_signal("Message.Signal", value)` and `api.send_message("Message", Signal=value, ...)`: encode with the panel's DBC and send; signals not given keep their last known values.
 - `api.on(name, callback)`: callback receives the control value. Buttons pass `True`, checkboxes a Boolean, sliders an integer, combo boxes their selected text. Editable fields submit when editing finishes; their selected value type controls conversion.
@@ -99,12 +113,13 @@ def DatabaseMainFunction(api):
 - `api.can.get_latest_messages()`: recent received messages.
 - `api.uds.request(payload)`: sends any UDS request over ISO-TP (multi-frame requests and replies, flow control, NRC 0x78 response pending) and returns the positive or negative reply, or `None` on timeout. Helpers: `tester_present()`, `rdbi(did)` (data record without the DID echo), `request_download(format, address, size)`, `transfer_data(sequence, data)`, `request_transfer_exit()`, `transfer_data_from_file(path, packet_size)`. They use the configuration's request/response IDs, identifier size, extended-address byte and UDS response timeout. Frames received before a request are discarded, and the connection's TesterPresent is deferred while an exchange is in progress.
 - `api.ui.get_value(name)` and `api.ui.set_value(name, value)`: read a cached value or enqueue a GUI update. Displays format numbers with their unit, decimals and DBC value-table text; an LED takes a Boolean; a multi-state indicator a state value; a trend graph appends a point; an output box appends a line (`None` clears it). Scripts must not access Qt widgets directly.
-- `api.log(text)`: application debug log.
+- `api.log(text)` or `api.write(text)` (CAPL's `write`), and `api.warn(text)`: a line in the Write window, a warning in its colour. Script errors go there too, and to the application's Debug log.
+- `api.sysvar.get(name, default)`, `api.sysvar.set(name, value)` (defines a new variable), `api.sysvar[name]`, `api.sysvar.define(name, kind, initial, unit, comment)`: the system variables shared with the System Variables window and the CAN Logger. Values start from their initial ones at every connect.
 - `api.running` and `api.sleep(seconds)`: cooperative cancellation for older loop-based scripts. Prefer callbacks and return from `DatabaseMainFunction`; a startup loop prevents that script's queued callbacks from being processed.
 
 Callbacks run serially off the GUI thread. Exceptions are logged. Disconnect cancels Python execution, stops timers and reception, revokes the script bus, and closes the CAN adapter. A blocking native/DLL call cannot be forcibly interrupted; it must return on its own. It cannot use the revoked session bus to transmit afterward. Database scripts are ordinary local Python code and have the user's process permissions.
 
-The connection already schedules TesterPresent; database scripts do not need to run their own TesterPresent loop. The UDS/firmware helpers are not the connection scheduler and are outside the requirements acceptance scope. ISO-TP is implemented for classic CAN (payloads up to 4095 bytes) and is tested against a simulated ECU; firmware programming against a real ECU is not certified. The Diagnostic Window sends ODX-encoded requests of any length on a background thread and shows the complete reply.
+The connection already schedules TesterPresent; database scripts do not need to run their own TesterPresent loop. Every frame of a session - requests, flow control, TesterPresent - is padded to 8 bytes (0xCC by default) and the tester asks for the block size and STmin of the configuration's ISO-TP settings; both are kept by CAN Expert per configuration, not in the configuration file. The UDS/firmware helpers are not the connection scheduler and are outside the requirements acceptance scope. ISO-TP is implemented for classic CAN (payloads up to 4095 bytes) and is tested against a simulated ECU; firmware programming against a real ECU is not certified. The Diagnostic Window sends ODX-encoded requests of any length on a background thread and shows the complete reply.
 
 ## Firmware flashing
 

@@ -144,6 +144,24 @@ def main_check():
         check("reconnect works", window.can_bus is not None, window.status_label.text())
         check("ECU Responding again", spin(lambda: "Responding" in node_text()), node_text())
 
+        # Tier 3 on the adapter: padded frames, and a scan beside the running session
+        sent = [data for _t, direction, can_id, data, _x in list(window.frame_history)
+                if direction == "TX" and can_id == CONFIGURATION["request_id"]]
+        check("TesterPresent goes out padded to 8 bytes", bool(sent) and all(len(data) == 8 for data in sent),
+              [data.hex(" ") for data in sent[-2:]])
+        scan = window.open_ecu_scan()
+        scan.last_edit.setText("7E3")
+        scan.identification_cb.setChecked(True)
+        scanner = scan.start()
+        check("the ECU scan runs beside the session", scanner is not None, scan.status.text())
+        spin(lambda: scanner.isFinished() and scan.start_btn.isEnabled(), 30)
+        found = [(item.request_id, item.response_id) for item in scan.responders]
+        check("the scan finds the dummy ECU, and only it", found == [(0x7E0, 0x7E8)], found)
+        check("the scan reads its VIN", bool(scan.responders) and
+              scan.responders[0].identification.get(0xF190) == "WVWZZZ1KZAW000001",
+              scan.responders[0].identification if scan.responders else None)
+        scan.close()
+
         # The trace, the console and the transmit list on live traffic
         window.symbols.set_paths([str(REPO / "DBC" / "dummy_ecu.dbc")])   # the names every window shares
         trace = window.open_trace()
