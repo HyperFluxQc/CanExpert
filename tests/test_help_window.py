@@ -25,7 +25,7 @@ class UserManualTest(unittest.TestCase):
 
     def test_it_explains_what_the_user_actually_clicks(self):
         for phrase in ("Connect", "Disconnect", "Load DBC", "Graph options", "Send UDS request", "Test panel",
-                       "Flashing", "Scan Activity", "Add from database", "Fault memory",
+                       "Flashing", "Scan for ECUs", "Add from database", "Fault memory",
                        "Record to file", "Replay a recorded file", "Save desktop as"):
             self.assertIn(phrase, self.text, f"the manual never mentions {phrase}")
 

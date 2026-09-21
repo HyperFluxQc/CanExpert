@@ -1,7 +1,6 @@
 """
 CAN access: opening a python-can bus, CanWorker (the only reader of a session's bus, which also sends the
-periodic TesterPresent), ReceiveMailbox (a bus facade for code off the GUI thread) and
-ChannelActivityScanner.
+periodic TesterPresent) and ReceiveMailbox (a bus facade for code off the GUI thread).
 """
 from __future__ import annotations
 
@@ -190,36 +189,3 @@ class ReceiveMailbox:
     def close(self):
         with self.lock:
             self.closed = True
-
-
-class ChannelActivityScanner(QThread):
-    """Opens each channel briefly and reports whether any frame arrives (one bool per channel). Channels
-    whose adapter can listen without acknowledging are opened that way, so the scan leaves no trace."""
-    channel_activity = pyqtSignal(list)
-
-    def __init__(self, channels: list, bitrate: int = 500000, listen_time: float = 0.3):
-        super().__init__()
-        self.channels = channels
-        self.bitrate = bitrate
-        self.listen_time = listen_time
-
-    def run(self):
-        result = []
-        for channel_config in self.channels:
-            if self.isInterruptionRequested():
-                break
-            try:
-                bus = open_channel(channel_config, self.bitrate,
-                                   **LISTEN_ONLY_OPTIONS.get(channel_config.get("interface"), {}))
-            except Exception:
-                result.append(False)
-                continue
-            try:
-                deadline = time.monotonic() + self.listen_time
-                active = False
-                while not active and time.monotonic() < deadline:
-                    active = bus.recv(timeout=0.05) is not None
-                result.append(active)
-            finally:
-                bus.shutdown()
-        self.channel_activity.emit(result)

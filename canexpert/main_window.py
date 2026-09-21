@@ -43,7 +43,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from canexpert.can_bus import SUPPORTED_INTERFACES, CanWorker, ChannelActivityScanner, ReceiveMailbox, channel_key
+from canexpert.can_bus import SUPPORTED_INTERFACES, CanWorker, ReceiveMailbox, channel_key
 from canexpert.can_logger import CANLoggerWindow
 from canexpert.channel_setup import ChannelSetup, load_setup, open_configured, save_setup
 from canexpert.channel_setup_dialog import ChannelSetupDialog
@@ -110,10 +110,8 @@ class MainWindow(QMainWindow):
         self.worker = None          # the session's CanWorker while connected
         self.can_bus = None
         self.app_database = None
-        self.channel_activity = {}  # channel key -> traffic seen by the last activity scan
         self.connected_channel_config = None
         self.selected_channel_config = None
-        self.activity_scanner = None
         self.script_runtime = None
         self.flash_dialog = None
         self.flash_runner = None   # the built-in flashing sequence while it runs
@@ -288,10 +286,7 @@ class MainWindow(QMainWindow):
         ch_btn_layout = QHBoxLayout()
         self.refresh_channels_btn = QPushButton("Refresh")
         self.refresh_channels_btn.clicked.connect(self.refresh_channel_list)
-        self.scan_activity_btn = QPushButton("Scan Activity")
-        self.scan_activity_btn.clicked.connect(self.scan_channel_activity)
         ch_btn_layout.addWidget(self.refresh_channels_btn)
-        ch_btn_layout.addWidget(self.scan_activity_btn)
         channels_layout.addLayout(ch_btn_layout)
         channels_widget.setLayout(channels_layout)
         self.channels_dock = QDockWidget("CAN Channels", self)
@@ -480,9 +475,6 @@ class MainWindow(QMainWindow):
         serial = cfg.get("serial") or cfg.get("unique_hardware_id")
         if serial:
             label += f" ({serial})"
-        active = self.channel_activity.get(channel_key(cfg))
-        if active is not None:
-            label += " — traffic" if active else " — no traffic"
         if load_setup(self._settings, cfg).listen_only:
             label += " [listen-only]"
         if self.connected_channel_config and channel_key(cfg) == channel_key(self.connected_channel_config):
@@ -543,40 +535,6 @@ class MainWindow(QMainWindow):
             item.setText(0, f"▣ {database.stem} — {'loaded' if loaded else 'double-click to load'}")
             item.setForeground(0, QColor("#1566ae"))
             item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))  # double-click connects this channel
-
-    def scan_channel_activity(self):
-        """Scan channels for CAN activity (when disconnected)."""
-        if self.can_bus:
-            QMessageBox.information(
-                self, "Info",
-                "Disconnect first to scan for activity on other channels."
-            )
-            return
-        if not getattr(self, "can_channels", None) or not self.can_channels:
-            self.refresh_channel_list()
-        if not self.can_channels:
-            return
-        bitrate = 500000
-        if self.active_config:
-            bitrate = int(self.active_config.get("bitrate", 500000))
-        self.scan_activity_btn.setEnabled(False)
-        self.status_label.setText("Scanning channels for activity...")
-        self.activity_scanner = ChannelActivityScanner(self.can_channels, bitrate)
-        self.activity_scanner.channel_activity.connect(self.on_activity_scan_result)
-        self.activity_scanner.finished.connect(self.on_activity_scan_finished)
-        self.activity_scanner.start()
-
-    def on_activity_scan_result(self, result: list):
-        """Show on each channel whether the scan saw traffic."""
-        channels = self.activity_scanner.channels if self.activity_scanner else []
-        self.channel_activity = {channel_key(cfg): active for cfg, active in zip(channels, result)}
-        self._label_channels()
-
-    def on_activity_scan_finished(self):
-        """Re-enable scan button after scan completes."""
-        self.scan_activity_btn.setEnabled(True)
-        self.status_label.setText("Activity scan complete")
-        self.activity_scanner = None
 
     def on_channel_selected(self, item, column=0):
         cfg = item.data(0, Qt.UserRole)
@@ -1187,9 +1145,6 @@ class MainWindow(QMainWindow):
         """Connect: load the active configuration's panel database and run its script on the bus."""
         if self.can_bus is not None:
             return
-        if self.activity_scanner and self.activity_scanner.isRunning():
-            self._set_status("Wait for the activity scan to finish", "orange")
-            return
         if not self.active_config or not self.selected_channel_config:
             QMessageBox.warning(self, "Connection", "Select a configuration and a CAN receiver first.")
             return
@@ -1568,9 +1523,6 @@ class MainWindow(QMainWindow):
         if self.replay is not None:
             self.replay.close()
         self.on_disconnect_clicked()
-        if self.activity_scanner:
-            self.activity_scanner.requestInterruption()
-            self.activity_scanner.wait()
         event.accept()
 
     def clear_application_ui(self):

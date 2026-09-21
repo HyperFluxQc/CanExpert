@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import QApplication                                    # no
 
 from canexpert import main_window as main                                   # noqa: E402
 from canexpert.can_logger import CANLoggerWindow                            # noqa: E402
+from canexpert.channel_setup import detect_bitrate                          # noqa: E402
 from canexpert.diagnostic_window import DiagnosticWindow                    # noqa: E402
 from canexpert.flash_sequence import FlashProfile                           # noqa: E402
 from canexpert.flashing import load_firmware                                # noqa: E402
@@ -135,10 +136,8 @@ def main_check():
         window.stop_ecu_monitor()
         check("nodes show Not checked once stopped", spin(lambda: "Not checked" in node_text(), 3), node_text())
 
-        window.scan_channel_activity()
-        check("activity scan finished", spin(lambda: window.activity_scanner is None, 30))
-        labels = [item.text(0) for item in window.channel_items.values()]
-        check("the scan marks the channel carrying the ECU traffic", any("traffic" in text for text in labels), labels)
+        bitrate, report = detect_bitrate(channel0, candidates=(500000, 250000), listen_time=0.6)
+        check("the channel setup finds the bit rate of the ECU's traffic", bitrate == 500000, report)
 
         window.on_connect_clicked()
         check("reconnect works", window.can_bus is not None, window.status_label.text())
