@@ -31,16 +31,21 @@ from canexpert.uds.client import UdsFunctions, uds_request
 class DatabaseAPI:
     """
     API passed to the script's DatabaseMainFunction(api), handlers and Flashing(api, firmware).
-    - api.can.send(id, data), api.can.get_latest_messages()
-    - api.uds.request(payload); api.uds.tester_present(), rdbi(did), request_download(format, addr, size),
-      transfer_data(counter, data), request_transfer_exit(), transfer_data_from_file(path, packet_size)
-      (the ISO 14229 functions RDBI, RD, TD, ... are also plain functions in the script)
-    - api.dll.load(path), api.dll.call(path, name, *args)
-    - api.ui.get_value(name), api.ui.set_value(name, value)
     - api.signal(name), api.set_signal(name, value), api.send_message(message, **signals)
-    - api.log(msg) / api.write(msg), api.warn(msg): the Write window
+    - api.can.send(id, data)
+    - api.ui.get_value(name), api.ui.set_value(name, value)
     - api.sysvar.get(name), api.sysvar.set(name, value), api.sysvar[name]: system variables
+    - api.log(msg) / api.write(msg), api.warn(msg): the Write window
+    - api.dll.load(path), api.dll.call(path, name, *args)
     - api.progress(done, total, message), api.flash_cancelled, api.sleep(seconds)
+    The ISO 14229 services are plain functions in the script (RDBI, RD, TD, UDS("22 F1 90"), ...), and
+    events are decorators (@on_control, @on_message, @on_timer, @on_signal, @on_sysvar, @on_key, ...).
+
+    Deprecated, and kept working for the scripts that use them: api.on (use @on_control), api.on_can
+    (@on_message), api.every (@on_timer), api.can.get_latest_messages (@on_message), and api.uds.request,
+    tester_present, rdbi, request_download, transfer_data, request_transfer_exit, transfer_data_from_file
+    and parse_s19_s28 (the service functions UDS, TP, RDBI, RD, TD, RTE, and the firmware Flashing() is
+    given, or the built-in flashing sequence).
     """
 
     def __init__(self, can_bus=None, request_id: int = 0x7DF, response_id: int = 0x7E8, log_cb=None):
@@ -62,17 +67,17 @@ class DatabaseAPI:
         self.sysvar = _SysVarApi(self)
 
     def on(self, name, callback):
-        """Register callback(value) for a named button/input event."""
+        """Deprecated: use @on_control(name). Register callback(value) for a named button/input event."""
         if self._runtime is None:
             raise RuntimeError("No script runtime")
         self._runtime.callbacks.setdefault(name, []).append(callback)
 
     def on_can(self, callback):
-        """Register callback(arbitration_id, bytes) for incoming frames."""
+        """Deprecated: use @on_message. Register callback(arbitration_id, bytes) for incoming frames."""
         self._runtime.can_callbacks.append(callback)
 
     def every(self, seconds, callback):
-        """Call callback() periodically while connected."""
+        """Deprecated: use @on_timer(seconds). Call callback() periodically while connected."""
         seconds = float(seconds)
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError("Timer interval must be positive")
@@ -196,7 +201,7 @@ class _CANApi:
         self._api._bus.send(msg)
 
     def get_latest_messages(self) -> list[dict]:
-        """Return list of last received CAN messages: [{"id": int, "data": [bytes]}, ...]."""
+        """Deprecated: use @on_message. The last received frames: [{"id": int, "data": [bytes]}, ...]."""
         return list(self._api._latest_messages)
 
 
@@ -210,8 +215,9 @@ class _UDSApi:
 
     def request(self, payload: bytes | list, timeout: float | None = None, wait: bool = True,
                 pending: float | None = None) -> bytes | None:
-        """Send any UDS request. Returns the reply (positive, or 0x7F negative) or None on timeout;
-        wait=False only sends it. pending is how long a "response pending" may extend the wait."""
+        """Deprecated: use UDS(payload). Send any UDS request. Returns the reply (positive, or 0x7F
+        negative) or None on timeout; wait=False only sends it. pending is how long a "response pending"
+        may extend the wait."""
         transport = dict(self._api._transport)
         if timeout is not None:
             transport["timeout"] = timeout
@@ -220,30 +226,31 @@ class _UDSApi:
         return uds_request(self._api._bus, bytes(payload), wait=wait, **transport)
 
     def tester_present(self, timeout: float | None = None) -> bool:
+        """Deprecated: use TP() - and the session already sends TesterPresent."""
         return bool(self.functions.TP(timeout=timeout))
 
     def rdbi(self, did: int, timeout: float | None = None) -> bytes | None:
-        """ReadDataByIdentifier. Returns the data record (without SID/DID echo) or None."""
+        """Deprecated: use RDBI(did).data. The data record (without SID/DID echo) or None."""
         result = self.functions.RDBI(did, timeout=timeout)
         return result.data if result else None
 
     def request_download(self, format: int, address: int, size: int, timeout: float | None = None) -> bool:
-        """RequestDownload (0x34). format is the address/length format, e.g. 0x44."""
+        """Deprecated: use RD(address, size, format). RequestDownload (0x34)."""
         return bool(self.functions.RD(address, size, format, timeout=timeout))
 
     def transfer_data(self, sequence: int, data: bytes, timeout: float | None = None) -> bool:
-        """TransferData (0x36). sequence is the block counter (0-255); data may span several frames."""
+        """Deprecated: use TD(counter, data). TransferData (0x36); the counter runs 0-255."""
         return _acknowledged(self.functions.TD(sequence, data, timeout=timeout), sequence)
 
     def request_transfer_exit(self, timeout: float | None = None) -> bool:
-        """RequestTransferExit (0x37)."""
+        """Deprecated: use RTE(). RequestTransferExit (0x37)."""
         return bool(self.functions.RTE(timeout=timeout))
 
     def transfer_data_from_file(self, s19_or_s28_path: str | Path, packet_size: int,
                                 progress_cb: Callable[[int, int], None] | None = None) -> tuple[bool, str]:
-        """Download an S-record or Intel HEX file: per segment RequestDownload, TransferData blocks of
-        packet_size bytes (at most the ECU's maxNumberOfBlockLength - 2) and RequestTransferExit.
-        Returns (success, error message)."""
+        """Deprecated: Flashing() or the built-in flashing sequence does this. Download an S-record or
+        Intel HEX file: per segment RequestDownload, TransferData blocks of packet_size bytes (at most the
+        ECU's maxNumberOfBlockLength - 2) and RequestTransferExit. Returns (success, error message)."""
         try:
             firmware = load_firmware(s19_or_s28_path)
         except (OSError, ValueError) as exc:
@@ -267,7 +274,7 @@ class _UDSApi:
 
     @staticmethod
     def parse_s19_s28(path: str | Path) -> list[tuple[int, bytes]]:
-        """(address, data) of every record of an S-record file."""
+        """Deprecated: Flashing(api, firmware) gets the parsed image. (address, data) of every S-record."""
         return parse_s19_s28_file(path)
 
 
@@ -341,7 +348,7 @@ UDS services are plain functions: RDBI(0xF190) sends 22 F1 90 and returns a resu
 positive; .data, .text, .int, .error). See the UDS functions panel beside the editor.
 Name a function's first parameter api to receive the script API: api.signal("Msg.Sig"),
 api.set_signal("Msg.Sig", value), api.send_message("Msg", Sig=value), api.can.send(id, data),
-api.ui.set_value(name, value), api.log(text), api.uds..., api.every(seconds, callback).
+api.ui.set_value(name, value), api.sysvar["Engine::Target"], api.log(text) - the Write window.
 Callbacks run one at a time on a background thread and stop on disconnect.
 """
 

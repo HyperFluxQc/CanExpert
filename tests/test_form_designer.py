@@ -30,6 +30,17 @@ def spin_until(predicate, timeout=3.0):
     return False
 
 
+class CompletionTest(unittest.TestCase):
+    def test_completion_offers_the_current_api_and_not_the_deprecated_calls(self):
+        from canexpert.designer.code_editor import API_WORDS
+        for current in ("on_control", "on_message", "on_timer", "on_sysvar", "on_key", "api.write", "api.warn",
+                        "api.sysvar.set", "RDBI", "UDS"):
+            self.assertIn(current, API_WORDS)
+        for deprecated in ("api.on", "api.on_can", "api.every", "api.uds.rdbi", "api.uds.request",
+                           "api.can.get_latest_messages", "api.uds.transfer_data_from_file"):
+            self.assertNotIn(deprecated, API_WORDS)
+
+
 class FormDesignerTest(unittest.TestCase):
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp())
