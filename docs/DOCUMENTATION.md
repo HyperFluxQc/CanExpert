@@ -30,16 +30,31 @@ flowchart LR
     main --> form_designer["designer/form_designer.py"]
     main --> can_logger["can_logger.py"]
     main --> trace["trace_window.py"]
+    main --> statistics["statistics_window.py"]
+    main --> data["data_window.py"]
     main --> transmit["transmit_window.py"]
+    main --> simulation["simulation_window.py"]
     main --> console["uds_console.py"]
     main --> recording["recording.py"]
     main --> symbols["symbols.py"]
     main --> diagnostic_window["diagnostic_window.py"]
     main --> flashing["flashing.py"]
+    main --> flash_runner["flash_runner.py"]
     main --> ui_common["ui_common.py"]
     main --> workspace["workspace.py"]
     trace --> symbols
+    trace --> observer["uds/observer.py"]
     transmit --> symbols
+    transmit --> cyclic["cyclic.py"]
+    simulation --> symbols
+    simulation --> cyclic
+    data --> symbols
+    statistics --> symbols
+    flashing --> flash_sequence["flash_sequence.py"]
+    flash_runner --> flash_sequence
+    flash_runner --> uds_client
+    flash_sequence --> seed_key["uds/seed_key.py"]
+    console --> seed_key
     can_logger --> symbols
     console --> uds_client
     console --> can_bus
@@ -67,7 +82,7 @@ flowchart LR
 
 | Module | Role |
 |--------|------|
-| **main_window.py** | Main window: configuration list, receiver/node tree, Connect/Disconnect, `dispatch_frame()` (the one path every frame takes: history, recording, CAN monitor, Trace, Logger, Diagnostics), the ECU check that keeps node status live after Disconnect, recording and replay, Flashing button and progress, the tool panes and their saved layouts, CAN and debug logs, theme. |
+| **main_window.py** | Main window: configuration list, receiver/node tree, Connect/Disconnect, `dispatch_frame()` (the one path every frame takes: history, recording, CAN monitor, then the `on_frame()` of every open tool window), the ECU check that keeps node status live after Disconnect, recording and replay, the Flashing button with both ways of flashing and their progress, the tool panes and their saved layouts, CAN and debug logs, theme. |
 | **can_bus.py** | `open_channel()`/`create_can_bus()`, `CanWorker` (the session's only bus reader, which also sends TesterPresent), `ReceiveMailbox` (bus facade for code off the GUI thread), `ChannelActivityScanner`. |
 | **config.py** | Configuration defaults, `validate_config()`, `diagnostic_request_id()`/`uds_transport()` (the IDs and timing a configuration implies), `read_configurations()`/`save_configuration()`, and `ConfigurationDialog`. |
 | **paths.py** | The data folders (`Configurations/`, `Databases/`, `DBC/`, `ODX/`, `examples/`), next to `main.py` or next to a frozen executable. |
@@ -76,16 +91,24 @@ flowchart LR
 | **panel/controls.py** | Control registry shared by the designer and running panels: per control its palette entry, properties, construction, value display and input events; painted controls (gauge, LED, multi-state indicator, toggle switch, knob, 7-segment display, trend); `format_value()` and appearance handling. |
 | **panel/runtime.py** | `DatabaseAPI` given to scripts (`api.on/on_can/every`, `api.signal/set_signal/send_message`, `api.can`, `api.uds`, `api.dll`, `api.ui`, `api.log`, `api.progress`), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators, timers, flashing, cancellation). |
 | **uds/isotp.py** | ISO 15765-2 transport: single, first and consecutive frames, flow control (block size, STmin, WAIT, overflow) in both directions, the escape sequence beyond 4095 bytes. |
-| **uds/client.py** | `uds_request()` (one exchange, skipping unrelated replies and extending the wait on NRC 0x78) and the ISO 14229-1 service functions for scripts (`RDBI`, `WDBI`, `DSC`, `SA`, `RC`, `RD`/`TD`/`RTE`, ... every service except 0x29 and 0x84) returning `UdsResult`; `NRC_NAMES`. |
-| **flashing.py** | Firmware images: S-record/Intel HEX parsing (`load_firmware()`), and the dialogs shared by the main window and the designer's Test panel (choose a file, confirm with its address ranges, progress with Cancel, result). |
+| **uds/client.py** | `uds_request()` (one exchange, skipping unrelated replies and extending the wait on NRC 0x78) and the ISO 14229-1 service functions for scripts (`RDBI`, `WDBI`, `DSC`, `SA`, `RC`, `RD`/`TD`/`RTE`, ... every service except 0x29 and 0x84) returning `UdsResult`; `NRC_NAMES`. `DSC()` learns the P2/P2* the ECU announces and every later request waits that long, never less than the configuration allows. |
+| **uds/observer.py** | Reading diagnostics out of plain frames: `assemble()` puts ISO 15765-2 single, first and consecutive frames back together into `TransportMessage`s (escape sequence and extended addressing included, flow control dropped), and `service_name()` names the service from the catalogue in `uds/client.py`. |
+| **uds/seed_key.py** | SecurityAccess keys: `xor_key()` for the mask rule, and `load_library()`/`generate_key()`/`dll_key()` for a real ECU's `GenerateKeyEx` DLL (the Vector ABI), with `SeedKeyError` saying what a DLL refused before anything is sent. |
+| **flashing.py** | Firmware images: S-record/Intel HEX parsing (`load_firmware()`), and the dialogs shared by the main window and the designer's Test panel - choose a file, `FlashDialog` (which way to flash, with the address ranges), `FlashProfileDialog` (every setting of the built-in sequence, saved and loaded as JSON), progress with Cancel, result. |
+| **flash_sequence.py** | Flashing without a panel script: `FlashProfile` (what differs between bootloaders), `run_flash()` (the ISO 14229 sequence itself), `FlashRun` (the steps taken and the report file). No Qt, so it can be tested on its own. |
+| **flash_runner.py** | `FlashRunner`: `run_flash()` on a thread with its own `ReceiveMailbox` on the running measurement, reporting through `progress`, `logged` and `finished` signals - the shape the panel script's flashing already reports through - and writing the report when it ends, either way. |
 | **designer/form_designer.py** | The Form Designer dialog: pages, DBC path, save/load of XML + `_script.py`, handler stubs, the script editor tab and Test mode against the simulated ECU. |
 | **designer/canvas.py** | The page canvas: widgets to move, resize, select and order, the drop target for palette items and DBC signals, layout tools, clipboard and undo/redo. |
 | **designer/side_panels.py** | Control palette, DBC symbol list and the schema-driven property editor, with the designer's shared constants and naming helpers. |
 | **designer/code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (API, control names, DBC signals, UDS functions), syntax check; `UdsFunctionPanel` lists the UDS functions by ISO 14229 functional unit and inserts calls. |
-| **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis, a symbol toolbar (clear, pause/resume, follow, fit, Lock X / Lock Y for mouse zoom and pan, measurement cursors) whose icons follow the theme, two white dashed measurement cursors labelled #1 and #2 with per-signal values and Δ, a dotted hover crosshair with a time/value readout, Graph options (drawing style: step line, line with dots or dots; follow window; exact time and value ranges), CSV export of all decoded data. |
-| **trace_window.py** | The Trace: frames buffered and flushed to a tree on a timer, symbolic names and lazily decoded signals from `symbols.py`, absolute/relative/delta time, pass and stop filters (`parse_filter()`), find, colour per identifier, CSV export; at most `MAX_ROWS` frames. |
+| **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, live values), one strip chart per ticked signal on a shared time axis or several signals in one graph with a legend (`graph_groups()`/`set_graph_group()`), a symbol toolbar (clear, pause/resume, follow, fit, Lock X / Lock Y for mouse zoom and pan, measurement cursors) whose icons follow the theme, two white dashed measurement cursors labelled #1 and #2 with per-signal values and Δ, a dotted hover crosshair with a time/value readout, Graph options (drawing style: step line, line with dots or dots; follow window; exact time and value ranges), CSV export of all decoded data. |
+| **trace_window.py** | The Trace: frames buffered and flushed to a tree on a timer, symbolic names and lazily decoded signals from `symbols.py`, absolute/relative/delta time, pass and stop filters (`parse_filter()`), find, colour per identifier, CSV export; at most `MAX_ROWS` frames. **Transport** rebuilds the view from `uds/observer.py`, a row per diagnostic message instead of per frame. |
+| **statistics_window.py** | `Statistics`: frames per identifier with their rate, average/min/max cycle time and share of the bus (`frame_bits()` counts the overhead and worst-case stuffing), plus error frames and the controller state; `StatisticsWindow` shows them with freeze, filter, reset and CSV export. Rates are measured against the newest frame while a file is replayed, so a recording keeps its own timing. |
+| **data_window.py** | `SignalValues`: the newest value of every signal, physical and raw (`decode(..., scaling=False)`), with its unit, age and count; `DataWindow` lists them beside the signals of the databases that have not arrived. |
+| **simulation_window.py** | Simulated nodes: a branch per `message.senders` entry with its messages, the data editable signal by signal, sent at their cycle times by one timer through `CyclicSchedule`. What was ticked is remembered; hiding the window stops sending. |
+| **cyclic.py** | `CyclicSchedule`: when each key of a set is next due. Shared by the transmit list and the simulated nodes so the drift arithmetic - due at `t + cycle`, not "now + cycle", without queueing up a backlog after a long gap - lives in one place. |
 | **transmit_window.py** | The transmit list: rows (raw or bound to a database message) in a table, `tick()` sends the ones whose cycle time has come, `SignalEditor` re-encodes a message signal by signal, rows stored as JSON in the settings or a file. A row that fails to send switches itself off; hiding the pane stops every cyclic row. |
-| **uds_console.py** | The UDS console: a service tree built from `uds.client.FUNCTIONS`, a request form generated from each function's signature (`_field()`/`_arguments()`), exchanges on a background thread over a private mailbox, session/security bar, and a fault-memory tab (`status_text()` spells out the DTC status bits). |
+| **uds_console.py** | The UDS console: a service tree built from `uds.client.FUNCTIONS`, a request form generated from each function's signature (`_field()`/`_arguments()`), exchanges on a background thread over a private mailbox (`make_request()`), the session/security bar with the state strip (session, the P2/P2* the ECU asked for, lock state) and the key source (mask or seed & key DLL), and a fault-memory tab (`status_text()` spells out the DTC status bits). |
 | **recording.py** | `Recorder` (python-can writers, format by file name), `read_frames()`, `ReplayWorker` (a thread that hands frames back at their recorded spacing) and `ReplayDialog`. |
 | **workspace.py** | The central workspace: the Qt Advanced Docking System (PyQtAds) configured for CAN Expert (`create_workspace()`), and the windows put into it (`make_pane()`, `add_pane()`). |
 | **symbols.py** | `SymbolDatabases`: the DBC files the application shares (paths in the settings), frame id → message, `decode()`, `signal_names()`, `unit()`, and the dialog that edits the list. A file that cannot be read lands in `errors` without failing the others. |
@@ -109,9 +132,15 @@ CanExpert/
 │   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
 │   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
-│   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
-│   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable
+│   ├── flash_sequence.py       # The built-in ISO 14229 flashing sequence and its profile
+│   ├── flash_runner.py         # That sequence on a thread, reporting to the window
+│   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one or several signals per graph
+│   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable; transport view
+│   ├── statistics_window.py    # Statistics: rates, cycle times, bus load, error frames, bus state
+│   ├── data_window.py          # Data: every signal with the value it holds now
 │   ├── transmit_window.py      # Transmit list: one-shot and cyclic messages
+│   ├── simulation_window.py    # Simulated nodes: a database's messages sent as those ECUs would
+│   ├── cyclic.py               # When each of a set of messages is next due
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service and the fault memory
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
@@ -120,7 +149,8 @@ CanExpert/
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
 │   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
-│   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
+│   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions),
+│   │                           #   observer.py (frames back into messages), seed_key.py (security keys)
 │   └── simulator/              # ecu.py (the simulated ECU), window.py (its window)
 ├── Configurations/             # config_<name>.json, one per configuration
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
@@ -246,7 +276,13 @@ sequenceDiagram
     Runtime-->>MainWindow: flash_finished(ok, message)
 ```
 
-The button is visible only while connected and enabled only when the script defines `Flashing`. Flashing runs on the script thread, so other script callbacks wait until it finishes. Cancel sets `api.flash_cancelled`; disconnecting stops the script. The TesterPresent heartbeat keeps running between requests, which keeps the programming session alive. See [Firmware flashing](REQUIREMENTS_STATUS.md#firmware-flashing) for the sample ISO 14229 sequence.
+The button is visible while connected, and `FlashDialog` asks which of the two ways to use; the script's `Flashing()` is offered only when the loaded script defines one.
+
+**With the script.** Flashing runs on the script thread, so other script callbacks wait until it finishes. Cancel sets `api.flash_cancelled`; disconnecting stops the script. The TesterPresent heartbeat keeps running between requests, which keeps the programming session alive. See [Firmware flashing](REQUIREMENTS_STATUS.md#firmware-flashing) for the sample ISO 14229 sequence.
+
+**Without one.** `flash_sequence.run_flash(uds, firmware, profile, progress, cancelled, log, run)` sends the sequence a bootloader normally wants, with everything that differs between ECUs in a `FlashProfile`: session numbers, ControlDTCSetting and CommunicationControl, the SecurityAccess level and how the key is computed (mask or `GenerateKeyEx` DLL), the erase and check routines, the address and data format identifiers, the bytes per TransferData, the reset type and the DID read afterwards. A field of 0 leaves that step out. Block size is `min(profile.block_size or announced, announced)` where `announced = min(maxNumberOfBlockLength, 4095) - 2` - the SID and the block counter come off it.
+
+`FlashRunner` (`flash_runner.py`) runs that on a thread with its own `ReceiveMailbox`, so the Qt thread stays free, and emits `progress`, `logged` and `finished` exactly as the script path does - `MainWindow._on_flash_progress()` and `_on_flash_finished()` serve both. The caller passes its own `FlashRun` in, so the report of a run that fails halfway still holds the steps that did happen; the report is written beside the firmware as `<firmware>.flash-report.txt` whatever the outcome. The profile last used is kept in the settings under `flash_profile`, and `FlashProfileDialog` saves and loads profile files.
 
 ---
 
@@ -282,6 +318,8 @@ settings or a file of their own:
 | `theme`, `last_configuration`, `last_channel`, `used_channels` | Appearance and what was in use last |
 | `symbol_databases` | The DBC paths every window shares (`symbols.py`) |
 | `transmit_list` | The transmit rows (`transmit_window.py`); **Save list...** writes a JSON file instead |
+| `simulated_messages` | The messages ticked in the simulated nodes window (`simulation_window.py`) |
+| `flash_profile` | The built-in flashing sequence as JSON (`flash_sequence.FlashProfile`); **Save profile...** writes a file instead |
 | `layout/geometry`, `layout/state`, `layout/desktops/<name>` | The window arrangement and the saved desktops |
 
 ## 10. The workspace
@@ -333,5 +371,11 @@ python -B -m unittest discover -s tests -v
 - `tests/test_uds_console.py`: the service tree, forms built from each function's signature (order, defaults, byte parameters, the security key, a missing required parameter), and a live exchange with the simulated ECU: a multi-frame VIN, an NRC named, session and security, and the fault memory read and cleared.
 - `tests/test_help_window.py`: the manual covers every window it promises and names what the user clicks; the help window lists its sections, jumps to a heading, finds text, and says so when the file is missing.
 - `tests/test_can_bus.py`: opening adapters, so that a channel dictionary from `can.detect_available_configs()` (with its device name, serial and dongle channel) opens as it is and only adapter options reach python-can.
+- `tests/test_statistics.py`: the counting itself (rate, cycle time, min/max, the frame bits behind the bus load, error frames and the bus state) and the window around it - filter, freeze, reset, CSV export - including a replayed file being counted at its own timestamps.
+- `tests/test_data_window.py`: physical and raw values, units, age and count, the signals of the databases that never arrived, the filter and the export.
+- `tests/test_transport_view.py`: `assemble()` putting single, first and consecutive frames back together (escape sequence, extended addressing, flow control dropped, an incomplete message) and the Trace showing a row per diagnostic message with its service name.
+- `tests/test_session_security.py`: the P2/P2* an ECU announces being picked up and honoured without ever shortening the configured wait, the seed & key DLL ABI (`GenerateKeyEx`, its refusals), and the console's state strip following the session and the lock against the simulated ECU.
+- `tests/test_simulation.py`: `CyclicSchedule` (due times, a late tick, a long gap, independent keys) and the simulated nodes window - the nodes a database gives, ticking a message or a whole node, the signal editor, a failing send stopping the simulation, and what is remembered.
+- `tests/test_flash_sequence.py`: the built-in flashing sequence - the order the services go out in, the block size from `maxNumberOfBlockLength` or the profile, a segment at a time, the steps a profile leaves out, a refused service, a dependency check reporting trouble, cancelling, the report file - the profile dialogs, and the whole thing flashing the simulated ECU over a virtual bus and reading back the version it reports.
 
 No hardware is contacted by the suite above. `python tests/kvaser_end_to_end.py` is the hardware check: it starts `dummy_ecu.py` on Kvaser virtual channel 1 and drives the real main window on channel 0 through connecting, node status, a panel database, flashing (comparing the received image), the CAN Logger with live traffic, the activity scan, the ECU check after Disconnect and reconnecting. It is not collected by `unittest discover` (its name does not start with `test`), and it uses a temporary Configurations folder and QSettings. Bus electrical conditions and real ECU timing still need an acceptance run on a vehicle.

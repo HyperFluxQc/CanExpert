@@ -25,15 +25,17 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from PyQt5.QtCore import QSettings                                          # noqa: E402
+from PyQt5.QtCore import QSettings, Qt                                      # noqa: E402
 from PyQt5.QtWidgets import QApplication                                    # noqa: E402
 
 from canexpert import main_window as main                                   # noqa: E402
 from canexpert.can_logger import CANLoggerWindow                            # noqa: E402
 from canexpert.diagnostic_window import DiagnosticWindow                    # noqa: E402
+from canexpert.flash_sequence import FlashProfile                           # noqa: E402
 from canexpert.flashing import load_firmware                                # noqa: E402
 from canexpert.recording import read_frames                                 # noqa: E402
 from canexpert.transmit_window import default_row                           # noqa: E402
+from canexpert.uds.observer import service_name                             # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 CONFIGURATION = {"name": "Kvaser check", "bitrate": 500000, "identifier_11_bit": True, "request_id": 0x7E0,
@@ -112,6 +114,21 @@ def main_check():
         check("ECU received the image byte for byte",
               spin(lambda: dump.exists(), 10) and load_firmware(dump).segments == firmware.segments)
 
+        # The same image again, with the built-in sequence instead of the panel script
+        local = temp / "demo_app.hex"
+        local.write_bytes((REPO / "examples" / "firmware" / "demo_app.hex").read_bytes())
+        dump.unlink(missing_ok=True)
+        results.clear()
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+            window.start_built_in_flash(load_firmware(local), FlashProfile())
+            finished = spin(lambda: results, 120)
+        check("the built-in sequence flashed the ECU", finished and results and results[0][0], results)
+        check("the built-in sequence wrote the same image",
+              spin(lambda: dump.exists(), 10) and load_firmware(dump).segments == firmware.segments)
+        report = local.with_suffix(".flash-report.txt")
+        check("a flash report was written beside the firmware",
+              report.exists() and "Result: complete" in report.read_text(encoding="utf-8"), str(report))
+
         window.disconnect_database()
         check("ECU check runs after Disconnect", window.ecu_monitor is not None)
         check("ECU still Responding while checked", spin(lambda: "Responding" in node_text(), 5), node_text())
@@ -128,6 +145,7 @@ def main_check():
         check("ECU Responding again", spin(lambda: "Responding" in node_text()), node_text())
 
         # The trace, the console and the transmit list on live traffic
+        window.symbols.set_paths([str(REPO / "DBC" / "dummy_ecu.dbc")])   # the names every window shares
         trace = window.open_trace()
         check("Trace shows the ECU frames with their symbolic name",
               spin(lambda: (trace.flush(), any(trace.tree.topLevelItem(row).text(3) == "EngineData"
@@ -149,6 +167,33 @@ def main_check():
         check("transmit list sends cyclically",
               spin(lambda: (transmit.tick(), transmit.rows[0]["sent"] > 2)[1], 5), transmit.status.text())
         transmit.stop_all()
+
+        check("the Trace assembles the diagnostic messages it saw",
+              (trace.transport_btn.setChecked(True),
+               spin(lambda: any(service_name(message.payload).startswith("ReadDataByIdentifier")
+                                for message in trace.transport_messages()), 8))[1],
+              trace.status.text())
+        trace.transport_btn.setChecked(False)
+
+        statistics = window.open_statistics()
+        check("Statistics counts the live traffic",
+              spin(lambda: (statistics.refresh(), statistics.statistics.total > 20)[1], 8),
+              statistics.totals.text())
+        check("Statistics works out the bus load and reports the bus state",
+              "bus load " in statistics.totals.text() and "bus: " in statistics.totals.text(),
+              statistics.totals.text())
+
+        data = window.open_data()
+        check("the Data window decodes the live signals",
+              spin(lambda: len(data.signals.values) > 0, 8), data.status.text())
+
+        simulation = window.open_simulation()
+        simulation._items["EngineData"].setCheckState(0, Qt.Checked)
+        simulation.start_btn.setChecked(True)
+        check("a simulated node puts its messages on the bus",
+              spin(lambda: (simulation.tick(), simulation.messages["EngineData"]["sent"] > 2)[1], 5),
+              simulation.status.text())
+        simulation.start_btn.setChecked(False)
 
         # Recording the live measurement, then replaying the file with no bus at all
         recording = temp / "session.asc"

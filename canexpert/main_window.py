@@ -48,7 +48,9 @@ from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_c
 from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
-from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
+from canexpert.flash_runner import FlashRunner
+from canexpert.flash_sequence import FlashProfile
+from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
 from canexpert.help_window import show_manual
 from canexpert.panel.database import load_application_database, select_database
@@ -69,6 +71,7 @@ from canexpert.workspace import add_pane, create_workspace, make_pane
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
+FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
 LAYOUT_GEOMETRY = "layout/geometry"
 LAYOUT_STATE = "layout/state"
@@ -99,6 +102,8 @@ class MainWindow(QMainWindow):
         self.activity_scanner = None
         self.script_runtime = None
         self.flash_dialog = None
+        self.flash_runner = None   # the built-in flashing sequence while it runs
+        self.script_flash = False  # whether the panel script offers a Flashing(api, firmware)
         self._auto_minimized = []  # dock title bars minimized on connect, restored on disconnect
         self._left_split = None    # Configuration / CAN Channels heights before they were minimized
         self.panel = None
@@ -174,7 +179,8 @@ class MainWindow(QMainWindow):
              self.open_uds_console),
             ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
-            ("flashing", "Flashing", "Flash ECU firmware using the database's Flashing() function", self.open_flashing),
+            ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",
+             self.open_flashing),
         ]
         for name, label, hint, callback in entries:
             if name == "trace":
@@ -1110,6 +1116,8 @@ class MainWindow(QMainWindow):
 
     def on_disconnect_clicked(self):
         self.session_generation += 1
+        if self.flash_runner is not None:
+            self.flash_runner.cancel()      # the bus is about to go away under it
         self._close_flash_dialog()
         self.flashing_toolbar_item.setVisible(False)
         if self.script_runtime:
@@ -1252,22 +1260,53 @@ class MainWindow(QMainWindow):
     # --- Flashing ---
 
     def _set_flashing_available(self, available):
+        """Whether the panel script offers a Flashing(); flashing itself needs only a connection."""
+        self.script_flash = available
         action = self._toolbar_actions["flashing"]
-        action.setEnabled(available and self.flash_dialog is None)
-        action.setToolTip("Flash ECU firmware using the database's Flashing() function" if available
-                          else "The database script does not define Flashing(api, firmware)")
+        action.setEnabled(self.active_session() is not None and self.flash_dialog is None)
+        action.setToolTip("Flash ECU firmware with the database script's Flashing()" if available else
+                          "Flash ECU firmware with the built-in sequence\n"
+                          "(the database script does not define Flashing(api, firmware))")
+
+    def flash_profile(self):
+        """The built-in sequence's settings, as they were last left."""
+        try:
+            return FlashProfile.from_dict(json.loads(self._settings.value(FLASH_PROFILE, "{}", type=str) or "{}"))
+        except (TypeError, ValueError):
+            return FlashProfile()
 
     def open_flashing(self):
-        """Choose an S-record / Intel HEX file and pass it to the database script's Flashing()."""
-        if self.script_runtime is None or self.script_runtime.flash_function is None:
+        """Choose a firmware file, then flash it with the script's Flashing() or the built-in sequence."""
+        if self.active_session() is None:
             return
         settings = app_settings()
         firmware = choose_firmware(self, settings.value("last_firmware_dir", str(APP_DIR), type=str))
         if firmware is None:
             return
         settings.setValue("last_firmware_dir", str(Path(firmware.path).parent))
-        if confirm_flash(self, firmware):
+        dialog = FlashDialog(firmware, self.flash_profile(), script_available=self.script_flash, parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._settings.setValue(FLASH_PROFILE, json.dumps(dialog.profile.to_dict()))
+        if dialog.use_script():
             self.start_flashing(firmware)
+        else:
+            self.start_built_in_flash(firmware, dialog.profile)
+
+    def start_built_in_flash(self, firmware, profile):
+        """Flash without a panel script: the ISO 14229 sequence the profile describes, on its own thread."""
+        if self.active_session() is None or self.flash_dialog is not None:
+            return
+        self.flash_runner = FlashRunner(self.active_session, self)
+        self.flash_runner.logged.connect(self.log_verbose)
+        self.flash_runner.progress.connect(self._on_flash_progress)
+        self.flash_runner.finished.connect(self._on_flash_finished)
+        self._toolbar_actions["flashing"].setEnabled(False)
+        self.flash_dialog = progress_dialog(self, firmware, self.flash_runner.cancel)
+        self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in "
+                         f"{len(firmware.segments)} segment(s), built-in sequence")
+        if not self.flash_runner.start(firmware, profile):
+            self._on_flash_finished(False, "Flashing could not be started.")
 
     def start_flashing(self, firmware):
         if self.script_runtime is None:
@@ -1286,7 +1325,8 @@ class MainWindow(QMainWindow):
 
     def _on_flash_finished(self, ok, text):
         self._close_flash_dialog()
-        self._set_flashing_available(self.script_runtime is not None and self.script_runtime.flash_function is not None)
+        self.flash_runner = None
+        self._set_flashing_available(self.script_flash)
         self.log_verbose(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
         self._set_status(f"Flashing {'complete' if ok else 'failed'}", "green" if ok else "red")
         report_result(self, ok, text)

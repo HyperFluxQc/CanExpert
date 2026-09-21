@@ -23,13 +23,22 @@ databases or the panel scripts. Anything that has to be remembered lives in the 
 in a file of its own.
 
 - Every frame, from the session, the ECU check or a replayed file, goes through one path
-  that keeps the last 20000 frames, writes the optional recording and feeds the Trace window, the CAN
-  Logger and the Diagnostic Window. Received frames carry the adapter's timestamp.
+  that keeps the last 20000 frames, writes the optional recording and feeds every open tool window.
+  Received frames carry the adapter's timestamp.
 - **Trace window**: symbolic names and decoded signals from the shared symbol databases, absolute,
-  relative and delta time, pass/stop filters, find and CSV export.
+  relative and delta time, pass/stop filters, find and CSV export, and a transport view that shows the
+  diagnostic messages the ISO 15765-2 frames carry, one row each, with their service names.
+- **Statistics**: per identifier the count, rate, average/min/max cycle time, share of the bus and last
+  data, and for the bus the total load, the error frames and the controller state (error active, error
+  passive, bus off).
+- **Data window**: every signal of the symbol databases with the value it holds now, physical and raw,
+  with its unit, age and count.
 - **Transmit list**: raw or database messages, one-shot or cyclic, edited signal by signal.
+- **Simulated nodes**: the messages of a database's sending nodes, put on the bus at their cycle times,
+  so an ECU on the bench sees the traffic it expects.
 - **UDS Console**: every ISO 14229 service (the same catalogue the scripts use) with a generated request
-  form, session control, SecurityAccess and a fault-memory tab, without an ODX file.
+  form, session control, SecurityAccess (mask or `GenerateKeyEx` seed & key DLL) and a fault-memory tab,
+  without an ODX file. The P2/P2* timing an ECU announces is honoured by the requests that follow.
 - **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
   windows offline and never touches a bus.
 - **Symbol databases**: one DBC list shared by the Trace window, the CAN Logger and the transmit list.
@@ -99,7 +108,7 @@ The connection already schedules TesterPresent; database scripts do not need to 
 
 ## Firmware flashing
 
-While connected, a **Flashing** button appears in the toolbar (the Form Designer's **Test panel...** window has the same **Flashing...** button, against the simulated ECU). It is enabled when the database script defines:
+While connected, a **Flashing** button appears in the toolbar (the Form Designer's **Test panel...** window has the same **Flashing...** button, against the simulated ECU). There are two ways to flash, and the dialog offers whichever are available: the built-in ISO 14229 sequence, which needs nothing but a connection, and the database script's own function, offered when the script defines:
 
 ```python
 def Flashing(api, firmware):
@@ -115,6 +124,29 @@ Clicking it asks which Motorola S-record (`.s19`, `.s28`, `.s37`, `.srec`, `.mot
 - Returning `False` or raising an exception reports failure with that message; anything else reports success.
 
 `examples/firmware/demo_app.s19` and `demo_app.hex` are the same two-segment test image (2 KB at 0x00010000, 64 bytes at 0x00020000). To try flashing without a vehicle: open `examples/example_2026-09-18.xml` (or the showcase) in the Form Designer, click **Test panel...** and then **Flashing...**; or connect the main window to `dummy_ecu.py` with the **Dummy ECU** configuration, click **Flashing** and pick either file (the Dummy ECU window's **Save memory as S-record...** gives the received image back). The Dummy ECU window's Flashing tab sets what the simulated bootloader accepts: TransferData size (maxNumberOfBlockLength), data and address/length formats, memory ranges, full blocks, routine IDs and erase time.
+
+### The built-in sequence
+
+Without a script, `flash_sequence.run_flash()` sends what most bootloaders want, and a `FlashProfile` holds everything that differs between them - editable in **Sequence settings...** and saved as a JSON profile file (the settings last used are remembered):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `extended_session` | `0x03` | The session entered before security access; 0 leaves the session alone |
+| `stop_dtc`, `stop_communication` | on | ControlDTCSetting 0x02 and CommunicationControl 0x03 0x01 while programming |
+| `programming_session` | `0x02` | The session the download runs in |
+| `security_level` | `0x01` | SecurityAccess requestSeed level (sendKey is the next one); 0 skips it |
+| `key_mask` / `key_dll`, `key_variant` | `0xA5` | key = seed XOR mask, or a `GenerateKeyEx` DLL when one is named |
+| `erase_routine`, `check_routine` | `0xFF00`, `0xFF01` | RoutineControl startRoutine identifiers; 0 skips that step |
+| `address_format`, `data_format` | `0x44`, `0x00` | addressAndLengthFormatIdentifier and dataFormatIdentifier |
+| `block_size` | 0 | Bytes per TransferData; 0 uses what the ECU announces |
+| `reset_type`, `version_did` | `0x01`, `0xF195` | ECUReset and the DID read once it is back; 0 skips them |
+| `restore_after` | on | DTCs and normal messages switched back on when it is done |
+
+Each segment is erased, downloaded (RequestDownload, TransferData blocks, RequestTransferExit) and then the whole image checked, so a two-segment file produces two erases. The block size is `min(maxNumberOfBlockLength, 4095) - 2` (the service identifier and the block counter come off it), narrowed further by `block_size` when it is set. Cancel stops after the block being sent.
+
+Whatever happens, a report is written beside the firmware as `<firmware>.flash-report.txt`: the image and its address ranges, the profile it ran with, every step with its answer, and the result. A run that fails keeps the steps that did happen.
+
+### With a script
 
 `examples/example_2026-09-18_script.py` (and the showcase script) contain a complete ISO 14229-1 sequence written with the UDS functions: extended session (0x10 03), ControlDTCSetting off (0x85 02), CommunicationControl (0x28 03 01), programming session (0x10 02), SecurityAccess seed/key (0x27), then per segment RoutineControl eraseMemory (0x31 01 FF00), RequestDownload (0x34), TransferData blocks sized from maxNumberOfBlockLength (0x36), RequestTransferExit (0x37), and finally checkProgrammingDependencies (0x31 01 FF01) and ECUReset (0x11 01). Replace its `compute_key()` placeholder and routine identifiers with your bootloader's. The configuration must use the ECU's physical request/response IDs, because multi-frame requests are not allowed on the functional 0x7DF address. This sequence is tested against a simulated bootloader and against `dummy_ecu.py` over the Kvaser Virtual CAN Driver, not a real ECU.
 

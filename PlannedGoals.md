@@ -9,8 +9,9 @@ database XML, or the `_script.py` mechanism: where a feature has to remember som
 its own file or in QSettings. Three items would genuinely be better with one new optional configuration
 field, and they say so.
 
-**Status:** tier 1 items 2-6 and 8 are **implemented** (item 7, the test feature set, was left out on
-purpose; item 1 was built and then removed — see it below). Each one is marked; the rest is untouched.
+**Status:** tier 1 items 2-6 and 8 and tier 2 items 11-18 are **implemented** (item 7, the test feature
+set, and items 9 and 10, CAN FD and several channels, were left out on purpose; item 1 was built and
+then removed — see it below). Each one is marked; the rest is untouched.
 
 ---
 
@@ -146,7 +147,7 @@ minimise-to-a-strip idea extended to workspace windows.
 
 ## Tier 2 — Major features
 
-### 9. CAN FD
+### 9. CAN FD — *not started (left out on purpose)*
 *Effort: medium to large. Needs one optional configuration field, or QSettings.*
 
 No `fd=` or `data_bitrate` anywhere; sends are capped at 8 bytes
@@ -155,74 +156,110 @@ No `fd=` or `data_bitrate` anywhere; sends are capped at 8 bytes
 setup, 64-byte frames, and ISO-TP FD (DLC padding rules, the FF escape). Most modern ECUs worth
 flashing are FD.
 
-### 10. Several channels open at once
+### 10. Several channels open at once — *not started (left out on purpose)*
 *Effort: large — architectural, best done before the Trace and Logger settle*
 
 `self.workers` is a dict with exactly one entry, `"main"`
 ([main_window.py:742](canexpert/main_window.py#L742)) — the intent is visible but unimplemented. CANoe
 is multi-network by nature: a channel column in every window, per-channel databases, gateway views.
 
-### 11. Bus statistics, error frames and bus-off
+### 11. Bus statistics, error frames and bus-off — **DONE**
 *Effort: medium*
 
-Error frames are silently discarded ([can_bus.py:74](canexpert/can_bus.py#L74)); there is no bus load,
-no frame counters, no TX/RX error counters, and no bus-off detection or recovery. Right now a wiring
-fault looks exactly like a quiet bus.
+**Was:** error frames silently discarded ([can_bus.py:74](canexpert/can_bus.py#L74)); no bus load, no
+frame counters, no TX/RX error counters, and no bus-off detection or recovery. A wiring fault looked
+exactly like a quiet bus.
 
-### 12. Rest-bus simulation from a DBC
+**Now:** `canexpert/statistics_window.py` — per identifier the count, rate, average/min/max cycle time,
+share of the bus and last data; for the bus the total load, the error frames and the controller state
+(*error active*, *error passive*, *bus off*), which turns the totals red. `CanWorker` counts error
+frames and polls `BusState` (`error_frame` and `bus_status` signals) instead of dropping them. The bus
+load counts the frame overhead and worst-case stuffing; a replayed file is measured at its own
+timestamps, so a recording keeps its own rates.
+
+### 12. Rest-bus simulation from a DBC — **DONE**
 *Effort: medium to large*
 
-`dummy_ecu.py` is a good hand-written UDS server, but it is not node simulation. CANoe generates a
-node per DBC ECU and transmits its messages at their cycle times. Add: tick the nodes to simulate,
-send their messages cyclically with editable signal values, and optionally run a Python script per
-node.
+**Was:** `dummy_ecu.py`, a good hand-written UDS server, but not node simulation.
 
-### 13. Several signals in one graph
+**Now:** `canexpert/simulation_window.py` — a branch per sending node of the symbol databases with the
+messages it sends, each with the cycle time out of the database and its data editable signal by signal.
+Tick a message or a whole node, press **Start sending**, and they go out at their cycle times through
+the shared `canexpert/cyclic.py` schedule (which the transmit list now uses too). What was ticked is
+remembered; a send that fails stops the simulation instead of filling the log, and closing the window
+stops it. A Python script per node is the part not done: the panel scripts already cover that ground.
+
+### 13. Several signals in one graph — **DONE**
 *Effort: medium*
 
-The logger is strictly one strip chart per ticked signal (`_rebuild_strips`). CANoe overlays many
-signals on one axis with a legend and supports multiple Y axes. Add drag-onto-graph, a legend,
-per-signal colour, per-signal Y axis and graph groups.
+**Was:** strictly one strip chart per ticked signal (`_rebuild_strips`).
 
-### 14. A Data / Signal window
+**Now:** graph groups in `canexpert/can_logger.py`: **Combine** draws every signal in one graph, and the
+right-click menu moves one signal into another's graph (*Draw together with ...*) or back out (*Graph of
+its own*). Signals sharing a graph share its value axis and get a legend; the axis is labelled with their
+unit when they agree on one. Cursors, the hover readout, the axis locks and Fit all work per graph.
+
+### 14. A Data / Signal window — **DONE**
 *Effort: small once item 5 exists*
 
-A flat table of every signal with its current value, raw and physical, unit and time since the last
-update. The logger's tree half does this, but only while the logger is open and only for its own DBC.
+**Was:** only the logger's signal tree, and only while the logger was open, for its own DBC.
 
-### 15. Session and security state, and seed & key
+**Now:** `canexpert/data_window.py` — every signal of the shared symbol databases with its physical and
+raw value, unit, age and count, including the ones that have never arrived (so a database that is not
+being fed shows it). Frames CAN Expert sends are decoded as well. Filter, **Received only**, clear and
+CSV export.
+
+### 15. Session and security state, and seed & key — **DONE**
 *Effort: small to medium*
 
-Nothing in the UI shows the current diagnostic session or security state, and there is no
-SecurityAccess dialog. The ECU announces P2 and P2\* in its DiagnosticSessionControl response — the
-dummy ECU does — but `uds_request` ignores them and uses a fixed `timeout_ms` with a hardcoded 5 s
-pending timeout. Add a status strip (session, security, P2/P2\*), a security dialog, and support for a
-Vector-style `GenerateKeyEx` DLL through the existing `api.dll`.
+**Was:** nothing in the UI showed the session or the security state; the P2 and P2\* the ECU announces
+in its DiagnosticSessionControl response were ignored in favour of a fixed `timeout_ms` and a hardcoded
+5 s pending timeout.
 
-### 16. All windows should see traffic outside a database session
+**Now:** the UDS Console has a state strip — `Session: extended   P2 75 ms / P2* 4000 ms   Security:
+unlocked (level 1)` — and `UdsFunctions` learns the announced timing in `DSC()` and carries it into every
+later request, never shortening what the configuration allows. `canexpert/uds/seed_key.py` computes the
+key from a mask or from a real ECU's `GenerateKeyEx` DLL (the Vector ABI), which the console and the
+built-in flashing sequence both use; a DLL that refuses says why before anything is sent.
+
+### 16. All windows should see traffic outside a database session — **DONE** (with tier 1)
 *Effort: medium, and mostly falls out of item 1*
 
-The Logger and the diagnostic monitor are fed only from `on_can_message`
-([main_window.py:1010](canexpert/main_window.py#L1010)); the ECU-check path (`_on_monitor_message`,
-[:855](canexpert/main_window.py#L855)) never reaches them. During "Checking ECUs" the logger shows
-nothing, and a logger opened after connecting has already missed everything. One measurement bus plus
-a rolling history buffer that late-opened windows can backfill from.
+**Was:** the Logger and the diagnostic monitor were fed only from `on_can_message`; the ECU-check path
+never reached them, so during "Checking ECUs" the Logger showed nothing and a window opened after
+connecting had already missed everything.
 
-### 17. Flashing without a panel script, and a flash report
+**Now:** every frame — session, ECU check or replayed file — goes through `dispatch_frame()`, which
+keeps the last 20000 in `frame_history`, writes the recording, logs to the CAN monitor and then hands
+the frame to every open tool window. A window opened later is filled from that history, so it shows
+what happened before it existed.
+
+### 17. Flashing without a panel script, and a flash report — **DONE**
 *Effort: medium*
 
-Flashing only appears when the loaded database's script defines `Flashing()`
-([main_window.py:922](canexpert/main_window.py#L922)). Add a built-in configurable sequence (session,
-security, erase routine, RD/TD/RTE, check routine, reset) edited in a dialog and saved as its own
-profile file — a small vFlash — keeping the script hook for unusual bootloaders. Write a flash log or
-report file afterwards.
+**Was:** flashing only appeared when the loaded database's script defined `Flashing()`, and nothing was
+written down about a run.
 
-### 18. A transport and diagnostic layer in the Trace
+**Now:** `canexpert/flash_sequence.py` holds the sequence itself — session, DTCs and normal messages off,
+programming session, security access, then per segment erase, RequestDownload, TransferData,
+RequestTransferExit, then the dependency check, the restore, the reset and a version read — with
+everything that differs between bootloaders in a `FlashProfile` edited in **Sequence settings...** and
+saved as a JSON profile file. `flash_runner.py` runs it on a thread with its own mailbox and reports
+through the same progress and finished path the script hook uses, so the Flashing button now offers both
+ways and needs nothing but a connection. Whatever happens, a report lands beside the firmware as
+`<firmware>.flash-report.txt`: the image, the profile, every step with its answer, and the result.
+
+### 18. A transport and diagnostic layer in the Trace — **DONE**
 *Effort: medium*
 
-Multi-frame exchanges appear as loose frames. CANoe shows the assembled diagnostic message with the
-service name and its parameters. All the ISO-TP logic already exists in `uds/isotp.py`; expose an
-assembled view with N_Bs / N_Cr timing and flow-control detail.
+**Was:** multi-frame exchanges appeared as loose frames.
+
+**Now:** the Trace's **Transport** button rebuilds the view from `canexpert/uds/observer.py`, which puts
+the ISO 15765-2 frames of a request or a response back together — single, first and consecutive frames,
+the escape sequence and extended addressing included, flow control dropped — and names the service from
+the same catalogue the console uses. One row per diagnostic message, with its length and whole payload,
+for the request and response identifiers of the configuration you connected with. The N_Bs / N_Cr timing
+detail is the part not done.
 
 ---
 
@@ -430,9 +467,16 @@ exist.
 Tier 1 items **2, 3, 4, 5, 6 and 8** are implemented, with `canexpert/trace_window.py`,
 `transmit_window.py`, `uds_console.py`, `recording.py` and `symbols.py` as new modules and the tool
 windows turned into panes of the main window. Item **7** (the test feature set) was deliberately left
-out, and item **1** was built and then removed again in use. None of it changed the configuration,
-database or script formats.
+out, and item **1** was built and then removed again in use.
+
+Tier 2 items **11, 12, 13, 14, 15, 16, 17 and 18** are implemented, adding `statistics_window.py`,
+`data_window.py`, `simulation_window.py`, `cyclic.py`, `flash_sequence.py`, `flash_runner.py`,
+`uds/observer.py` and `uds/seed_key.py`, and extending the Trace, the CAN Logger, the UDS Console and the
+flashing path. Items **9** (CAN FD) and **10** (several channels at once) were left out on purpose.
+
+None of it changed the configuration, database or script formats.
 
 The next things worth doing, in order: **item 19** (ISO-TP padding — a half-hour fix and the most likely
-reason a real ECU ignores CAN Expert), **item 11** (bus statistics, error frames and bus-off), **item 9**
-(CAN FD) and **item 7** if the tool is to be used for validation.
+reason a real ECU ignores CAN Expert), **item 9** (CAN FD, which most modern ECUs need), **item 10**
+(several channels at once, best done before more windows settle) and **item 7** if the tool is to be
+used for validation.

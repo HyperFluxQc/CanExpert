@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import can
 from PyQt5.QtCore import QSettings, Qt
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
 from canexpert import can_bus
 from canexpert import main_window as main
@@ -565,13 +565,38 @@ VAL_ 256 Enable 0 "Off" 1 "On";
             time.sleep(0.05)
             ecu_bus.shutdown()
 
-    def test_flashing_button_disabled_without_flashing_function(self):
+    def test_flashing_offers_the_built_in_sequence_when_the_script_has_no_flashing(self):
         self.window.on_connect_clicked()
         action = self.window._toolbar_actions["flashing"]
         self.assertTrue(self.window.flashing_toolbar_item.isVisible())
         self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
-        self.assertFalse(action.isEnabled())
+        self.assertTrue(action.isEnabled(), "the built-in sequence needs no panel script")
+        self.assertFalse(self.window.script_flash)
+        self.assertIn("built-in sequence", action.toolTip())
         self.assertIn("does not define Flashing", action.toolTip())
+
+    def test_the_built_in_sequence_is_what_runs_when_it_is_the_one_chosen(self):
+        from canexpert.flash_sequence import FlashProfile
+        from canexpert.flashing import Firmware
+        self.window.on_connect_clicked()
+        self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
+        firmware = Firmware("app.s19", [(0x1000, b"\x01\x02\x03")])
+        started = []
+
+        def start(runner, image, profile):        # instead of really flashing
+            started.append((image, profile))
+            return True
+
+        with patch.object(main, "choose_firmware", lambda *arguments: firmware), \
+                patch.object(main.FlashDialog, "exec_", lambda dialog: QDialog.Accepted), \
+                patch.object(main.FlashRunner, "start", start):
+            self.window.open_flashing()
+        self.assertEqual(started, [(firmware, FlashProfile())])
+        self.assertIsNotNone(self.window.flash_dialog, "the progress dialog carries the Cancel button")
+        with patch.object(main.QMessageBox, "critical"):
+            self.window._on_flash_finished(False, "Cancelled")
+        self.assertIsNone(self.window.flash_dialog)
+        self.assertTrue(self.window._toolbar_actions["flashing"].isEnabled())
 
     def test_side_panels_minimize_while_connected(self):
         side = [dock.titleBarWidget() for dock in (self.window.config_dock, self.window.channels_dock, self.window.log_dock)]
