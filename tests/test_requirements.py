@@ -779,6 +779,36 @@ def key(api, key):
         self.window.on_connect_clicked()
         self.assertEqual(self.window.panel.page_windows[1][1].page.zoom, 1.5, "the page keeps its zoom")
 
+    def test_a_scan_runs_beside_the_measurement(self):
+        import threading
+        from canexpert.simulator.ecu import DummyEcu, EcuConfig
+        ecu_bus = can.Bus(interface="virtual", channel=self.channel)
+        self.addCleanup(ecu_bus.shutdown)
+        ecu = DummyEcu(ecu_bus, EcuConfig(broadcast_interval=0), log=lambda text: None)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
+        self.window.on_connect_clicked()                 # TesterPresent to 7E0 every 60 ms, answered on 7E8
+        dialog = self.window.open_ecu_scan()
+        self.addCleanup(dialog.close)
+        dialog.last_edit.setText("7E2")
+        dialog.sessions_cb.setChecked(False)
+        dialog.identification_cb.setChecked(False)
+        scanner = dialog.start()
+        self.assertIsNotNone(scanner, dialog.status.text())
+        self.assertTrue(spin_until(lambda: scanner.isFinished() and dialog.start_btn.isEnabled(), 10))
+        rows = [[dialog.tree.topLevelItem(row).text(column) for column in range(2)]
+                for row in range(dialog.tree.topLevelItemCount())]
+        # The session's own TesterPresent is paused during the sweep, so its answers are not taken for
+        # answers to 7E1 and 7E2.
+        self.assertEqual(rows, [["7E0", "7E8"]])
+        self.assertEqual(self.window.workers["main"].mailboxes[1:], [], "the scan's mailbox is gone")
+        self.window._configuration_for(dialog.responders[0])        # a configuration for the ECU found
+        configuration = next(widget for widget in APP.topLevelWidgets()
+                             if type(widget).__name__ == "ConfigurationDialog" and widget.isVisible())
+        self.addCleanup(configuration.close)
+        self.assertEqual((configuration.server_id_edit.text(), configuration.ecu_id_edit.text()), ("7E0", "7E8"))
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)

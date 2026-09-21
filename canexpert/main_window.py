@@ -46,12 +46,13 @@ from PyQt5.QtWidgets import (
 
 from canexpert.can_bus import SUPPORTED_INTERFACES, CanWorker, ChannelActivityScanner, ReceiveMailbox, channel_key
 from canexpert.can_logger import CANLoggerWindow
-from canexpert.channel_setup import load_setup, open_configured, save_setup
+from canexpert.channel_setup import ChannelSetup, load_setup, open_configured, save_setup
 from canexpert.channel_setup_dialog import ChannelSetupDialog
 from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
                               uds_transport, validate_config)
 from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
+from canexpert.ecu_scan import EcuScanDialog
 from canexpert.diagnostic_window import DiagnosticWindow
 from canexpert.clock import TIME_DISPLAYS, MeasurementClock
 from canexpert.flash_runner import FlashRunner
@@ -646,6 +647,8 @@ class MainWindow(QMainWindow):
         self._stop_record_action.setEnabled(False)
         self._stop_record_action.triggered.connect(self.stop_recording)
         measurement_menu.addAction('Replay a recorded file...').triggered.connect(self.replay_log)
+        measurement_menu.addSeparator()
+        measurement_menu.addAction('Scan for ECUs...').triggered.connect(lambda: self.open_ecu_scan())
 
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
@@ -1396,8 +1399,54 @@ class MainWindow(QMainWindow):
         elif self.can_bus is None and self.active_config:
             menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
         menu.addSeparator()
+        menu.addAction("Scan for ECUs on this channel...", lambda: self.open_ecu_scan(cfg))
         menu.addAction("Channel setup...", lambda: self.edit_channel_setup(cfg))
         menu.exec_(self.channel_list.viewport().mapToGlobal(position))
+
+    def open_ecu_scan(self, channel_config=None):
+        """Find the ECUs of a channel: the connected one by default, over the running session."""
+        dialog = EcuScanDialog(self, open_bus=lambda: self._scan_bus(channel_config),
+                               new_configuration=self._configuration_for,
+                               detect_bitrate=lambda _dialog: self.edit_channel_setup(
+                                   channel_config or self.selected_channel_config))
+        dialog.show()
+        return dialog
+
+    def _scan_bus(self, channel_config=None):
+        """(bus, mailbox or None, close, padding) for a scan: a mailbox on the session or the ECU check when
+        they run on that channel - their TesterPresent is paused meanwhile - else the channel itself."""
+        wanted = channel_config or self.connected_channel_config or self.monitor_channel or self.selected_channel_config
+        if wanted is None:
+            raise ValueError("Select a CAN channel first.")
+        running = [(self.can_bus, self.workers.get("main"), self.session_config, self.connected_channel_config),
+                   (self.monitor_bus, self.ecu_monitor, self.monitor_config, self.monitor_channel)]
+        for bus, worker, config, channel in running:
+            if bus is not None and worker is not None and channel is not None and \
+                    channel_key(channel) == channel_key(wanted):
+                if getattr(bus, "listen_only", False):
+                    raise ValueError("The channel is open listen-only: a scan has to send TesterPresent.")
+                mailbox = ReceiveMailbox(bus, worker.message_sent.emit)
+                worker.add_mailbox(mailbox)
+                return mailbox, mailbox, lambda w=worker, m=mailbox: (w.remove_mailbox(m), m.close()), \
+                    config.get("isotp_padding")
+        setup = load_setup(self._settings, wanted)
+        if setup.listen_only:
+            raise ValueError("The channel is set to listen-only (Channel setup): a scan has to send TesterPresent.")
+        try:
+            config = self.session_configuration()
+        except ValueError:
+            config = {"bitrate": 500000, "isotp_padding": 0xCC}
+        # The channel's receive filter would hide the answers of ECUs it does not expect, so it is left out.
+        bus = open_configured(wanted, config.get("bitrate", 500000),
+                              ChannelSetup(setup.sample_point, setup.sjw, False, ""))
+        return bus, None, bus.shutdown, config.get("isotp_padding")
+
+    def _configuration_for(self, responder):
+        """A new configuration for an ECU the scan found, in the ordinary configuration dialog."""
+        self._open_configuration_dialog({
+            "name": f"ECU {responder.response_id:X}", "request_id": responder.request_id,
+            "response_id": responder.response_id, "identifier_11_bit": not responder.extended,
+            "bitrate": int((self.session_config or self.active_config or {}).get("bitrate", 500000))})
 
     def edit_channel_setup(self, channel_config):
         """Sample point, listen-only, receive filter and bit rate detection for one adapter channel."""
