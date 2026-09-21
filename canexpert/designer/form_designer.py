@@ -27,8 +27,10 @@ from canexpert.designer.canvas import FormCanvas
 from canexpert.designer.code_editor import CodeEditor, UdsFunctionPanel
 from canexpert.designer.side_panels import (BINDING_TYPE_DBC, BINDING_TYPE_SCRIPT, PropertyEditor, SymbolListPanel,
                                             WidgetPalette, control_name, default_handler_name)
-from canexpert.flashing import choose_firmware, close_progress, confirm_flash, progress_dialog, report_result, \
-    update_progress
+from canexpert.flash_runner import FlashRunner
+from canexpert.flash_sequence import FlashProfile
+from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
+                                update_progress)
 from canexpert.panel.controls import CONTROLS, WIDGET_GROUPS
 from canexpert.panel.database import DATABASES_DIR, parse_application_database, parse_widget
 from canexpert.panel.runtime import SCRIPT_TEMPLATE
@@ -40,8 +42,12 @@ from canexpert.ui_common import SplitterPanel, enable_maximize
 # -----------------------------------------------------------------------------
 
 class TestPanelDialog(QDialog):
-    """Runs the panel and its script against the simulated ECU on a private virtual CAN bus."""
+    """Runs the panel and its script against the simulated ECU on a private virtual CAN bus.
+
+    It reads its bus itself (a timer, _receive) instead of through a CanWorker, and offers what the
+    built-in flashing sequence needs of one: add_mailbox, remove_mailbox and message_sent."""
     ecu_log = pyqtSignal(str)
+    message_sent = pyqtSignal(int, bytes)
 
     def __init__(self, database, script_text, simulate_ecu=True, parent=None):
         super().__init__(parent)
@@ -75,20 +81,22 @@ class TestPanelDialog(QDialog):
             threading.Thread(target=self.ecu.serve, args=(self._stop,), daemon=True).start()
         self.panel = PanelView(database, self._send, self._log)
         self.mailbox = ReceiveMailbox(self.bus, lambda can_id, data: self._traffic("TX", can_id, data))
-        config = validate_config({"name": "Test", "request_id": 0x7E0, "response_id": 0x7E8})
-        self.runtime = ScriptRuntime(self.mailbox, config, self.panel.values(), self)
+        self.config = validate_config({"name": "Test", "request_id": 0x7E0, "response_id": 0x7E8})
+        self.runtime = ScriptRuntime(self.mailbox, self.config, self.panel.values(), self)
+        self._mailboxes = []                  # the flashing sequence's, fed by _receive as the script's is
+        self.message_sent.connect(lambda can_id, data: self._traffic("TX", can_id, data))
+        self.flash_profile = FlashProfile()   # for this test only: the main window keeps the one in use
+        self.flash_runner = None
         self.runtime.value_changed.connect(self.panel.set_value)
         self.runtime.logged.connect(self._log)
         self.panel.control_changed.connect(lambda name, value: self.runtime.post("control", name, value))
         self.runtime.dbc = self.panel.dbc
         self.runtime.handlers = self.panel.handlers()
         self.flash_button = QPushButton("Flashing...")
-        self.flash_button.setEnabled(False)
-        self.flash_button.setToolTip("Flash a .s19/.hex file into the simulated ECU with the script's Flashing() "
-                                     "(enabled when the script defines it)")
+        self.flash_button.setToolTip("Flash a .s19/.hex file into the simulated ECU, with the script's Flashing() "
+                                     "or the built-in sequence")
         self.flash_button.clicked.connect(self.open_flashing)
         self.flash_dialog = None
-        self.runtime.flashing_available.connect(self.flash_button.setEnabled)
         self.runtime.flash_progress.connect(lambda done, total, text: update_progress(self.flash_dialog, done, total, text))
         self.runtime.flash_finished.connect(self._flash_finished)
         bar = QHBoxLayout()
@@ -116,12 +124,42 @@ class TestPanelDialog(QDialog):
     def _log(self, text):
         self.log_view.appendPlainText(str(text))
 
+    # --- what the flashing sequence needs of a session's worker ---
+
+    def add_mailbox(self, mailbox):
+        self._mailboxes.append(mailbox)
+
+    def remove_mailbox(self, mailbox):
+        self._mailboxes = [item for item in self._mailboxes if item is not mailbox]
+
+    # --- flashing ---
+
     def open_flashing(self):
-        """Same flow as the main window's Flashing button, against the simulated ECU."""
+        """Same dialog as the main window's Flashing button, against the simulated ECU."""
         start = EXAMPLE_FIRMWARE_DIR if EXAMPLE_FIRMWARE_DIR.exists() else Path.home()
         firmware = choose_firmware(self, start)
-        if firmware is not None and confirm_flash(self, firmware, "the simulated ECU"):
+        if firmware is None:
+            return
+        dialog = FlashDialog(firmware, self.flash_profile, script_available=self.runtime.flash_function is not None,
+                             parent=self, target="the simulated ECU")
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self.flash_profile = dialog.profile
+        if dialog.use_script():
             self.start_flashing(firmware)
+        else:
+            self.start_built_in_flash(firmware, dialog.profile)
+
+    def start_built_in_flash(self, firmware, profile):
+        """The built-in ISO 14229 sequence, as the main window runs it, on this panel's bus."""
+        self.flash_button.setEnabled(False)
+        self.flash_runner = FlashRunner(lambda: (self.bus, self, self.config), self)
+        self.flash_runner.logged.connect(self._log)
+        self.flash_runner.progress.connect(lambda done, total, text: update_progress(self.flash_dialog, done, total, text))
+        self.flash_runner.finished.connect(self._flash_finished)
+        self.flash_dialog = progress_dialog(self, firmware, self.flash_runner.cancel)
+        self._log(f"Flashing {Path(firmware.path).name} with the built-in sequence")
+        self.flash_runner.start(firmware, profile)
 
     def start_flashing(self, firmware):
         self.flash_button.setEnabled(False)
@@ -132,7 +170,8 @@ class TestPanelDialog(QDialog):
     def _flash_finished(self, ok, text):
         dialog, self.flash_dialog = self.flash_dialog, None
         close_progress(dialog)
-        self.flash_button.setEnabled(self.runtime.flash_function is not None)
+        self.flash_button.setEnabled(True)
+        self.flash_runner = None
         self._log(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
         report_result(self, ok, text)
 
@@ -154,6 +193,8 @@ class TestPanelDialog(QDialog):
             self._traffic("RX", message.arbitration_id, data)
             self.panel.on_message(message.arbitration_id, data)
             self.mailbox.push(message)
+            for mailbox in list(self._mailboxes):
+                mailbox.push(message)
             with self.runtime.lock:
                 self.runtime.values.update(self.panel.values())
             self.runtime.post("can", message.arbitration_id, data)
@@ -161,6 +202,8 @@ class TestPanelDialog(QDialog):
     def done(self, result):
         dialog, self.flash_dialog = self.flash_dialog, None
         close_progress(dialog)
+        if self.flash_runner is not None:
+            self.flash_runner.cancel()                    # the bus is about to go away under it
         self._pump.stop()
         self.runtime.stop()
         self.mailbox.close()

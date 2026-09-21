@@ -224,6 +224,60 @@ class FormDesignerTest(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_the_test_panel_flashes_with_the_built_in_sequence_too(self):
+        import shutil
+        from canexpert.flash_sequence import FlashProfile
+        from canexpert.flashing import load_firmware
+        folder = Path(tempfile.mkdtemp())
+        firmware_path = folder / "demo_app.s19"                    # the report is written beside the firmware
+        shutil.copy(Path(__file__).resolve().parent.parent / "examples" / "firmware" / "demo_app.s19", firmware_path)
+        self.canvas.add_widget_at("label", 10, 10, text="Flash test")
+        dialog = self.designer.test_panel()                        # the new-panel script: no Flashing()
+        try:
+            self.assertTrue(dialog.flash_button.isEnabled(), "the built-in sequence needs no script")
+            firmware = load_firmware(firmware_path)
+            results = []
+            with patch("canexpert.designer.form_designer.report_result",
+                       lambda parent, ok, text: results.append((ok, text))):
+                dialog.start_built_in_flash(firmware, FlashProfile())
+                self.assertIsNotNone(dialog.flash_dialog)
+                self.assertTrue(spin_until(lambda: results, 30), dialog.log_view.toPlainText())
+            ok, text = results[0]
+            self.assertTrue(ok, text)
+            address, data = firmware.segments[0]
+            self.assertEqual(bytes(dialog.ecu.read_memory(address, len(data))), data)
+            self.assertTrue(firmware_path.with_suffix(".flash-report.txt").exists())
+            self.assertEqual(dialog._mailboxes, [], "the sequence's mailbox is gone")
+        finally:
+            dialog.close()
+
+    def test_the_test_panel_offers_both_ways_in_the_main_windows_dialog(self):
+        from PyQt5.QtWidgets import QDialog
+        from canexpert.designer import form_designer
+        from canexpert.flashing import load_firmware
+        example = Path(__file__).resolve().parent.parent / "examples"
+        self.designer.code_editor.setPlainText((example / "example_2026-09-18_script.py").read_text(encoding="utf-8"))
+        dialog = self.designer.test_panel()
+        try:
+            self.assertTrue(spin_until(lambda: dialog.runtime.flash_function is not None))
+            offered = []
+
+            def choose(flash_dialog):
+                offered.append(flash_dialog.script_radio.isEnabled())
+                flash_dialog.built_in_radio.setChecked(True)
+                return QDialog.Accepted
+
+            started = []
+            with patch.object(form_designer, "choose_firmware",
+                              lambda *args: load_firmware(example / "firmware" / "demo_app.s19")), \
+                    patch.object(form_designer.FlashDialog, "exec_", choose), \
+                    patch.object(dialog, "start_built_in_flash", lambda firmware, profile: started.append(profile)):
+                dialog.open_flashing()
+            self.assertEqual(offered, [True], "the script's Flashing() is offered when it has one")
+            self.assertEqual(len(started), 1)
+        finally:
+            dialog.close()
+
     def test_test_mode_runs_panel_against_simulated_ecu(self):
         self.designer.symbol_list.load_dbc_path(str(DBC))
         self.designer.dbc_path_edit.setText(str(DBC))
