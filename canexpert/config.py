@@ -83,7 +83,7 @@ def validate_config(config):
 
 
 def diagnostic_request_id(config):
-    """Request ID for UDS exchanges (scripts, flashing, Diagnostic Window).
+    """Request ID for UDS exchanges (scripts, flashing, the UDS Console).
 
     The OBD functional ID 0x7DF may not carry multi-frame requests (ISO 15765-2), so when the ECU
     answers on 0x7E8-0x7EF it is addressed physically at response ID - 8 (ISO 15765-4), e.g. 0x7E0.
@@ -190,7 +190,7 @@ class ConfigurationDialog(QDialog):
         self.timeout_spin.setSingleStep(500)
         self.timeout_spin.setSuffix(" ms")
         self.timeout_spin.setValue(5000)
-        self.timeout_spin.setToolTip("How long script and Diagnostic Window UDS requests wait for a reply")
+        self.timeout_spin.setToolTip("How long script and UDS Console requests wait for a reply")
         form.addRow("UDS response timeout:", self.timeout_spin)
         self.heartbeat_spin = QDoubleSpinBox()
         self.heartbeat_spin.setRange(0.05, 3600)

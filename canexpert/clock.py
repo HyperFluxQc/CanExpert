@@ -5,7 +5,7 @@ Every frame carries a timestamp: the adapter's for received frames, the moment i
 adapter for sent ones, the file's own for a replayed recording. A window shows that timestamp - never
 the moment it happened to draw the line - either as the time of day or as seconds since the
 measurement started, and "the measurement started" is the same moment for all of them: the connect,
-the ECU check or the replay, whichever began it. That is what makes a line in the CAN monitor, a row
+the ECU check or the replay, whichever began it. That is what makes a line in the UDS Console, a row
 in the Trace and a point on a Logger graph line up.
 """
 from __future__ import annotations

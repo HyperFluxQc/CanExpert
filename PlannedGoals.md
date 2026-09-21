@@ -456,8 +456,8 @@ used.
 ### 35. Export and markers
 *Effort: very small*
 
-The CAN monitor cannot be saved or searched. Add export to every list view, and "insert marker or
-comment" during a measurement (CANoe's trigger and comment).
+~~The CAN monitor cannot be saved or searched~~ — the CAN monitor is gone, the Trace covers it. Add
+"insert marker or comment" during a measurement (CANoe's trigger and comment).
 
 ### 36. A status strip showing the system state
 *Effort: small*
@@ -468,8 +468,8 @@ user has to think to look at.
 ### 37. Packaging: the .exe that is promised but absent
 *Effort: small*
 
-`requirements-build.txt` installs PyInstaller and Pillow, but there is no `.spec`, no build script, no
-icon, no version resource and no installer in the repo. For a tool colleagues will actually run, this
+There is no `.spec`, no build script, no icon, no version resource and no installer in the repo (the
+`requirements-build.txt` that installed PyInstaller and Pillow for it was removed as misleading). For a tool colleagues will actually run, this
 matters more than most features above it.
 
 ### 38. About box with real information
@@ -506,19 +506,15 @@ exist.
 
 ## Half-finished things found while reading
 
-- **Diagnostic Window**: needs ODX, `odxtools` and an active database session; encodes only "free
-  parameters" with an `int(text, 0)` fallback; response decoding failures are swallowed by a bare
-  `except: pass` (now it says why, in the reply line); its monitor shows three IDs and no ISO-TP
-  reassembly (the Trace's transport view, item 18, does that).
-- **`workers` is a one-entry dict** — scaffolding from a multi-channel design that was never built.
+- ~~**Diagnostic Window**: needs ODX, `odxtools` and an active database session; encodes only "free
+  parameters"~~ — merged into the UDS Console as its ODX tab; its monitor is replaced by the Trace's
+  transport view (item 18).
+- ~~**`workers` is a one-entry dict**~~ — one `worker` now.
 - ~~Dead parameters: `isotp_recv`'s `block_size` and `st_min`, and `uds_request`'s `padding`~~ — reachable
   from the configuration dialog since items 19 and 20.
 - ~~`message.timestamp` is emitted and never consumed~~ — every window uses it since tier 1 and item 32.
-- **Activity scan** result is a string suffix on a tree label, not data anything else can use (Scan for
-  ECUs, item 29, is the real answer).
-- **`Configurations/config_test.json`** still points at database family `FFFFFFFF…`, which was
-  deleted, so that configuration always reports "No matching database".
-- **`requirements-build.txt`** describes a build that does not exist in the repo.
+- ~~**Activity scan**~~ — removed; Scan for ECUs (item 29) and bit rate detection (item 22) answer it.
+- ~~**`Configurations/config_test.json`**~~ and ~~**`requirements-build.txt`**~~ — deleted.
 - ~~Dummy ECU: `RDTCI` only 0x01/0x02, `WDBI` only `F190`, DIDs and DTCs not user-editable~~ — item 28.
 
 ---
@@ -544,8 +540,27 @@ None of it changed the configuration, database or script formats: the new settin
 configuration, the channel setup, system variables, page zooms - live in CAN Expert's own settings.
 
 Parts of tier 4 came along on the way: the Trace, Statistics, Data window and Logger export (35, except
-the CAN monitor and markers), and the session, security and bus state are shown in the UDS Console and
+markers), and the session, security and bus state are shown in the UDS Console and
 Statistics (36, though not yet in one strip of the main window).
+
+Then the features that had grown to overlap were cut back:
+
+- the **CAN Monitor** tab of the Log is gone — the Trace shows every frame, with the same filter; the Log
+  is the application's debug log;
+- the **Diagnostic Window** is merged into the **UDS Console** as an **ODX** tab, and once an ODX file is
+  loaded every answer in the console is decoded by it;
+- **Scan Activity** is gone (Scan for ECUs and bit rate detection do its job), and so is the console's
+  one-off **Tester present** button (the session sends TesterPresent);
+- the **Transmit list** and the **Simulated nodes** are two tabs of one **Transmit** window, and both keep
+  sending until that window is closed;
+- the current values of signals are the **Data window**'s: the Logger's *Value* column and Statistics'
+  *Last data* column are gone;
+- the Form Designer's **Test panel** flashes through the main window's Flashing dialog, so the built-in
+  sequence works there too;
+- the first script API (`api.on`, `api.on_can`, `api.every`, `api.can.get_latest_messages`,
+  `api.uds.*`) still works but is deprecated and out of the editor's completion;
+- the `EZCan2/KvaserCAN` settings migration, `config_test.json`, `requirements-build.txt` and the one-entry
+  `workers` dict are removed.
 
 The next things worth doing: **item 26** (a receive path for ResponseOnEvent and periodic data, and
 retrying NRC 0x21), the tier 4 polish - **33** keyboard shortcuts and **37** packaging first - and

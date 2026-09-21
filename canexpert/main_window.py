@@ -128,7 +128,7 @@ class MainWindow(QMainWindow):
         # file. Windows opened later read the history.
         self._settings = app_settings()
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
-        # One clock for the monitor, the Trace, the Logger and the Diagnostic Window (clock.py).
+        # One clock for the Trace, the Logger, the Write window and the UDS Console (clock.py).
         self.clock = MeasurementClock()
         # System variables (sysvars.py), the script's Write output, and the bus state scripts react to.
         self.sysvars = SystemVariables(self._settings, self)
@@ -517,7 +517,7 @@ class MainWindow(QMainWindow):
         self.config_dock.raise_()
 
     def _show_log_dock(self):
-        """Show Log (CAN Monitor / Debug) dock."""
+        """Show the Log (debug) dock."""
         self.log_dock.setVisible(True)
         self.log_dock.raise_()
 
@@ -540,7 +540,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction('Show Configuration').triggered.connect(self._show_config_dock)
         file_menu.addAction('Show CAN Channels').triggered.connect(self._show_can_channels_dock)
-        file_menu.addAction('Show CAN Monitor').triggered.connect(self._show_log_dock)
+        file_menu.addAction('Show Log').triggered.connect(self._show_log_dock)
 
         file_menu.addSeparator()
         exit_action = file_menu.addAction('Exit')
@@ -622,8 +622,8 @@ class MainWindow(QMainWindow):
         self.manual_btn.setAutoRaise(True)
         self.manual_btn.setIconSize(QSize(18, 18))
         self.manual_btn.setAccessibleName("User manual")
-        self.manual_btn.setToolTip("User manual: how to use the main window, Form Designer, CAN Logger and "
-                                   "Diagnostic Window")
+        self.manual_btn.setToolTip("User manual: how to use the main window, the tool windows, the Form Designer "
+                                   "and the UDS Console")
         self.manual_btn.clicked.connect(self.open_manual)
         help_corner_layout.addWidget(self.manual_btn)
         help_corner_layout.addWidget(help_btn)
@@ -646,7 +646,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addWidget(QLabel("CAN Expert"))
         layout.addWidget(QLabel("CAN and UDS tool: panel databases with Python scripts, Form Designer, CAN Logger,\n"
-                                "Diagnostic Window, firmware flashing and a simulated ECU."))
+                                "Trace, UDS Console, firmware flashing and a simulated ECU."))
         ok_btn = QPushButton("OK")
         ok_btn.clicked.connect(dlg.accept)
         layout.addWidget(ok_btn, 0, Qt.AlignCenter)

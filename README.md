@@ -6,17 +6,16 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 
 - **Multiple interfaces**: Kvaser, Vector, IXXAT (via python-can)
 - **Trace window**: every frame of the session with its symbolic message name, expandable into decoded signals, absolute/relative/delta time, pass and stop filters by identifier, range or name, find, colour per identifier and CSV export, and a **transport view** that turns the ISO 15765-2 frames of a diagnostic request or response into one row with its service name and whole payload
-- **Statistics**: frames, rate, average/min/max cycle time, bus load and last data per identifier, with the totals for the bus - bus load, error frames and the controller state (error active, error passive, bus off) - plus freeze, filter and CSV export
+- **Statistics**: frames, rate, average/min/max cycle time and bus load per identifier, with the totals for the bus - bus load, error frames and the controller state (error active, error passive, bus off) - plus freeze, filter and CSV export
 - **Data window**: every signal of the symbol databases with the value it holds now, physical and raw, with its unit, age and count; signals that never arrived are listed too
-- **Simulated nodes**: the messages of a database's sending nodes, sent at their cycle times as those ECUs would - a rest-bus simulation for the ECU on the bench, edited signal by signal
-- **Transmit list**: raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator)
-- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, with session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits; the P2/P2* timing the ECU announces is picked up and honoured by every later request
+- **Transmit window** with two tabs that keep sending until the window is closed: the **message list** - raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator) - and the **simulated nodes** - the messages of a database's sending nodes, sent at their cycle times as those ECUs would, a rest-bus simulation for the ECU on the bench
+- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits; the P2/P2* timing the ECU announces is picked up and honoured by every later request
 - **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached
-- **Symbol databases**: one list of DBC files shared by the Trace window, the CAN Logger and the Transmit list
+- **Symbol databases**: one list of DBC files shared by the Trace, Data and Statistics windows, the CAN Logger and the Transmit window
 - **ISO-TP settings** per configuration, kept by CAN Expert rather than in the configuration file: every frame padded to 8 bytes (0xCC by default, as most ECUs require), and the block size and STmin the tester asks of the ECU
 - **Channel setup** per adapter channel: sample point and SJW turned into the adapter's bit timing, listen-only (Kvaser and Vector), a receive filter in the adapter, and bit rate detection that listens without disturbing the bus; configurations take any bit rate
 - **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions each ECU accepts and its VIN, part and serial numbers and versions - beside a running measurement - with a configuration made from any ECU found
-- **One measurement clock**: the CAN monitor, the Trace, the Logger and the Diagnostic Window show each frame's own time, absolute or relative to the start of the measurement; the CAN monitor has the Trace's filter, and both filter by direction
+- **One measurement clock**: the Trace, the Logger, the Write window and the UDS Console show each frame's own time, absolute or relative to the start of the measurement; the Trace also filters by direction
 - **System variables** (`Namespace::Name`) shared by the panel script, a System Variables window and the CAN Logger, and a **Write window** for the script's output and its variables; scripts react to keys, error frames, the bus state and system variables
 - **Panel pages as windows**: every page of a database is a workspace window of its own that can be tabbed, split and floated, fitted to its window or zoomed
 - **CANoe-style window system**: the Database panel and the analysis windows live in a workspace where they tab together, split, and float as windows of their own, with drop guides while dragging (Qt Advanced Docking System); the arrangement is remembered and can be saved as named desktops
@@ -57,7 +56,7 @@ pip install -r requirements.txt
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 
-The [user manual](docs/USER_MANUAL.md) walks through the main window, the channel setup, the ECU scan, the symbol databases, the Trace window, Statistics, the Data window, the panels, the Form Designer, the scripts and their Write window, system variables, the CAN Logger, the Transmit list, the simulated nodes, the UDS Console, the Diagnostic Window, firmware flashing, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+The [user manual](docs/USER_MANUAL.md) walks through the main window, the channel setup, the ECU scan, the symbol databases, the Trace window, Statistics, the Data window, the panels, the Form Designer, the scripts and their Write window, system variables, the CAN Logger, the Transmit window and its simulated nodes, the UDS Console and its ODX services, firmware flashing, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
 ## Application Database (XML)
 
@@ -107,8 +106,8 @@ Form Designer to create the function), and decorators work like CAPL `on` proced
 
 ```python
 def on_start_clicked(api, value):                 # Handler of the "start" button
-    vin = api.uds.rdbi(0xF190)                    # UDS over ISO-TP, multi-frame replies supported
-    api.ui.set_value("status", vin.decode(errors="replace") if vin else "No VIN")
+    vin = RDBI(0xF190)                            # UDS over ISO-TP, multi-frame replies supported
+    api.ui.set_value("status", vin.text if vin else "No VIN")
 
 
 @on_signal("EngineData.Temperature")              # DBC signal changed
@@ -159,18 +158,20 @@ CanExpert/
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
-│   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox, activity scan
+│   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox
 │   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
 │   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
 │   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
 │   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable
+│   ├── transmit_pane.py        # The Transmit window: the message list and the simulated nodes
 │   ├── transmit_window.py      # Transmit list: one-shot and cyclic messages
-│   ├── uds_console.py          # UDS Console: every ISO 14229 service and the fault memory
+│   ├── simulation_window.py    # Simulated nodes: a database's messages sent as those ECUs would
+│   ├── uds_console.py          # UDS Console: every ISO 14229 service, ODX services, the fault memory
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
 │   ├── workspace.py            # The workspace: the docking system the windows live in
-│   ├── diagnostic_window.py    # ODX Diagnostic Window
+│   ├── odx_services.py         # ODX files and the UDS Console's ODX tab
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
 │   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
