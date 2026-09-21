@@ -18,6 +18,7 @@ from PyQtAds import ads
 from canexpert import can_bus
 from canexpert import main_window as main
 from canexpert.recording import Recorder, read_frames
+from canexpert.transmit_window import default_row
 
 APP = QApplication.instance() or QApplication([])
 
@@ -204,6 +205,33 @@ class MeasurementTest(unittest.TestCase):
             action.trigger()
             self.assertFalse(action.isChecked(), name)
             self.assertTrue(self.window.tool_panes[name].isClosed(), name)
+
+    def test_the_transmit_window_keeps_sending_behind_other_windows_and_stops_when_closed(self):
+        self.window.show()                                 # hiding behind a tab only happens to what is shown
+        APP.processEvents()
+        pane = self.window.open_transmit()
+        self.assertEqual([pane.tabs.tabText(index) for index in range(pane.tabs.count())],
+                         ["Messages", "Simulated nodes"])
+        messages = pane.messages
+        for page in (messages, pane.nodes):
+            page._timer.stop()           # not connected: a send would fail and switch the row off by itself
+        messages.rows = [default_row("Start", 0x200, b"\x01", 50)]
+        messages._fill_table()
+        messages.rows[0]["enabled"] = True
+        pane.nodes.start_btn.setChecked(True)
+        pane.show_nodes()                                  # the other tab in front
+        self.window.open_trace()
+        trace_pane = self.window.tool_panes["trace"]
+        transmit_pane = self.window.tool_panes["transmit"]
+        self.window.workspace.addDockWidget(ads.CenterDockWidgetArea, trace_pane, transmit_pane.dockAreaWidget())
+        trace_pane.setAsCurrentTab()                       # another window's tab in front
+        APP.processEvents()
+        self.assertFalse(pane.isVisible())
+        self.assertTrue(messages.rows[0]["enabled"], "hidden behind a tab is not closed")
+        self.assertTrue(pane.nodes.start_btn.isChecked())
+        transmit_pane.toggleView(False)                    # closed
+        self.assertFalse(messages.rows[0]["enabled"])
+        self.assertFalse(pane.nodes.start_btn.isChecked())
 
     def test_windows_tab_together_and_float(self):
         self.window.open_trace()

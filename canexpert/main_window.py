@@ -62,13 +62,12 @@ from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
 from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
-from canexpert.simulation_window import SimulationWindow
 from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
 from canexpert.sysvars import SystemVariables, SystemVariablesWindow
 from canexpert.trace_window import TraceWindow
 from canexpert.transport_settings import apply_transport, load_transport
-from canexpert.transmit_window import TransmitWindow
+from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
 from canexpert.workspace import add_pane, create_workspace, make_pane
@@ -87,7 +86,7 @@ LAYOUT_STATE = "layout/state"
 LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
-TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "simulation", "console",
+TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
               "write", "sysvars")   # the windows with a switch on the toolbar
 WRITE_HISTORY = 5000               # Write window lines kept for when it is opened
 
@@ -192,9 +191,8 @@ class MainWindow(QMainWindow):
              self.open_data),
             ("statistics", "Statistics", "Frames per identifier, their rate and cycle time, and the bus load",
              self.open_statistics),
-            ("transmit", "Transmit", "Send messages once or cyclically", self.open_transmit),
-            ("simulation", "Simulation", "Send the messages of a database's nodes, as those ECUs would",
-             self.open_simulation),
+            ("transmit", "Transmit", "Send messages once or cyclically, or a database's nodes as those "
+             "ECUs would", self.open_transmit),
             ("console", "UDS Console", "Send any UDS service, the services of an ODX file, and read the fault "
              "memory",
              self.open_uds_console),
@@ -889,19 +887,17 @@ class MainWindow(QMainWindow):
         config = self.session_config or self.active_config or {}
         return int(config.get("bitrate", 0)) if self.can_bus is not None else 0
 
-    def open_transmit(self):
-        """Transmit window: send messages once or cyclically."""
-        widget, _ = self.open_tool("transmit", "Transmit",
-                                   lambda: TransmitWindow(self, self.symbols, self.send_can_message,
-                                                          app_settings()), "bottom")
-        return widget
-
-    def open_simulation(self):
-        """Simulated nodes: send the messages of the symbol databases' nodes."""
-        widget, _ = self.open_tool("simulation", "Simulated nodes",
-                                   lambda: SimulationWindow(self, self.symbols, self.send_can_message,
-                                                            app_settings()), "bottom")
-        return widget
+    def open_transmit(self, nodes=False):
+        """Transmit window: messages once or cyclically, and the simulated nodes (nodes=True shows that tab)."""
+        pane, created = self.open_tool("transmit", "Transmit",
+                                       lambda: TransmitPane(self, self.symbols, self.send_can_message, self._settings),
+                                       "bottom")
+        if created:
+            # Closing the window stops what it sends; a tab of another window in front of it does not.
+            self.tool_panes["transmit"].viewToggled.connect(lambda shown, p=pane: None if shown else p.stop_sending())
+        if nodes:
+            pane.show_nodes()
+        return pane
 
     def open_uds_console(self):
         """UDS Console window: any ISO 14229 service, the services of an ODX file, and the fault memory."""

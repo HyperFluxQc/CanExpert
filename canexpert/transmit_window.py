@@ -164,9 +164,10 @@ class SignalEditor(QDialog):
 class TransmitWindow(QDialog):
     """Send messages once or cyclically, raw or from a database."""
 
-    def __init__(self, parent=None, symbols=None, send=None, settings=None):
+    def __init__(self, parent=None, symbols=None, send=None, settings=None, stop_when_hidden=True):
         super().__init__(parent)
         self.setWindowTitle("Transmit")
+        self.stop_when_hidden = stop_when_hidden     # off in the Transmit window's tab, which stops on close
         enable_maximize(self)
         self.setMinimumSize(720, 320)
         self.resize(900, 420)
@@ -432,6 +433,7 @@ class TransmitWindow(QDialog):
         self.save_rows()
 
     def hideEvent(self, event):
-        """Closing the pane (or the window) stops every cyclic row: nothing keeps sending out of sight."""
-        self.stop_all()
+        """Closing the window stops every cyclic row: nothing keeps sending out of sight."""
+        if self.stop_when_hidden:
+            self.stop_all()
         super().hideEvent(event)

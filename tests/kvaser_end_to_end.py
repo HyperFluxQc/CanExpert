@@ -175,7 +175,7 @@ def main_check():
         check("UDS console reads the fault memory", spin(lambda: console.dtc_table.rowCount() > 0, 10),
               f"{console.dtc_table.rowCount()} DTC(s)")
 
-        transmit = window.open_transmit()
+        transmit = window.open_transmit().messages
         transmit.rows = [default_row("Start", 0x200, b"\x01", 50)]
         transmit._fill_table()
         transmit.rows[0]["enabled"] = True
@@ -202,7 +202,7 @@ def main_check():
         check("the Data window decodes the live signals",
               spin(lambda: len(data.signals.values) > 0, 8), data.status.text())
 
-        simulation = window.open_simulation()
+        simulation = window.open_transmit(nodes=True).nodes
         simulation._items["EngineData"].setCheckState(0, Qt.Checked)
         simulation.start_btn.setChecked(True)
         check("a simulated node puts its messages on the bus",
