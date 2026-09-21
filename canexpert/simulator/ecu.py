@@ -12,9 +12,11 @@ connect CAN Expert to the other:
 What it simulates (each value is a setting in the window, or in a profile saved from it):
 - Sessions (0x10, announcing P2/P2*), TesterPresent (0x3E), ECUReset (0x11), S3 session timeout,
   a processing delay answered with response pending (NRC 0x78) beyond P2
-- ReadDataByIdentifier (0x22) / WriteDataByIdentifier (0x2E), including multi-frame VIN
+- ReadDataByIdentifier (0x22) / WriteDataByIdentifier (0x2E) on a table of DIDs, each writable or not
 - SecurityAccess (0x27: level, seed length, key = seed XOR mask, attempt counter and lockout delay)
-- ControlDTCSetting (0x85), CommunicationControl (0x28), ReadDTCInformation (0x19), ClearDTC (0x14)
+- ControlDTCSetting (0x85), CommunicationControl (0x28), ClearDTC (0x14), and ReadDTCInformation (0x19:
+  count, by status mask, snapshot record, extended data record, supported DTCs) on a table of DTCs
+- A forced negative response per service, to see how a tester copes with one
 - Flashing: RoutineControl erase / checkProgrammingDependencies (0x31), RequestDownload (0x34),
   RequestUpload (0x35), TransferData (0x36), RequestTransferExit (0x37), with the accepted data and
   address/length formats, maxNumberOfBlockLength, full blocks and memory ranges
@@ -50,6 +52,19 @@ SERVICE_NAMES = {
     0x3E: "TesterPresent", 0x85: "ControlDTCSetting",
 }
 DEFAULT_CONNECTION = {"interface": "kvaser", "channel": "1", "bitrate": 500000}
+# The ECU's data at power-on; the window edits them and a profile keeps them. Bytes are written as hex.
+DEFAULT_DIDS = (
+    {"did": 0xF187, "data": b"CANEXPERT-DUMMY".hex(), "writable": False},       # spare part number
+    {"did": 0xF18C, "data": b"SN000123456".hex(), "writable": False},           # ECU serial number
+    {"did": 0xF190, "data": b"WVWZZZ1KZAW000001".hex(), "writable": True},      # VIN, 17 bytes
+    {"did": 0xF195, "data": b"APP-1.0.0".hex(), "writable": False},             # software version
+)
+# snapshot: what follows the record number in 59 04 (number of identifiers, then DID and data - here
+# one identifier, F40D vehicle speed, 50 km/h); extended: what follows it in 59 06 (occurrence counter).
+DEFAULT_DTCS = (
+    {"dtc": 0x010100, "status": 0x09, "snapshot": "01f40d32", "extended": "05"},   # P0101
+    {"dtc": 0xC10000, "status": 0x08, "snapshot": "", "extended": ""},             # U0100
+)
 
 
 class NegativeResponse(Exception):
@@ -101,6 +116,10 @@ class EcuConfig:
     # Application traffic and output
     broadcast_interval: float = 0.1    # 0x300/0x301 period in seconds, 0 = off
     dump_path: str | None = None       # the flashed image is written here as S-records
+    # Data (restored at power-on and on ECUReset of the tables, not of what WriteDataByIdentifier wrote)
+    dids: list = field(default_factory=lambda: [dict(item) for item in DEFAULT_DIDS])
+    dtcs: list = field(default_factory=lambda: [dict(item) for item in DEFAULT_DTCS])
+    forced_nrcs: list = field(default_factory=list)   # [{"sid": 0x22, "nrc": 0x22}]: that service always refused
 
     @property
     def receive_buffer(self) -> int:
@@ -115,7 +134,49 @@ def config_from_dict(values: dict) -> EcuConfig:
         kwargs["data_formats"] = tuple(kwargs["data_formats"])
     if "memory_ranges" in kwargs:
         kwargs["memory_ranges"] = tuple(tuple(pair) for pair in kwargs["memory_ranges"])
-    return EcuConfig(**kwargs)
+    for name in ("dids", "dtcs", "forced_nrcs"):
+        if name in kwargs:
+            kwargs[name] = [dict(item) for item in kwargs[name]]
+    config = EcuConfig(**kwargs)
+    data_tables(config)                   # a profile with a broken table is refused, not half-loaded
+    return config
+
+
+def data_tables(config: EcuConfig):
+    """(DID -> bytes, writable DIDs, DTC -> status, DTC -> (snapshot, extended data), SID -> forced NRC)
+    from a configuration's tables. ValueError naming the entry that is wrong."""
+    dids, writable = {}, set()
+    for item in config.dids:
+        try:
+            did, data = int(item["did"]), bytes.fromhex(str(item.get("data", "")))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"DID entry {item}: needs a DID and its data as hex bytes") from None
+        if not 0 <= did <= 0xFFFF or not data:
+            raise ValueError(f"DID {did:04X}: a DID is 0000-FFFF and has at least one byte of data")
+        dids[did] = data
+        if item.get("writable"):
+            writable.add(did)
+    statuses, records = {}, {}
+    for item in config.dtcs:
+        try:
+            dtc, status = int(item["dtc"]), int(item.get("status", 0))
+            snapshot = bytes.fromhex(str(item.get("snapshot", "")))
+            extended = bytes.fromhex(str(item.get("extended", "")))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"DTC entry {item}: needs a DTC, a status, and hex bytes for its records") from None
+        if not 0 <= dtc <= 0xFFFFFF or not 0 <= status <= 0xFF:
+            raise ValueError(f"DTC {dtc:06X}: a DTC is three bytes and its status one")
+        statuses[dtc], records[dtc] = status, (snapshot, extended)
+    forced = {}
+    for item in config.forced_nrcs:
+        try:
+            sid, nrc = int(item["sid"]), int(item["nrc"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f"Forced NRC entry {item}: needs a service and an NRC") from None
+        if not 0 <= sid <= 0xFF or not 0 <= nrc <= 0xFF:
+            raise ValueError(f"Forced NRC {sid:X}/{nrc:X}: service and NRC are one byte each")
+        forced[sid] = nrc
+    return dids, writable, statuses, records, forced
 
 
 def load_profile(path) -> tuple[EcuConfig, dict]:
@@ -180,20 +241,19 @@ class DummyEcu:
         self.power_on()
 
     def power_on(self):
-        """Factory state: default session, original DIDs and DTCs, erased memory."""
+        """Factory state: default session, the DIDs and DTCs of the configuration, erased memory."""
         self.state = EcuState()
-        self.dids = {
-            0xF187: b"CANEXPERT-DUMMY",           # spare part number
-            0xF18C: b"SN000123456",               # ECU serial number
-            0xF190: b"WVWZZZ1KZAW000001",         # VIN (writable, 17 bytes)
-            0xF195: b"APP-1.0.0",                 # software version (changes after flashing)
-        }
-        self.dtcs = {0x010100: 0x09, 0xC10000: 0x08}   # DTC -> status (P0101, U0100)
+        self.load_data()
         self.running = False
         self.logging = False
         self.temperature = 21.5
         self.counter = 0
         self._rx = None
+
+    def load_data(self):
+        """Take the DID and DTC tables of the configuration, as at power-on (the window calls it when they
+        are edited). What WriteDataByIdentifier wrote and ClearDTC cleared is forgotten."""
+        self.dids, self.writable, self.dtcs, self.dtc_records, _forced = data_tables(self.config)
 
     # --- transport ---------------------------------------------------------------
 
@@ -293,6 +353,9 @@ class DummyEcu:
         name = SERVICE_NAMES.get(sid, f"service 0x{sid:02X}")
         handler = getattr(self, f"_service_{sid:02x}", None)
         try:
+            forced = next((int(item["nrc"]) for item in self.config.forced_nrcs if int(item["sid"]) == sid), None)
+            if forced is not None:                   # the user asked for this service to be refused
+                raise NegativeResponse(forced)
             if handler is None:
                 raise NegativeResponse(0x11)
             self._busy(self.config.response_delay_ms / 1000, sid)
@@ -391,14 +454,33 @@ class DummyEcu:
         return b"\x54"
 
     def _service_19(self, request):
-        report, suppress = self._subfunction(request, 3)
-        mask = request[2]
-        matching = {dtc: status for dtc, status in self.dtcs.items() if status & mask}
-        if report == 0x01:
-            reply = bytes([0x59, 0x01, 0xFF, 0x01]) + len(matching).to_bytes(2, "big")
-        elif report == 0x02:
-            reply = bytes([0x59, 0x02, 0xFF]) + b"".join(dtc.to_bytes(3, "big") + bytes([status])
-                                                          for dtc, status in matching.items())
+        report, suppress = self._subfunction(request, 2)
+        if report in (0x01, 0x02):                      # count / report by status mask
+            if len(request) != 3:
+                raise NegativeResponse(0x13)
+            mask = request[2]
+            matching = {dtc: status for dtc, status in self.dtcs.items() if status & mask}
+            if report == 0x01:
+                reply = bytes([0x59, 0x01, 0xFF, 0x01]) + len(matching).to_bytes(2, "big")
+            else:
+                reply = bytes([0x59, 0x02, 0xFF]) + b"".join(dtc.to_bytes(3, "big") + bytes([status])
+                                                              for dtc, status in matching.items())
+        elif report == 0x0A:                            # every DTC the ECU supports
+            if len(request) != 2:
+                raise NegativeResponse(0x13)
+            reply = bytes([0x59, 0x0A, 0xFF]) + b"".join(dtc.to_bytes(3, "big") + bytes([status])
+                                                          for dtc, status in self.dtcs.items())
+        elif report in (0x04, 0x06):                    # snapshot / extended data record of one DTC
+            if len(request) != 6:
+                raise NegativeResponse(0x13)
+            dtc, record = int.from_bytes(request[2:5], "big"), request[5]
+            if dtc not in self.dtcs or record not in (0x01, 0xFF):
+                raise NegativeResponse(0x31)
+            snapshot, extended = self.dtc_records.get(dtc, (b"", b""))
+            data = snapshot if report == 0x04 else extended
+            reply = bytes([0x59, report]) + request[2:5] + bytes([self.dtcs[dtc]])
+            if data:                                    # record 01 is the only one this ECU keeps
+                reply += b"\x01" + data
         else:
             raise NegativeResponse(0x12)
         return None if suppress else reply
@@ -425,11 +507,11 @@ class DummyEcu:
         if len(request) < 4:
             raise NegativeResponse(0x13)
         did = int.from_bytes(request[1:3], "big")
-        if did != 0xF190:
+        if did not in self.dids or did not in self.writable:
             raise NegativeResponse(0x31)
         self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         self._require_unlocked()
-        if len(request) - 3 != 17:
+        if len(request) - 3 != len(self.dids[did]):        # a DID keeps its length, as the VIN its 17 bytes
             raise NegativeResponse(0x13)
         self.dids[did] = bytes(request[3:])
         return b"\x6E" + request[1:3]
@@ -686,11 +768,13 @@ class DummyEcu:
 BROADCAST_IDS = (0x300, 0x301)
 
 
-def claim_channel(interface, channel):
-    """Hold a localhost port as a per-channel lock while this ECU runs, or return None if another dummy ECU
-    on this computer already holds it. (On Kvaser, programs sharing a channel do not see each other's
-    frames, so only a lock can tell that a second copy was started.)"""
-    port = 47000 + zlib.crc32(f"{interface}:{channel}".encode()) % 2000
+def claim_channel(interface, channel, request_id=None):
+    """Hold a localhost port as a lock while this ECU runs, or return None if another dummy ECU on this
+    computer already holds it. (On Kvaser, programs sharing a channel do not see each other's frames, so
+    only a lock can tell that a second copy was started.) With request_id the lock is for that ECU address
+    only, so several ECUs with their own identifiers can share a channel."""
+    key = f"{interface}:{channel}" if request_id is None else f"{interface}:{channel}:{request_id:X}"
+    port = 47000 + zlib.crc32(key.encode()) % 2000
     lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows: no other socket may share the port
         lock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -703,8 +787,10 @@ def claim_channel(interface, channel):
 
 
 def other_ecu_present(bus, config: EcuConfig, listen: float = 0.4) -> bool:
-    """True when another ECU already answers on this bus, e.g. a second dummy ECU on the same channel.
-    Two ECUs answering the same requests break security access and flashing."""
+    """True when another ECU already answers on this ECU's response identifier - two ECUs answering the
+    same requests break security access and flashing - or, when this one sends the periodic frames too,
+    when someone else already sends them. An ECU with its own identifiers and no periodic frames can
+    join a channel that already has one."""
     probe = bytes([0x02, 0x3E, 0x00])  # functional TesterPresent
     if config.address_byte is not None:
         probe = bytes([config.address_byte]) + probe
@@ -716,7 +802,7 @@ def other_ecu_present(bus, config: EcuConfig, listen: float = 0.4) -> bool:
             continue
         if message.arbitration_id == config.response_id and bool(message.is_extended_id) == config.extended_ids:
             return True
-        if message.arbitration_id in BROADCAST_IDS and not message.is_extended_id:
+        if config.broadcast_interval and message.arbitration_id in BROADCAST_IDS and not message.is_extended_id:
             return True
     return False
 
@@ -763,7 +849,7 @@ def main(argv=None):
     config = replace(config or EcuConfig(), **overrides)
     connection = {**DEFAULT_CONNECTION, **connection}
     interface, channel = connection["interface"], parse_channel(connection["channel"])
-    lock = None if args.force else claim_channel(interface, channel)
+    lock = None if args.force else claim_channel(interface, channel, config.request_id)
     bus = can.Bus(interface=interface, channel=channel, bitrate=int(connection["bitrate"]))
     started = time.strftime("%H:%M:%S")
 

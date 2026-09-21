@@ -1,6 +1,8 @@
 """Dummy ECU window: connect the simulated ECU to a CAN channel (e.g. a Kvaser virtual channel) and set how it
-answers - addressing, ISO-TP flow control, UDS timing and security, flashing. Changes apply at once, even while
-connected; the settings are remembered, and can be saved and loaded as JSON profiles."""
+answers - addressing, ISO-TP flow control, UDS timing and security, flashing, and its data: the DIDs, the DTCs
+with their snapshot and extended data, and services forced to answer with a negative response. Changes apply
+at once, even while connected; the settings are remembered, and can be saved and loaded as JSON profiles.
+Several dummy ECUs can share a channel when each has its own identifiers."""
 from __future__ import annotations
 
 import collections
@@ -12,7 +14,7 @@ from dataclasses import asdict, fields, replace
 
 import can
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -22,6 +24,7 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -31,6 +34,8 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -38,6 +43,7 @@ from PyQt5.QtWidgets import (
 
 from canexpert.simulator.ecu import (
     DEFAULT_CONNECTION,
+    SERVICE_NAMES,
     SESSION_NAMES,
     DummyEcu,
     EcuConfig,
@@ -48,6 +54,7 @@ from canexpert.simulator.ecu import (
     parse_channel,
     save_profile,
 )
+from canexpert.uds.client import NRC_NAMES
 from canexpert.uds.isotp import flow_control_frame
 from canexpert.ui_common import app_settings, toolbar_icon
 
@@ -59,6 +66,16 @@ ERROR_STYLE = "background: #fde2e2;"
 
 
 # --- text fields ------------------------------------------------------------------------
+
+def printable(data: bytes) -> str:
+    """Bytes as text where they are text, for the DID table's preview."""
+    return "".join(chr(byte) if 32 <= byte < 127 else "." for byte in data)
+
+
+def forced_text(sid: int, nrc: int) -> str:
+    """"SecurityAccess: requiredTimeDelayNotExpired" - which service is refused, and how."""
+    return f"{SERVICE_NAMES.get(sid, f'service {sid:02X}')}: {NRC_NAMES.get(nrc, 'unknown NRC')}"
+
 
 def parse_byte_list(text: str) -> tuple[int, ...]:
     """'00, 11' -> (0x00, 0x11)."""
@@ -237,6 +254,7 @@ class DummyEcuWindow(QMainWindow):
         self.tabs.addTab(self._uds_page(), "UDS")
         self.tabs.addTab(self._flashing_page(), "Flashing")
         self.tabs.addTab(self._periodic_page(), "Periodic frames")
+        self.tabs.addTab(self._data_page(), "Data")
         settings = QWidget()
         settings_layout = QVBoxLayout(settings)
         settings_layout.setContentsMargins(0, 0, 0, 0)
@@ -485,6 +503,163 @@ class DummyEcuWindow(QMainWindow):
             self.st_min.setRange(1, 9)
         self._apply()
 
+    # --- data: DIDs, DTCs, forced negative responses ---------------------------------------------------
+
+    def _table(self, headers, stretch_column):
+        """A table that fits the settings pane: stretch_column takes the room, the others their content."""
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        header = table.horizontalHeader()
+        for column in range(len(headers)):
+            header.setSectionResizeMode(column, QHeaderView.Stretch if column == stretch_column
+                                        else QHeaderView.ResizeToContents)
+        table.setMinimumHeight(150)
+        table.itemChanged.connect(self._on_data_edited)
+        return table
+
+    def _table_buttons(self, table, add):
+        add_button, remove_button = QPushButton("Add"), QPushButton("Remove")
+        add_button.clicked.connect(lambda: (add(), self._apply()))
+        remove_button.clicked.connect(lambda: self._remove_row(table))
+        return self._row(add_button, remove_button)
+
+    def _data_page(self):
+        dids, form = self._group("DIDs: ReadDataByIdentifier (0x22) and WriteDataByIdentifier (0x2E)")
+        self.did_table = self._table(["DID", "Data (hex)", "As text", "Writable"], stretch_column=1)
+        form.addRow(self.did_table)
+        form.addRow(self._table_buttons(self.did_table, lambda: self._add_did(0x0000, b"\x00", False)))
+        form.addRow(hint("A writable DID takes a new value of the same length, in the extended or programming "
+                         "session once security access is unlocked. F186 (session) and 0100 (uptime) are "
+                         "always there."))
+        dtcs, form = self._group("DTCs: ReadDTCInformation (0x19) and ClearDiagnosticInformation (0x14)")
+        self.dtc_table = self._table(["DTC", "Status", "Snapshot record 01 (hex)", "Extended data 01 (hex)"],
+                                     stretch_column=2)
+        form.addRow(self.dtc_table)
+        form.addRow(self._table_buttons(self.dtc_table, lambda: self._add_dtc(0x000000, 0x08, b"", b"")))
+        form.addRow(hint("Snapshot: the number of identifiers, then each DID and its data (19 04). Extended "
+                         "data: its bytes (19 06). 19 01, 19 02 and 19 0A report the DTCs and their status."))
+        forced, form = self._group("Forced negative responses")
+        self.nrc_table = self._table(["Service", "NRC", "Meaning"], stretch_column=2)
+        self.nrc_table.setMinimumHeight(110)
+        form.addRow(self.nrc_table)
+        form.addRow(self._table_buttons(self.nrc_table, lambda: self._add_forced(0x22, 0x22)))
+        form.addRow(hint("Every request of that service is answered 7F <service> <NRC> - to see how a tester "
+                         "copes with a refusal."))
+        return self._page(dids, dtcs, forced)
+
+    @staticmethod
+    def _cell(text, editable=True):
+        item = QTableWidgetItem(text)
+        if not editable:
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        return item
+
+    def _append(self, table, cells):
+        loading, self._loading = self._loading, True
+        try:
+            row = table.rowCount()
+            table.insertRow(row)
+            for column, cell in enumerate(cells):
+                table.setItem(row, column, cell)
+        finally:
+            self._loading = loading
+
+    def _add_did(self, did, data, writable):
+        writable_item = self._cell("")
+        writable_item.setFlags((writable_item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
+        writable_item.setCheckState(Qt.Checked if writable else Qt.Unchecked)
+        self._append(self.did_table, [self._cell(f"{did:04X}"), self._cell(data.hex(" ").upper()),
+                                      self._cell(printable(data), editable=False), writable_item])
+
+    def _add_dtc(self, dtc, status, snapshot, extended):
+        self._append(self.dtc_table, [self._cell(f"{dtc:06X}"), self._cell(f"{status:02X}"),
+                                      self._cell(snapshot.hex(" ").upper()), self._cell(extended.hex(" ").upper())])
+
+    def _add_forced(self, sid, nrc):
+        meaning = self._cell(forced_text(sid, nrc), editable=False)
+        meaning.setToolTip(f"Every request of this service is answered 7F {sid:02X} {nrc:02X}")
+        self._append(self.nrc_table, [self._cell(f"{sid:02X}"), self._cell(f"{nrc:02X}"), meaning])
+
+    def _remove_row(self, table):
+        row = table.currentRow()
+        if row >= 0:
+            table.removeRow(row)
+            self._apply()
+
+    def _on_data_edited(self, item):
+        if self._loading:
+            return
+        loading, self._loading = self._loading, True      # the previews are the window's own writing
+        try:
+            if item.tableWidget() is self.did_table and item.column() == 1:
+                try:
+                    preview = printable(bytes.fromhex(item.text()))
+                except ValueError:
+                    preview = ""
+                self.did_table.item(item.row(), 2).setText(preview)
+            if item.tableWidget() is self.nrc_table and item.column() in (0, 1):
+                try:
+                    preview = forced_text(int(self.nrc_table.item(item.row(), 0).text(), 16),
+                                          int(self.nrc_table.item(item.row(), 1).text(), 16))
+                except ValueError:
+                    preview = ""
+                self.nrc_table.item(item.row(), 2).setText(preview)
+        finally:
+            self._loading = loading
+        self._apply()
+
+    def _read_tables(self):
+        """The DID, DTC and forced-NRC tables as configuration lists; ValueError naming the bad cell."""
+        def number(table, row, column, what, maximum):
+            item = table.item(row, column)
+            try:
+                value = int(item.text().strip(), 16)
+                if not 0 <= value <= maximum:
+                    raise ValueError
+            except ValueError:
+                item.setBackground(QColor("#fde2e2"))
+                raise ValueError(f"{what} in row {row + 1} must be hexadecimal, at most {maximum:X}") from None
+            item.setData(Qt.BackgroundRole, None)
+            return value
+
+        def data(table, row, column, what, required):
+            item = table.item(row, column)
+            try:
+                raw = bytes.fromhex(item.text())
+                if required and not raw:
+                    raise ValueError
+            except ValueError:
+                item.setBackground(QColor("#fde2e2"))
+                raise ValueError(f"{what} in row {row + 1} must be hexadecimal bytes, e.g. 57 56 57") from None
+            item.setData(Qt.BackgroundRole, None)
+            return raw.hex()
+
+        dids = [{"did": number(self.did_table, row, 0, "The DID", 0xFFFF),
+                 "data": data(self.did_table, row, 1, "The DID's data", True),
+                 "writable": self.did_table.item(row, 3).checkState() == Qt.Checked}
+                for row in range(self.did_table.rowCount())]
+        dtcs = [{"dtc": number(self.dtc_table, row, 0, "The DTC", 0xFFFFFF),
+                 "status": number(self.dtc_table, row, 1, "The status", 0xFF),
+                 "snapshot": data(self.dtc_table, row, 2, "The snapshot", False),
+                 "extended": data(self.dtc_table, row, 3, "The extended data", False)}
+                for row in range(self.dtc_table.rowCount())]
+        forced = [{"sid": number(self.nrc_table, row, 0, "The service", 0xFF),
+                   "nrc": number(self.nrc_table, row, 1, "The NRC", 0xFF)}
+                  for row in range(self.nrc_table.rowCount())]
+        return dids, dtcs, forced
+
+    def _fill_tables(self, config: EcuConfig):
+        for table in (self.did_table, self.dtc_table, self.nrc_table):
+            table.setRowCount(0)
+        for item in config.dids:
+            self._add_did(int(item["did"]), bytes.fromhex(item["data"]), bool(item.get("writable")))
+        for item in config.dtcs:
+            self._add_dtc(int(item["dtc"]), int(item.get("status", 0)), bytes.fromhex(item.get("snapshot", "")),
+                          bytes.fromhex(item.get("extended", "")))
+        for item in config.forced_nrcs:
+            self._add_forced(int(item["sid"]), int(item["nrc"]))
+
     def _fill(self, config: EcuConfig, connection: dict | None = None):
         self._loading = True
         try:
@@ -534,6 +709,7 @@ class DummyEcuWindow(QMainWindow):
             self.dump_path.setText(config.dump_path or "")
             self.broadcast.setChecked(config.broadcast_interval > 0)
             self.broadcast_interval.setValue(round(config.broadcast_interval * 1000) or 100)
+            self._fill_tables(config)
         finally:
             self._loading = False
 
@@ -557,6 +733,10 @@ class DummyEcuWindow(QMainWindow):
         data_formats = parsed(self.data_formats, parse_byte_list)
         address_format = parsed(self.address_format, parse_address_format)
         memory_ranges = parsed(self.memory_ranges, parse_ranges)
+        try:
+            dids, dtcs, forced_nrcs = self._read_tables()
+        except ValueError as exc:
+            errors.append(str(exc))
         if errors:
             raise ValueError("; ".join(errors))
         st_min = self.st_min.value() if self.st_min_unit.currentIndex() == 0 else 0xF0 + self.st_min.value()
@@ -581,6 +761,7 @@ class DummyEcuWindow(QMainWindow):
             allow_upload=self.allow_upload.isChecked(),
             broadcast_interval=self.broadcast_interval.value() / 1000 if self.broadcast.isChecked() else 0,
             dump_path=self.dump_path.text().strip() or None,
+            dids=dids, dtcs=dtcs, forced_nrcs=forced_nrcs,
         )
 
     def _apply(self, *_):
@@ -592,8 +773,11 @@ class DummyEcuWindow(QMainWindow):
         except ValueError as exc:
             self.statusBar().showMessage(f"Not applied: {exc}")
             return
+        data_changed = any(getattr(config, name) != getattr(self.ecu.config, name) for name in ("dids", "dtcs"))
         for item in fields(EcuConfig):
             setattr(self.ecu.config, item.name, getattr(config, item.name))
+        if data_changed:
+            self.ecu.load_data()                      # the new tables are what the ECU answers from now on
         self.statusBar().clearMessage()
         self._update_labels()
 
@@ -679,11 +863,12 @@ class DummyEcuWindow(QMainWindow):
             QMessageBox.warning(self, "Dummy ECU", str(exc) if "channel" in str(exc) else "Enter a numeric bit rate.")
             return False
         interface = self.interface.currentText().strip()
-        lock = claim_channel(interface, channel)
+        lock = claim_channel(interface, channel, self.ecu.config.request_id)
         if lock is None:
-            QMessageBox.warning(self, "Dummy ECU", f"Another dummy ECU already runs on {interface} channel {channel}. "
-                                "Close it first: two ECUs answering the same requests break security access "
-                                "and flashing.")
+            QMessageBox.warning(self, "Dummy ECU", f"Another dummy ECU already answers requests to "
+                                f"0x{self.ecu.config.request_id:X} on {interface} channel {channel}. Close it, or "
+                                "give this one other identifiers (Addressing): two ECUs answering the same "
+                                "requests break security access and flashing.")
             return False
         try:
             bus = can.Bus(interface=interface, channel=channel, bitrate=bitrate)
@@ -692,9 +877,10 @@ class DummyEcuWindow(QMainWindow):
             QMessageBox.warning(self, "Dummy ECU", f"Cannot open {interface} channel {channel}:\n{exc}")
             return False
         if other_ecu_present(bus, self.ecu.config) and QMessageBox.question(
-                self, "Dummy ECU", f"Another ECU already answers on {interface} channel {channel} "
-                f"(0x{self.ecu.config.response_id:X} or 0x300/0x301). Two ECUs answering the same requests break "
-                f"security access and flashing.\n\nConnect anyway?") != QMessageBox.Yes:
+                self, "Dummy ECU", f"Another ECU already answers on {interface} channel {channel} with "
+                f"0x{self.ecu.config.response_id:X}, or sends 0x300/0x301 as this one would. Two ECUs answering "
+                f"the same requests break security access and flashing; a second ECU on the channel needs its "
+                f"own identifiers and the periodic frames off.\n\nConnect anyway?") != QMessageBox.Yes:
             bus.shutdown()
             lock.close()
             return False

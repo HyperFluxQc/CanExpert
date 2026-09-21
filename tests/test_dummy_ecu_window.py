@@ -56,11 +56,15 @@ class DummyEcuWindowTest(unittest.TestCase):
         self.assertEqual(self.window.connect_button.text(), "Disconnect")
         self.assertFalse(self.window.channel.isEnabled())
         self.assertEqual(uds_rdbi(self.tester, 0xF195, TESTER, ECU), b"APP-1.0.0")
-        self.assertIsNone(claim_channel("virtual", self.channel))                 # the window holds the channel
+        # The window holds the channel for its own requests; an ECU with other identifiers may join it.
+        self.assertIsNone(claim_channel("virtual", self.channel, TESTER))
+        other = claim_channel("virtual", self.channel, 0x7E1)
+        self.assertIsNotNone(other)
+        other.close()
         self.window.disconnect_ecu()
         self.assertEqual(self.window.connect_button.text(), "Connect")
         self.assertIsNone(uds_rdbi(self.tester, 0xF195, TESTER, ECU, timeout=0.3))
-        lock = claim_channel("virtual", self.channel)
+        lock = claim_channel("virtual", self.channel, TESTER)
         self.assertIsNotNone(lock)
         lock.close()
 
