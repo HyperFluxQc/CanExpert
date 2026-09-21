@@ -367,7 +367,9 @@ item 10.
 *Effort: medium*
 
 `ROE` (0x86) and `RDBPI` (0x2A) can be sent, but there is no receive path for the event or periodic
-responses they cause: they arrive later as unrelated frames and are skipped. `NRC 0x21
+responses they cause: they arrive later as unrelated frames and are skipped (a periodic `6A` frame is no
+longer taken for the answer to 0x2A). The Dummy ECU now answers both, so the receive path has something
+to be tested against. `NRC 0x21
 busyRepeatRequest` is also returned to the caller instead of being retried. Authentication (0x29) and
 SecuredDataTransmission (0x84) are excluded by design
 ([uds/client.py:488](canexpert/uds/client.py#L488)) — worth closing to claim full ISO 14229 coverage.
@@ -561,6 +563,13 @@ Then the features that had grown to overlap were cut back:
   `api.uds.*`) still works but is deprecated and out of the editor's completion;
 - the `EZCan2/KvaserCAN` settings migration, `config_test.json`, `requirements-build.txt` and the one-entry
   `workers` dict are removed.
+
+The Dummy ECU then became a fuller simulation: the messages of any DBC with a generator per signal
+(`simulator/signals.py`), periodic data and ResponseOnEvent, a fault memory whose statuses follow faults
+through operation cycles (`simulator/dtc.py`), transport errors on purpose, access rules per DID and
+service with several security levels and a seed & key DLL, a bootloader after a failed flash with an
+optional CRC-32 check, and ReadMemoryByAddress, WriteMemoryByAddress and InputOutputControlByIdentifier.
+Its default traffic is what it always sent, so the panels and examples work as before.
 
 The next things worth doing: **item 26** (a receive path for ResponseOnEvent and periodic data, and
 retrying NRC 0x21), the tier 4 polish - **33** keyboard shortcuts and **37** packaging first - and

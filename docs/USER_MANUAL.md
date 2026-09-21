@@ -513,7 +513,8 @@ match your ECU: the session numbers, whether DTCs and normal messages are switch
 SecurityAccess level and how the key is worked out (a mask, or a `GenerateKeyEx` DLL), the erase and
 dependency check routine identifiers, the address and length format, the data format, how many bytes go
 in one TransferData (*as much as the ECU allows* uses the maxNumberOfBlockLength it announces), the reset
-type and the DID read afterwards. **0** leaves a step out altogether. **Save profile...** keeps the
+type and the DID read afterwards, and whether the image's CRC-32 goes to the dependency check (for a
+bootloader that checks it). **0** leaves a step out altogether. **Save profile...** keeps the
 settings in a JSON file you can hand round with the firmware, and **Load profile...** reads one back; the
 last settings used are remembered anyway.
 
@@ -569,20 +570,101 @@ ECU runs on one and CAN Expert on the other.
 2. Choose the interface and channel (**Detect** lists them; `kvaser` channel `1`) and press **Connect**.
 3. In CAN Expert pick the **Dummy ECU** configuration, select `[kvaser] Ch 0` and connect.
 
-The ECU answers sessions, security access, DIDs, DTCs and the whole flashing sequence. Its window sets
-everything it does: addressing, ISO-TP flow control (block size, STmin, WAIT frames), UDS timing and
-security, and the flashing rules (TransferData size, accepted formats, memory ranges, routines). Settings
-apply immediately and can be saved as profiles. **Show CAN frames** logs every frame, flow control
-included.
+The ECU answers sessions, security access, DIDs, DTCs, periodic data, events, memory and I/O control, and
+the whole flashing sequence. Its window sets everything it does; every setting applies at once, even while
+it runs, and the settings can be saved as profiles. The right side shows what the ECU is doing — session,
+security levels unlocked, whether its application is valid, periodic data, events, I/O control, the
+operation cycle — and **Show CAN frames** logs every frame, flow control included.
 
-The **Data** tab edits what the ECU answers with, while it runs: the **DIDs** (data as hex, shown as text
-where it is text, each writable or not), the **DTCs** with their status, snapshot record and extended data
-record (so the UDS Console's *Snapshot* and *Extended data* buttons get answers), and **forced negative
-responses** — a service always answered `7F <service> <NRC>`, to see how a tester copes with a refusal.
-They are part of the ECU's profile.
+| Tab | What it sets |
+|---|---|
+| **Addressing**, **Flow control** | The identifiers, extended addressing and padding; block size, STmin, WAIT frames and receive buffer. |
+| **UDS** | P2/P2*, the response delay, the S3 timeout, the sessions, and the rates of periodic data. |
+| **Access** | Security levels and how each key is worked out; rules that allow a service only in some sessions or after unlocking a level. |
+| **Flashing** | TransferData size and formats, memory ranges, the routines, and the **bootloader**. |
+| **Signals** | The messages the ECU sends, and a generator for each signal. |
+| **Data** | The DIDs, the DTCs with their faults, the fault memory's cycles, and forced negative responses. |
+| **Errors** | Transport errors on purpose. |
+
+### Its application frames
+
+The **Signals** tab chooses the DBC whose messages the ECU sends. **Built-in** is `DBC/dummy_ecu.dbc` —
+`0x300` EngineData and `0x301` EcuStatus, which the example panels use — and **Browse...** takes any other.
+Each message is sent at its own period (the table's, else the DBC's `GenMsgCycleTime`, else the default
+period) and can be switched off. Each signal gets a **generator**:
+
+| Generator | What the signal does |
+|---|---|
+| Constant | Stays at *Low*. |
+| Ramp | Climbs from *Low* to *High* in *Period* seconds, then starts again. |
+| Sine | A wave between *Low* and *High*, one per *Period*. |
+| Square | *High* for half of *Period*, *Low* for the other half. |
+| Random | A new value between *Low* and *High* in every frame. |
+| Counter | One more in every frame, from *Low* to *High* and round again. |
+| Engine running | *High* while the engine runs (`0x200 01`), *Low* once it stops (`0x200 02`), approached with *Period* as time constant. |
+| Logging | *High* while logging is on (`0x201`, bit 0). |
+| Session | The diagnostic session. |
+
+Values are physical, in the signal's unit; **Now** shows what goes out. The built-in database starts with
+the ECU's usual traffic: the temperature warms up to 85 °C while the engine runs, the pressure follows,
+and a counter counts. The frames stop while CommunicationControl switches normal messages off and while
+the bootloader runs.
+
+### Periodic data and events
+
+The **F2xx** DIDs can be sent periodically: `2A 03 01` sends F201 fast, `2A 01 02` F202 slow, `2A 04`
+stops them. The rates are on the **UDS** tab. The frames are `6A` messages on the response ID, or frames
+of an identifier of their own. ResponseOnEvent answers unasked: `86 03 02 01 01 22 01 01` sets up an event
+on DID `0101`, `86 01 02 08 19 02 08` one on DTCs becoming confirmed, `86 05 02` starts them and
+`86 00 02` stops them. Periodic data and events end when the session changes.
+
+### Security and access
+
+The **Access** tab has the main security level and as many more as needed, each with its own seed length
+and key: seed XOR a mask, or what a **seed & key DLL** (`GenerateKeyEx`) computes — give the UDS Console
+the same DLL and it unlocks. Each level unlocks on its own, until the session changes. A DID can be
+readable only in some **Sessions** (elsewhere NRC `0x31`) or after unlocking a **Level** (NRC `0x33`) —
+DID `0200` shows both — and a **service rule** does the same for a whole service, with NRC `0x7F` and
+`0x33`.
+
+### Faults and the fault memory
+
+Tick **Fault** beside a DTC on the **Data** tab and its test fails, as ISO 14229 describes: the DTC is
+pending at once, confirmed once it has failed in the number of operation cycles set under *Fault memory*,
+and it asks for the warning lamp. The snapshot record takes the **Snapshot DIDs** with their values at
+that moment, and the occurrence counter — the extended data's first byte — counts one more. Untick it and
+the DTC heals: no longer pending after a clean cycle, aged out after more. **Now** shows the status as it
+is. An operation cycle ends with an ECUReset, **New operation cycle**, or a timer. ControlDTCSetting off
+freezes every status; ClearDiagnosticInformation starts them again, and a fault still present comes
+straight back.
+
+### Memory and I/O control
+
+A DID with a **Signal** answers that signal's value. InputOutputControlByIdentifier takes the signal
+over in the extended session: `2F 01 01 03 03 E8` holds the temperature at 100.0 °C and the `0x300`
+frames carry it, `2F 01 01 00` hands it back; *freezeCurrentState* and *resetToDefault* work too.
+ReadMemoryByAddress (`23`) and WriteMemoryByAddress (`3D`, extended session and unlocked) read and write
+the ECU's memory — the flashed image included.
+
+### The bootloader
+
+An erase or a download leaves the application invalid until checkProgrammingDependencies passes. An
+ECUReset with an invalid application — a flash that failed or was abandoned — starts the **bootloader**:
+no application frames, `F195` answers `BOOTLOADER`, and only what is needed to flash again is answered.
+A good flash and a reset start the application again. The **Image check** can require the CRC-32 of the
+image — as the check routine's option record, which the built-in flashing sequence sends when asked, or
+in the image's last four bytes — and the software version can be read from the image itself (the demo
+image has its name at `00020000`).
+
+### Errors on purpose
+
+The **Errors** tab gives each response a chance of going wrong: refused (NRC `0x21` busyRepeatRequest by
+default), not answered, answered on another identifier, or — for a long response — a consecutive frame
+dropped, out of sequence or late. TesterPresent is spared unless you tick it, so the ECU stays in CAN
+Expert's node list while the other requests go wrong.
 
 Several dummy ECUs can share a channel when each has its own identifiers (Addressing) and only one sends
-the periodic frames. A second ECU answering the *same* requests is refused, because two ECUs answering
+the application frames. A second ECU answering the *same* requests is refused, because two ECUs answering
 them break security access and flashing.
 
 ## Where things are kept

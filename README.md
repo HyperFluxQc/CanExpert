@@ -176,7 +176,8 @@ CanExpert/
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
 │   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
 │   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
-│   └── simulator/              # ecu.py (the simulated ECU), window.py (its window)
+│   └── simulator/              # ecu.py (the simulated ECU), signals.py (its frames), dtc.py (its fault
+│                               #   memory), window.py (its window)
 ├── Configurations/             # config_<name>.json, one per configuration
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
 ├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
@@ -202,15 +203,18 @@ Every setting applies at once, even while connected, and is remembered for the n
 |---|---|
 | Addressing | Physical request ID (tester → ECU), functional request ID, response ID (ECU → tester), 29-bit identifiers, extended addressing byte, padding byte |
 | Flow control | Block size (BS), STmin (ms or 100-900 µs), WAIT frames before each ContinueToSend and their interval, receive buffer (longer requests get flow control overflow) |
-| UDS | P2 and P2* announced by DiagnosticSessionControl, response delay (NRC 0x78 beyond P2) and pending interval, S3 timeout, programming session only from extended, SecurityAccess level, seed length, key XOR mask, wrong keys allowed and lockout delay |
-| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, RequestUpload, file for the flashed image |
-| Periodic frames | `0x300`/`0x301` on or off, and their period |
+| UDS | P2 and P2* announced by DiagnosticSessionControl, response delay (NRC 0x78 beyond P2) and pending interval, S3 timeout, programming session only from extended, the slow/medium/fast rates of periodic data (0x2A) and whether it goes out as `6A` frames or on an ID of its own |
+| Access | SecurityAccess levels - the main one and more - each with its seed length and key (seed XOR a mask, or a `GenerateKeyEx` seed & key DLL), wrong keys allowed and lockout delay; rules allowing a service only in some sessions or after unlocking a level |
+| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, RequestUpload, file for the flashed image; the bootloader's image check (none, CRC-32 as the check routine's option record, or in the image's last four bytes) and where the software version is read from the image |
+| Signals | The DBC whose messages are sent (built-in: `DBC/dummy_ecu.dbc`), each message on or off with its period, and a generator per signal: constant, ramp, sine, square, random, counter, the engine running, logging, the session |
+| Data | DIDs (writable or not, following a signal, readable in some sessions or after unlocking a level), DTCs with their status, faults, snapshot and extended data, the fault memory's confirmation and aging cycles and snapshot DIDs, forced negative responses |
+| Errors | The chance of each transport error on purpose: refused, not answered, answered on another ID, a consecutive frame dropped, out of sequence or late |
 
 **How big are the TransferData blocks?** The ECU decides: it announces maxNumberOfBlockLength (data + the `0x36` SID + the block counter) in its RequestDownload response, and the tester sends blocks of that size minus 2. Set **Data per TransferData** to 256 or 512 to get `74 20 01 02` or `74 20 02 02`; CAN Expert's `Flashing()` follows it.
 
 In CAN Expert, choose the **Dummy ECU** configuration (SERVER ID `7E0`, ECU ID `7E8`, database family `showcase`, the showcase panel with every control and `Flashing()`), select the receiver `[kvaser] Ch 0` and click **Connect**. ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
 
-The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime), WriteDataByIdentifier for `F190`, SecurityAccess (by default level 1, key = seed XOR `A5`, the same as the example `compute_key()`), ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: connect, click **Flashing** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`; **Save memory as S-record...** (or **Save image to** on the Flashing tab) writes the received image to a file, and RequestUpload (`0x35`) reads it back over UDS.
+The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime, `0101`/`0102` the live temperature and pressure, `F201`/`F202` the same for periodic data, `0200` readable only in the extended session after unlocking), WriteDataByIdentifier for `F190`, SecurityAccess (by default level 1, key = seed XOR `A5`, the same as the example `compute_key()`), ReadDataByPeriodicIdentifier, ResponseOnEvent (on a DID change or a DTC status change), InputOutputControlByIdentifier (on the DIDs that follow a signal: the application frames carry what the tester set), ReadMemoryByAddress, WriteMemoryByAddress, ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. A DTC's **Fault** box makes its status follow ISO 14229's life cycle - pending, confirmed after operation cycles, aged out - with the snapshot taken at the moment of the fault. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: connect, click **Flashing** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`, or the version found in the image; **Save memory as S-record...** (or **Save image to** on the Flashing tab) writes the received image to a file, and RequestUpload (`0x35`) reads it back over UDS. A flash that fails leaves the application invalid, and the next ECUReset starts the bootloader until a good flash.
 
 To see live graphs, open **CAN Logger**, load `DBC/dummy_ecu.dbc` and tick `EngineData.Temperature`, `EngineData.Pressure` or the `EcuStatus` signals.
 
@@ -220,7 +224,7 @@ Without a window, add `--console`, optionally with a profile saved from the wind
 python dummy_ecu.py --console --channel 1 --config my_ecu.json
 ```
 
-Console options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--block-size`, `--stmin`, `--fc-wait`, `--erase-seconds`, `--no-broadcast`, `--dump FILE`, `--force`. Given without `--console`, they preset the window. Run `python dummy_ecu.py --help` for details.
+Console options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--block-size`, `--stmin`, `--fc-wait`, `--erase-seconds`, `--dbc FILE`, `--no-broadcast`, `--dump FILE`, `--force`. Given without `--console`, they preset the window. Run `python dummy_ecu.py --help` for details.
 
 ## Tests
 

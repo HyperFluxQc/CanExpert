@@ -59,8 +59,12 @@ in a file of its own.
   output and variables; script events for keys, error frames and the bus state.
 - **CAN Logger exports**: CSV with a row per sample or a column per signal, MDF 4, PNG, of everything, the
   screen or the cursor range; statistics between the cursors; a cap on the samples kept.
-- **Dummy ECU data**: editable DIDs, DTCs with snapshot and extended data, forced negative responses, and
-  several simulated ECUs on one channel.
+- **Dummy ECU**: editable DIDs (live from a signal, or needing a session or a security level), DTCs whose
+  status follows faults through operation cycles with the snapshot of the moment, forced negative
+  responses; the messages of any DBC with a generator per signal; periodic data (0x2A), ResponseOnEvent
+  (0x86), I/O control (0x2F) and memory by address (0x23/0x3D); several security levels with a mask or a
+  seed & key DLL, and service rules; a bootloader after a failed flash, with an optional CRC-32 check;
+  transport errors on purpose; several simulated ECUs on one channel.
 
 ## Configuration
 
@@ -182,6 +186,7 @@ Without a script, `flash_sequence.run_flash()` sends what most bootloaders want,
 | `block_size` | 0 | Bytes per TransferData; 0 uses what the ECU announces |
 | `reset_type`, `version_did` | `0x01`, `0xF195` | ECUReset and the DID read once it is back; 0 skips them |
 | `restore_after` | on | DTCs and normal messages switched back on when it is done |
+| `check_crc` | off | The CRC-32 of the image (its segments in address order) sent as the dependency check's option record, for a bootloader that checks it |
 
 Each segment is erased, downloaded (RequestDownload, TransferData blocks, RequestTransferExit) and then the whole image checked, so a two-segment file produces two erases. The block size is `min(maxNumberOfBlockLength, 4095) - 2` (the service identifier and the block counter come off it), narrowed further by `block_size` when it is set. Cancel stops after the block being sent.
 

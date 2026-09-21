@@ -136,7 +136,7 @@ class DataTabTest(unittest.TestCase):
 
     def test_the_tables_show_the_ecus_data(self):
         dids = [self.window.did_table.item(row, 0).text() for row in range(self.window.did_table.rowCount())]
-        self.assertEqual(dids, ["F187", "F18C", "F190", "F195"])
+        self.assertEqual(dids, ["F187", "F18C", "F190", "F195", "0101", "0102", "F201", "F202", "0200"])
         self.assertEqual(self.window.did_table.item(2, 2).text(), "WVWZZZ1KZAW000001")
         self.assertEqual(self.window.did_table.item(2, 3).checkState(), Qt.Checked)
         self.assertEqual(self.window.dtc_table.item(0, 0).text(), "010100")
@@ -154,9 +154,7 @@ class DataTabTest(unittest.TestCase):
         self.assertEqual(self.window.ecu.dids[0xF195], b"APP-1.0.0")
 
     def test_rows_are_added_and_removed(self):
-        buttons = [button for button in self.window.findChildren(dummy_ecu_window.QPushButton)
-                   if button.text() == "Add"]
-        buttons[2].click()                                                       # a forced NRC
+        self.window.nrc_buttons.add_button.click()                               # a forced NRC
         self.assertEqual(self.window.ecu.config.forced_nrcs, [{"sid": 0x22, "nrc": 0x22}])
         self.assertIn("conditionsNotCorrect", self.window.nrc_table.item(0, 2).text())
         self.window.nrc_table.setCurrentCell(0, 0)
