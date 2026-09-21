@@ -756,6 +756,29 @@ def key(api, key):
         self.window.on_disconnect_clicked()
         self.assertFalse(self.window._keys_watched)
 
+    def test_every_page_of_the_database_is_a_window_of_its_own(self):
+        two_pages = PANEL.replace("</page></pages>", '</page><page name="Body">'
+                                  '<checkbox id="9" label="Door" binding_value="door" x="10" y="10"/></page></pages>')
+        (self.databases / "panel_2026-09-18.xml").write_text(two_pages)
+        self.window.on_connect_clicked()
+        self.assertEqual(self.window.database_pane.windowTitle(), "Main")
+        self.assertEqual([pane.windowTitle() for pane in self.window.page_panes], ["Body"])
+        body = self.window.page_panes[0]
+        self.assertIs(body.dockManager(), self.window.workspace)
+        self.assertTrue(body.isTabbed(), "tabbed beside the first page, as the pages used to be")
+        self.window.panel.set_value("door", True)            # one panel behind every page window
+        self.assertTrue(self.window.panel.widgets["door"].isChecked())
+        body.setFloating()
+        self.assertTrue(body.isFloating())
+        self.window.panel.page_windows[1][1].zoom_combo.setCurrentText("150 %")
+        self.assertEqual(self.settings.value("panel_zoom/panel/Body"), "150 %")
+
+        self.window.on_disconnect_clicked()
+        self.assertEqual(self.window.page_panes, [])
+        self.assertEqual(self.window.database_pane.windowTitle(), "Database")
+        self.window.on_connect_clicked()
+        self.assertEqual(self.window.panel.page_windows[1][1].page.zoom, 1.5, "the page keeps its zoom")
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)

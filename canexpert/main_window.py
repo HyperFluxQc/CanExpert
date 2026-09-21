@@ -4,6 +4,7 @@ the newest matching panel database, send periodic TesterPresent, run the panel's
 Flashing, the tool windows and the logs.
 """
 import json
+import re
 import sys
 import time
 from collections import deque
@@ -33,7 +34,6 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QTabWidget,
     QTextEdit,
     QToolBar,
@@ -82,6 +82,7 @@ MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 MONITOR_LINES = 5000                # lines the CAN monitor keeps
 TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the monitors
+PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
@@ -302,13 +303,13 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.config_dock, self.channels_dock, Qt.Vertical)
 
         # Dock: Database (shown when connected and DB loaded; contains application UI)
-        self.app_db_scroll = QScrollArea()
-        self.app_db_scroll.setWidgetResizable(True)
+        # The loaded database's first page; its other pages get windows of their own (page_panes).
         self.app_db_container = QWidget()
         self.app_db_layout = QVBoxLayout()
+        self.app_db_layout.setContentsMargins(0, 0, 0, 0)
         self.app_db_container.setLayout(self.app_db_layout)
-        self.app_db_scroll.setWidget(self.app_db_container)
-        self.database_pane = make_pane("Database", self.app_db_scroll, "pane_database")
+        self.page_panes = []
+        self.database_pane = make_pane("Database", self.app_db_container, "pane_database")
         add_pane(self.workspace, self.database_pane)
         self.database_pane.toggleView(False)   # shown once a database is loaded
 
@@ -1530,21 +1531,51 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def clear_application_ui(self):
-        """Remove all widgets from application database panel."""
+        """Remove the loaded database's pages: the Database window's content and the other page windows."""
         while self.app_db_layout.count():
             item = self.app_db_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        for pane in self.page_panes:
+            self.workspace.removeDockWidget(pane)
+            pane.deleteLater()
+        self.page_panes = []
+        self.database_pane.setWindowTitle("Database")
         self.app_database = None
         self.panel = None
 
     # --- Application database UI ---
 
     def build_application_ui(self, app_db):
+        """Each page of the database a window of the workspace, as CANoe's panels are: the first in the
+        Database window, the others tabbed beside it, ready to be split off, floated or closed."""
         self.clear_application_ui()
-        self.panel = PanelView(app_db, self.send_can_message, self.log_verbose)
-        self.app_db_layout.addWidget(self.panel)
+        # The zoom of a page belongs to the database family, so a newer dated version keeps it.
+        family = re.sub(r"_\d{4}-\d{2}-\d{2}$", "", Path(app_db.get("source_path") or "panel").stem)
+        self.panel = PanelView(app_db, self.send_can_message, self.log_verbose, tabs=False,
+                               zooms=self._page_zooms(family))
+        self.app_db_layout.addWidget(self.panel)              # the description, when the database has one
+        self.panel.setVisible(bool(self.panel.description))
+        for index, (name, window) in enumerate(self.panel.page_windows):
+            window.zoom_changed.connect(lambda text, n=name: self._settings.setValue(f"{PANEL_ZOOM}/{family}/{n}", text))
+            if index == 0:
+                self.app_db_layout.addWidget(window, 1)
+                self.database_pane.setWindowTitle(name if len(self.panel.page_windows) > 1 else "Database")
+                continue
+            pane = make_pane(name, window, f"pane_page_{index}")
+            add_pane(self.workspace, pane, beside=self.database_pane)
+            self.page_panes.append(pane)
+        if self.page_panes:
+            self._apply_layout()
+            self.database_pane.setAsCurrentTab()
         self.app_database = app_db
+
+    def _page_zooms(self, family) -> dict:
+        self._settings.beginGroup(f"{PANEL_ZOOM}/{family}")
+        try:
+            return {name: self._settings.value(name, "", type=str) for name in self._settings.childKeys()}
+        finally:
+            self._settings.endGroup()
 
     def send_can_message(self, can_id, data, extended=None):
         if self.can_bus is None:
