@@ -234,6 +234,10 @@ class FlashProfileDialog(QDialog):
         form.addRow("Erase routine (hex, 0 = none):", self.erase_routine)
         self.check_routine = _hex_field(profile.check_routine)
         form.addRow("Dependency check routine (hex, 0 = none):", self.check_routine)
+        self.check_crc = QCheckBox("Send the image's CRC-32 to the dependency check")
+        self.check_crc.setToolTip("31 01 <routine> and the CRC-32 of the image (its segments in address order), "
+                                  "for a bootloader that checks it")
+        form.addRow("", self.check_crc)
         self.address_format = _hex_field(profile.address_format)
         form.addRow("Address and length format (hex):", self.address_format)
         self.data_format = _hex_field(profile.data_format)
@@ -278,7 +282,7 @@ class FlashProfileDialog(QDialog):
                 ("erase_routine", "The erase routine"), ("check_routine", "The dependency check routine"),
                 ("address_format", "The address and length format"), ("data_format", "The data format"),
                 ("reset_type", "The ECUReset type"), ("version_did", "The version DID"))
-    _FLAGS = ("stop_dtc", "stop_communication", "restore_after")
+    _FLAGS = ("stop_dtc", "stop_communication", "restore_after", "check_crc")
 
     def values(self):
         """The profile the fields describe. ValueError, with what to tell the user, when one is not a number."""

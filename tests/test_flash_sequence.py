@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 import uuid
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -187,6 +188,12 @@ class SequenceTest(unittest.TestCase):
         self.assertEqual(record, bytes([0x44, 0x08, 0x00, 0x40, 0x00, 0x00, 0x00, 0x01, 0x2C]))
         self.assertEqual(self.uds.arguments("StartRoutine")[1], (0xFF01, b""))   # the dependency check
 
+    def test_the_dependency_check_can_be_given_the_images_crc(self):
+        firmware = image((0x8000, b"abc"), (0x4000, b"de"))
+        run_flash(self.uds, firmware, FlashProfile(check_crc=True))
+        crc = zlib.crc32(b"deabc")                                               # the segments in address order
+        self.assertEqual(self.uds.arguments("StartRoutine")[-1], (0xFF01, crc.to_bytes(4, "big")))
+
     def test_the_data_goes_out_in_blocks_the_ecu_allows(self):
         data = bytes(range(256)) * 10                      # 2560 bytes
         run = run_flash(self.uds, image((0x8000, data)), FlashProfile())
@@ -317,13 +324,14 @@ class DialogTest(unittest.TestCase):
                                stop_communication=False, restore_after=False, security_level=0x09,
                                key_mask=0x3C, key_dll="C:/keys/seed.dll", key_variant="Body",
                                erase_routine=0xFF10, check_routine=0, address_format=0x24, data_format=0x11,
-                               block_size=200, reset_type=0x03, version_did=0xF189)
+                               block_size=200, reset_type=0x03, version_did=0xF189, check_crc=True)
         dialog = FlashProfileDialog(profile)
         self.addCleanup(dialog.close)
         self.assertEqual(dialog.values(), profile)
         self.assertEqual(dialog.erase_routine.text(), "FF10")
         self.assertEqual(dialog.security_level.text(), "09")
         self.assertFalse(dialog.restore_after.isChecked())
+        self.assertTrue(dialog.check_crc.isChecked())
 
     def test_a_value_that_is_not_hexadecimal_is_said_instead_of_accepted(self):
         dialog = FlashProfileDialog(FlashProfile())

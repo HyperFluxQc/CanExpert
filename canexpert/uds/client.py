@@ -54,6 +54,8 @@ def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int =
             if reply is None:
                 return None
             if reply[0] == sid + 0x40:
+                if sid == 0x2A and len(reply) > 1:     # periodic data (6A <identifier> <data>), not the answer
+                    continue
                 return reply
             if reply[0] == 0x7F and len(reply) >= 3 and reply[1] == sid:
                 if reply[2] == 0x78:

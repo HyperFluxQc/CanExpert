@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+import zlib
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ class FlashProfile:
     key_variant: str = ""
     erase_routine: int = 0xFF00       # 0 skips erasing
     check_routine: int = 0xFF01       # 0 skips the dependency check
+    check_crc: bool = False           # the image's CRC-32 as the check's option record (31 01 FF01 xx xx xx xx)
     address_format: int = 0x44        # addressAndLengthFormatIdentifier: 4-byte address and size
     data_format: int = 0x00           # dataFormatIdentifier: no compression, no encryption
     block_size: int = 0               # bytes per TransferData; 0 asks the ECU (maxNumberOfBlockLength)
@@ -70,6 +72,11 @@ class FlashCancelled(Exception):
 
 class FlashError(Exception):
     """A step the sequence cannot go on without."""
+
+
+def image_crc(firmware) -> int:
+    """The CRC-32 of an image as a bootloader checks it: the data of its segments in address order."""
+    return zlib.crc32(b"".join(bytes(data) for _address, data in sorted(firmware.segments)))
 
 
 def memory_record(address: int, size: int, address_format: int) -> list[int]:
@@ -184,7 +191,12 @@ def run_flash(uds, firmware, profile: FlashProfile, progress=None, cancelled=Non
 
     if profile.check_routine:
         progress(run.written, total, "Checking programming dependencies")
-        check_result = step(uds.StartRoutine(profile.check_routine), "checkProgrammingDependencies")
+        if profile.check_crc:
+            crc = image_crc(firmware)
+            check_result = step(uds.StartRoutine(profile.check_routine, crc.to_bytes(4, "big")),
+                                f"checkProgrammingDependencies (CRC-32 {crc:08X})")
+        else:
+            check_result = step(uds.StartRoutine(profile.check_routine), "checkProgrammingDependencies")
         status = check_result.data[:1]     # routineStatusRecord: 0, or nothing said, is good news
         if status not in (b"", b"\x00"):
             run.record("checkProgrammingDependencies", f"status 0x{status[0]:02X}")
