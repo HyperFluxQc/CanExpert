@@ -240,7 +240,7 @@ class FlashProfileDialog(QDialog):
         browse.clicked.connect(self._browse)
         dll_row.addWidget(self.key_dll, 1)
         dll_row.addWidget(browse)
-        form.addRow("Seed && key DLL:", dll_row)
+        form.addRow("Seed & key DLL:", dll_row)
         self.key_variant = QLineEdit(profile.key_variant)
         form.addRow("DLL variant:", self.key_variant)
         self.erase_routine = _hex_field(profile.erase_routine)
