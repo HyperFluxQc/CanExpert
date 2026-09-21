@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.paths import CONFIG_DIR
+from canexpert.transport_settings import TransportGroup, load_transport, save_transport
 
 # A node is reported lost after node_timeout_seconds without a reply. TesterPresent is sent several times
 # per timeout window so one missed response does not cause a false loss.
@@ -93,13 +94,17 @@ def diagnostic_request_id(config):
 
 
 def uds_transport(config) -> dict:
-    """uds_request() keyword arguments for a configuration: IDs, reply timeout, identifier size, address byte."""
+    """uds_request() keyword arguments for a configuration: IDs, reply timeout, identifier size, address
+    byte, and the padding and flow control a session adds (canexpert.transport_settings.apply_transport)."""
     return {
         "request_id": diagnostic_request_id(config),
         "response_id": config.get("response_id", 0x7E8),
         "timeout": config.get("timeout_ms", 2000) / 1000.0,
         "extended": not config.get("identifier_11_bit", True),
         "address_byte": config.get("extended_id_byte") if config.get("extended_id") else None,
+        "padding": config.get("isotp_padding"),
+        "block_size": config.get("isotp_block_size", 0),
+        "st_min": config.get("isotp_st_min", 0),
     }
 
 
@@ -140,13 +145,17 @@ def _hex(text, what, maximum=0x1FFFFFFF):
 class ConfigurationDialog(QDialog):
     """Create or edit a configuration; accepted() once it is saved to directory."""
 
-    def __init__(self, parent=None, config=None, directory=CONFIG_DIR):
+    def __init__(self, parent=None, config=None, directory=CONFIG_DIR, settings=None):
         super().__init__(parent)
         self.setWindowTitle("CAN Connection Configuration")
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.resize(480, 380)
         self.config = config or {}
         self.directory = directory
+        if settings is None:
+            from canexpert.ui_common import app_settings   # the dialog's only use of the application settings
+            settings = app_settings()
+        self.settings = settings
         self._build()
         self._fill()
 
@@ -200,6 +209,8 @@ class ConfigurationDialog(QDialog):
         self.extended_id_cb.toggled.connect(self.extended_id_byte_edit.setEnabled)
         form.addRow("Extended ID byte (hex):", self.extended_id_byte_edit)
         layout.addWidget(group)
+        self.transport_group = TransportGroup(load_transport(self.settings, self.config.get("name", "")))
+        layout.addWidget(self.transport_group)
         buttons = QHBoxLayout()
         save = QPushButton("Save Configuration")
         save.clicked.connect(self.save_config)
@@ -260,7 +271,9 @@ class ConfigurationDialog(QDialog):
 
     def save_config(self):
         try:
-            save_configuration(self._read(), self.directory)
+            transport = self.transport_group.transport()
+            config = save_configuration(self._read(), self.directory)
+            save_transport(self.settings, config["name"], transport)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid configuration", str(exc))
             return

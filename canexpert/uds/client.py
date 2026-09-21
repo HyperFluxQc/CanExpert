@@ -25,13 +25,16 @@ from canexpert.uds.isotp import drain, isotp_recv, isotp_send
 
 def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int = 0x7E8,
                 timeout: float = 2.0, extended: bool = False, address_byte: int | None = None,
-                padding: int | None = None, pending_timeout: float = 5.0, wait: bool = True) -> bytes | None:
+                padding: int | None = None, pending_timeout: float = 5.0, wait: bool = True,
+                block_size: int = 0, st_min: int = 0) -> bytes | None:
     """
     Send one UDS request and return the ECU's reply (positive or 0x7F negative), or None on timeout.
     wait=False only sends (for requests with the suppressPosRspMsgIndicationBit set).
     Frames queued before the request are discarded, unrelated replies are skipped and
     NRC 0x78 (response pending) extends the wait. A bus exposing transaction() (the
     session mailbox) pauses the periodic TesterPresent while the exchange is in progress.
+    padding fills every frame sent to 8 bytes; block_size and st_min are the flow control the tester
+    asks for when the reply spans several frames.
     """
     request = bytes(request)
     sid = request[0]
@@ -46,7 +49,8 @@ def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int =
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            reply = isotp_recv(bus, response_id, request_id, remaining, extended, address_byte, padding)
+            reply = isotp_recv(bus, response_id, request_id, remaining, extended, address_byte, padding,
+                               block_size, st_min)
             if reply is None:
                 return None
             if reply[0] == sid + 0x40:

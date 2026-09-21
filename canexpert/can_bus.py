@@ -71,6 +71,8 @@ class CanWorker(QThread):
         heartbeat = bytes([2, 0x3E, 0])
         if cfg.get("extended_id"):
             heartbeat = bytes([cfg["extended_id_byte"]]) + heartbeat
+        if cfg.get("isotp_padding") is not None:              # padded like the session's other requests
+            heartbeat = heartbeat.ljust(8, bytes([cfg["isotp_padding"]]))
         next_heartbeat = 0.0 if self.tester_present else float("inf")
         next_status = 0.0
         while self.running:

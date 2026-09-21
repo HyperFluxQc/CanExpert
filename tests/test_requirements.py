@@ -56,6 +56,10 @@ def Flashing(api, firmware):
 '''
 
 
+# What the main window sends by default: TesterPresent filled to 8 bytes with 0xCC.
+PADDED_TESTER_PRESENT = b"\x02\x3e\x00" + b"\xcc" * 5
+
+
 class RequirementsTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -115,7 +119,7 @@ class RequirementsTest(unittest.TestCase):
         self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
         # 2.2: repeated correctly addressed TesterPresent.
         heartbeats = [self.ecu.recv(.5), self.ecu.recv(.5)]
-        self.assertTrue(all(m and m.arbitration_id == 0x7E0 and bytes(m.data) == b'\x02\x3e\x00' for m in heartbeats))
+        self.assertTrue(all(m and m.arbitration_id == 0x7E0 and bytes(m.data) == PADDED_TESTER_PRESENT for m in heartbeats))
         # 2.3: response node beneath receiver, loss and recovery.
         self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2,0x7E,0], is_extended_id=False))
         self.assertTrue(spin_until(lambda: bool(self.window.node_items)))
@@ -251,7 +255,7 @@ class RequirementsTest(unittest.TestCase):
         self.assertFalse(items[("kvaser", 0, "", "")].font(0).bold())
         self.assertIsNotNone(self.window.ecu_monitor, "TesterPresent should start on the remembered channel")
         heartbeat = self.ecu.recv(1.0)
-        self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, b"\x02\x3E\x00"))
+        self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, PADDED_TESTER_PRESENT))
 
     def test_a_responding_ecu_offers_its_database_for_a_double_click(self):
         channel = self.channels({"interface": "kvaser", "channel": 0})[0]
@@ -321,7 +325,7 @@ class RequirementsTest(unittest.TestCase):
         message = self.ecu.recv(.5)
         self.assertTrue(message.is_extended_id)
         self.assertEqual(message.arbitration_id, 0x18DA10F1)
-        self.assertEqual(bytes(message.data), bytes([0x10,2,0x3E,0]))
+        self.assertEqual(bytes(message.data), bytes([0x10,2,0x3E,0]) + b'\xcc' * 4)   # padded to 8 bytes
         self.ecu.send(can.Message(arbitration_id=0x18DAF110, data=[0xf1,2,0x7e,0], is_extended_id=True))
         self.assertTrue(spin_until(lambda: bool(self.window.node_items)))
 
@@ -632,11 +636,24 @@ VAL_ 256 Enable 0 "Off" 1 "On";
                 button.setAttribute(Qt.WA_UnderMouse, hovered)
                 self.assertFalse(button.grab().isNull())
 
+    def test_the_iso_tp_settings_of_a_configuration_reach_the_session(self):
+        from canexpert.transport_settings import TransportSettings, save_transport
+        name = self.window.active_config["name"]
+        save_transport(self.settings, name, TransportSettings(padding=False, block_size=4, st_min=0x02))
+        self.window.on_connect_clicked()
+        session = self.window.session_config
+        self.assertEqual((session["isotp_padding"], session["isotp_block_size"], session["isotp_st_min"]),
+                         (None, 4, 2))
+        heartbeat = self.ecu.recv(2)
+        self.assertEqual(bytes(heartbeat.data), b"\x02\x3e\x00", "padding switched off for this configuration")
+        config_file = self.configs / f"config_{name}.json"
+        self.assertNotIn("isotp", config_file.read_text(encoding="utf-8"))
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)
         self.assertEqual(cfg["tester_present_interval_seconds"], 0.5)
-        dialog = main.ConfigurationDialog(self.window, {"name": "Legacy"})
+        dialog = main.ConfigurationDialog(self.window, {"name": "Legacy"}, settings=self.settings)
         self.assertEqual(dialog.node_timeout_spin.value(), 2.0)
         self.assertEqual(dialog.heartbeat_spin.value(), 0.5)
 

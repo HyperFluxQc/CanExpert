@@ -62,6 +62,7 @@ from canexpert.simulation_window import SimulationWindow
 from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
 from canexpert.trace_window import TraceWindow
+from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.transmit_window import TransmitWindow
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
@@ -1000,7 +1001,7 @@ class MainWindow(QMainWindow):
         self._open_configuration_dialog({})
 
     def _open_configuration_dialog(self, config):
-        dialog = ConfigurationDialog(self, config, CONFIG_DIR)
+        dialog = ConfigurationDialog(self, config, CONFIG_DIR, settings=self._settings)
         dialog.accepted.connect(self.load_configurations)
         dialog.show()
 
@@ -1049,7 +1050,7 @@ class MainWindow(QMainWindow):
             return
         self.stop_ecu_monitor()  # the session sends TesterPresent itself
         try:
-            config = validate_config(self.active_config)
+            config = self.session_configuration()
             database = load_application_database(config["database_family"], DATABASES_DIR)
             if database is None:
                 raise ValueError("No matching database. Create a panel in Form Designer first.")
@@ -1101,6 +1102,12 @@ class MainWindow(QMainWindow):
             self.on_disconnect_clicked()
             self._set_status(f"Connection failed: {exc}", "red")
             self.log_verbose(str(exc))
+
+    def session_configuration(self) -> dict:
+        """The selected configuration as a session uses it: validated, with its ISO-TP settings folded in
+        (they live in the settings, not in the configuration file). ValueError when it is invalid."""
+        config = validate_config(self.active_config)
+        return apply_transport(config, load_transport(self._settings, config["name"]))
 
     def active_session(self):
         """(bus, worker, configuration) while connected, for the UDS console; else None."""
@@ -1232,7 +1239,7 @@ class MainWindow(QMainWindow):
     def check_ecus(self, channel_config):
         """Start the ECU check on a channel with the selected configuration, without loading its database."""
         try:
-            config = validate_config(self.active_config)
+            config = self.session_configuration()
         except ValueError as exc:
             self._set_status(f"Invalid configuration: {exc}", "red")
             return
