@@ -162,8 +162,7 @@ class MeasurementTest(unittest.TestCase):
 
     def test_tool_windows_live_in_the_workspace(self):
         for name, opener in (("trace", self.window.open_trace), ("logger", self.window.open_can_logger),
-                             ("transmit", self.window.open_transmit), ("console", self.window.open_uds_console),
-                             ("diagnostics", self.window.open_diagnostic_window)):
+                             ("transmit", self.window.open_transmit), ("console", self.window.open_uds_console)):
             widget = opener()
             pane = self.window.tool_panes[name]
             self.assertIs(pane.widget(), widget, name)

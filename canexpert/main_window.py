@@ -51,7 +51,6 @@ from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_c
 from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.ecu_scan import EcuScanDialog
-from canexpert.diagnostic_window import DiagnosticWindow
 from canexpert.clock import TIME_DISPLAYS, MeasurementClock, absolute_text
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
@@ -78,7 +77,7 @@ from canexpert.write_window import WriteWindow
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
-TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window
+TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window and the console
 PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
@@ -89,7 +88,7 @@ LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "simulation", "console",
-              "diagnostics", "write", "sysvars")   # the windows with a switch on the toolbar
+              "write", "sysvars")   # the windows with a switch on the toolbar
 WRITE_HISTORY = 5000               # Write window lines kept for when it is opened
 
 
@@ -196,9 +195,9 @@ class MainWindow(QMainWindow):
             ("transmit", "Transmit", "Send messages once or cyclically", self.open_transmit),
             ("simulation", "Simulation", "Send the messages of a database's nodes, as those ECUs would",
              self.open_simulation),
-            ("console", "UDS Console", "Send any UDS service and read the fault memory (no ODX file needed)",
+            ("console", "UDS Console", "Send any UDS service, the services of an ODX file, and read the fault "
+             "memory",
              self.open_uds_console),
-            ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
             ("write", "Write", "What the panel script writes, and its variables as it runs", self.open_write),
             ("sysvars", "System Variables", "Values shared by the script, the windows and you", self.open_sysvars),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
@@ -384,7 +383,8 @@ class MainWindow(QMainWindow):
         self.debug_log.appendPlainText(line)
 
     def set_time_display(self, display: str):
-        """Absolute (time of day) or Relative (seconds since the measurement started) in the Write window."""
+        """Absolute (time of day) or Relative (seconds since the measurement started) in the Write window
+        and the UDS Console."""
         self.time_display = display
         self._settings.setValue(TIME_DISPLAY, display)
         for action in self._time_display_actions:
@@ -904,14 +904,10 @@ class MainWindow(QMainWindow):
         return widget
 
     def open_uds_console(self):
-        """UDS Console window: any ISO 14229 service and the fault memory, without an ODX file."""
+        """UDS Console window: any ISO 14229 service, the services of an ODX file, and the fault memory."""
         widget, _ = self.open_tool("console", "UDS Console",
-                                   lambda: UdsConsoleWindow(self, self.active_session))
-        return widget
-
-    def open_diagnostic_window(self):
-        """ODX Diagnostic Window pane."""
-        widget, _ = self.open_tool("diagnostics", "Diagnostics", lambda: DiagnosticWindow(self))
+                                   lambda: UdsConsoleWindow(self, self.active_session,
+                                                            time_text=lambda t: self.clock.text(t, self.time_display)))
         return widget
 
     def edit_symbol_databases(self):

@@ -441,16 +441,18 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertIsNone(self.window.script_runtime)
         self.assertTrue(self.window.connect_btn.isEnabled())
 
-    def test_diagnostic_multi_frame_exchange(self):
+    def test_an_odx_service_goes_out_over_several_frames_and_its_answer_is_decoded(self):
         from types import SimpleNamespace
-        from canexpert.diagnostic_window import DiagnosticWindow
         self.window.on_connect_clicked()
-        dialog = DiagnosticWindow(self.window)
+        console = self.window.open_uds_console()
         request = bytes([0x2E, 0xF1, 0x90]) + b"WVWZZZ1KZAW000001"
         reply = bytes([0x6E, 0xF1, 0x90]) + bytes(range(10))
-        dialog._current_service = SimpleNamespace(encode_request=lambda **k: request,
-                                                  decode_message=lambda r: "decoded reply")
-        dialog._send_request()
+        service = SimpleNamespace(short_name="WriteVIN", request=SimpleNamespace(parameters=[]), free_parameters=[],
+                                  encode_request=lambda **k: request, decode_message=lambda r: "decoded reply")
+        console.odx.set_layer(SimpleNamespace(services=[service]), "bench.odx")
+        console.odx.tree.setCurrentItem(console.odx.tree.topLevelItem(0))
+        self.assertTrue(console.odx.send_btn.isEnabled())
+        console.odx.send_selected()
         state = {"total": None, "data": b"", "replied": False}
         def ecu_step():
             message = self.ecu.recv(0)
@@ -470,11 +472,11 @@ VAL_ 256 Enable 0 "Off" 1 "On";
                     state["replied"] = True
                     self.ecu.send(can.Message(arbitration_id=0x7E8, data=bytes([0x21]) + reply[6:],
                                               is_extended_id=False))
-            return "decoded reply" in dialog.monitor_log.toPlainText()
-        self.assertTrue(spin_until(ecu_step, timeout=5), dialog.monitor_log.toPlainText())
+            return "ODX: decoded reply" in console.log.toPlainText()
+        self.assertTrue(spin_until(ecu_step, timeout=5), console.log.toPlainText())
         self.assertEqual(state["data"][:state["total"]], request)
-        self.assertIn(f"Response (13 bytes): {reply.hex(' ')}", dialog.monitor_log.toPlainText())
-        self.assertTrue(dialog.send_btn.isEnabled())
+        self.assertIn(reply.hex(" ").upper(), console.log.toPlainText())
+        self.assertIn("WriteVIN:", console.log.toPlainText())
         self.assertEqual(self.window.worker.mailboxes[1:], [])
 
     def test_flashing_button_calls_database_flashing(self):
@@ -693,7 +695,6 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         logger.load_dbc_from_path(Path(__file__).resolve().parents[1] / "DBC" / "dummy_ecu.dbc")
         trace = window.open_trace()
         trace.time_combo.setCurrentText("Relative")
-        diagnostics = window.open_diagnostic_window()
         window.dispatch_frame(start + 1.5, "RX", 0x300, engine)
         window.dispatch_frame(start + 2.25, "RX", 0x7E8, b"\x02\x7e\x00")
         trace.flush()
@@ -703,7 +704,6 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertEqual(rows["300"], "1.500000")
         series = logger._series["EngineData.Temperature"]
         self.assertAlmostEqual(float(series.t[0]), 1.5, places=6)      # the same number on the graph
-        self.assertIn("2.250  RX  ID=0x7E8", diagnostics.monitor_log.toPlainText())
         write = window.open_write()
         window.write_message("info", "hello")
         self.assertRegex(write.lines()[-1], r"^\d+\.\d{3}  hello$", "seconds since the start in Relative")
@@ -803,8 +803,8 @@ def key(api, key):
     def test_tool_windows_can_be_maximized(self):
         from PyQt5.QtCore import Qt
         from canexpert.can_logger import CANLoggerWindow
-        from canexpert.diagnostic_window import DiagnosticWindow
-        for window in (FormDesigner(self.window), CANLoggerWindow(self.window), DiagnosticWindow(self.window)):
+        from canexpert.uds_console import UdsConsoleWindow
+        for window in (FormDesigner(self.window), CANLoggerWindow(self.window), UdsConsoleWindow(self.window)):
             flags = window.windowFlags()
             self.assertTrue(flags & Qt.WindowMaximizeButtonHint, type(window).__name__)
             self.assertTrue(flags & Qt.WindowCloseButtonHint, type(window).__name__)

@@ -31,7 +31,6 @@ from PyQt5.QtWidgets import QApplication                                    # no
 from canexpert import main_window as main                                   # noqa: E402
 from canexpert.can_logger import CANLoggerWindow                            # noqa: E402
 from canexpert.channel_setup import detect_bitrate                          # noqa: E402
-from canexpert.diagnostic_window import DiagnosticWindow                    # noqa: E402
 from canexpert.flash_sequence import FlashProfile                           # noqa: E402
 from canexpert.flashing import load_firmware                                # noqa: E402
 from canexpert.recording import read_frames                                 # noqa: E402
@@ -98,9 +97,7 @@ def main_check():
               spin(lambda: sum(1 for frame in list(window.frame_history) if frame[1] == "RX") > 5))
 
         logger = window.open_can_logger()
-        diagnostics = window.open_diagnostic_window()
-        check("CAN Logger and Diagnostic Window open while connected",
-              isinstance(logger, CANLoggerWindow) and isinstance(diagnostics, DiagnosticWindow))
+        check("CAN Logger opens while connected", isinstance(logger, CANLoggerWindow))
         logger.load_dbc_from_path(REPO / "DBC" / "dummy_ecu.dbc")
         logger.set_signal_plotted("EngineData.Temperature")
         samples = lambda: getattr(logger._series.get("EngineData.Temperature"), "n", 0)  # noqa: E731

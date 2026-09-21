@@ -100,6 +100,23 @@ class ServiceFormTest(unittest.TestCase):
         self.assertEqual(args[0], 1)
         self.assertEqual(args[1](b"\x01\x02"), bytes([0x01 ^ 0xA5, 0x02 ^ 0xA5]))
 
+    def test_the_odx_tab_builds_a_form_from_the_service(self):
+        from types import SimpleNamespace
+        parameter = lambda name, kind: SimpleNamespace(short_name=name, dop=SimpleNamespace(  # noqa: E731
+            physical_type=SimpleNamespace(base_data_type=SimpleNamespace(value=kind))))
+        service = SimpleNamespace(short_name="ReadTemperature", free_parameters=[parameter("Channel", "A_UINT32")],
+                                  request=SimpleNamespace(parameters=[parameter("SID", "A_UINT32"),
+                                                                      parameter("Channel", "A_UINT32")]),
+                                  encode_request=lambda **values: bytes([0x22, 0x01, values["Channel"]]))
+        sent = []
+        self.console.odx.send = lambda payload, title, svc: sent.append((payload, title, svc))
+        self.console.odx.set_layer(SimpleNamespace(services=[service]))
+        self.console.odx.show_service(service)
+        self.assertEqual(list(self.console.odx._widgets), ["Channel"], "coded parameters are not fields")
+        self.console.odx._widgets["Channel"][1].setText("0x05")
+        self.console.odx.send_selected()
+        self.assertEqual(sent, [(b"\x22\x01\x05", "ReadTemperature", service)])
+
     def test_without_a_measurement_nothing_is_sent(self):
         self.select("TP")
         self.assertIsNone(self.console.send_service())
@@ -132,6 +149,25 @@ class ConsoleAgainstTheEcuTest(unittest.TestCase):
         thread = self.console.run(call, title)
         self.assertIsNotNone(thread, self.console.log.toPlainText())
         self.assertTrue(spin_until(lambda: not self.console._busy), self.console.log.toPlainText())
+
+    def test_a_loaded_odx_file_decodes_any_answer(self):
+        from types import SimpleNamespace
+        seen = []
+
+        def decode_response(reply, request):
+            seen.append((bytes(request), bytes(reply[:3])))
+            return ["VIN = WVWZZZ1KZAW000001"]
+
+        self.console.odx.set_layer(SimpleNamespace(services=[], decode_response=decode_response), "ecu.odx")
+        self.run_and_wait(lambda uds: uds.RDBI(0xF190), "RDBI")            # sent from the Services tab
+        self.assertIn("ODX: VIN = WVWZZZ1KZAW000001", self.console.log.toPlainText())
+        self.assertEqual(seen, [(b"\x22\xf1\x90", b"\x62\xf1\x90")])
+
+    def test_without_an_odx_file_nothing_is_decoded_and_lines_carry_their_time(self):
+        self.run_and_wait(lambda uds: uds.RDBI(0xF190), "RDBI")
+        text = self.console.log.toPlainText()
+        self.assertNotIn("ODX:", text)
+        self.assertRegex(text.splitlines()[0], r"^\d\d:\d\d:\d\d\.\d{3}  RDBI: 22 F1 90")
 
     def test_reading_a_data_identifier_shows_the_decoded_answer(self):
         self.run_and_wait(lambda uds: uds.RDBI(0xF190), "RDBI")
