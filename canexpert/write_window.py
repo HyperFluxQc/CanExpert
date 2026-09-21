@@ -66,7 +66,7 @@ def watch_values(namespace, hidden=()) -> list[tuple[str, str, str]]:
 class WriteWindow(QDialog):
     """Script output with its level and time, and a watch on the script's variables."""
 
-    def __init__(self, parent=None, clock=None, watch=None):
+    def __init__(self, parent=None, clock=None, watch=None, display=None):
         super().__init__(parent)
         self.setWindowTitle("Write")
         enable_maximize(self)
@@ -74,6 +74,8 @@ class WriteWindow(QDialog):
         self.resize(820, 420)
         self.clock = clock
         self.watch = watch or (lambda: ({}, ()))    # watch() -> (script globals, names to leave out)
+        # display() -> "Absolute" or "Relative"; asked each time, since docked, parent() is the dock, not the window
+        self.display = display or (lambda: "Absolute")
         self.entries = deque(maxlen=MAX_LINES)      # (timestamp, level, text)
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -142,8 +144,7 @@ class WriteWindow(QDialog):
         return not needle or needle in text.lower()
 
     def _time(self, timestamp) -> str:
-        display = getattr(self.parent(), "time_display", "Absolute")
-        return self.clock.text(timestamp, display) if self.clock is not None else absolute_text(timestamp)
+        return self.clock.text(timestamp, self.display()) if self.clock is not None else absolute_text(timestamp)
 
     def _html(self, timestamp, level, text) -> str:
         # white-space: pre, or HTML would fold the spacing - and whatever a script lines up - into one space.

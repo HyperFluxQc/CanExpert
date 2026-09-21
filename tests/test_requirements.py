@@ -521,7 +521,8 @@ VAL_ 256 Enable 0 "Off" 1 "On";
                 time.sleep(0.05)
                 APP.processEvents()
                 self.assertIn("Responding", node().text(0))
-            self.assertIn("TX  ID: 0x7E0  02 3E 00", self.window.can_log.toPlainText())
+            self.assertIn(("TX", 0x7E0, b"\x02\x3e\x00"),
+                          [(frame[1], frame[2], frame[3][:3]) for frame in self.window.frame_history])
             stop.set()                                                  # the ECU goes silent
             thread.join(1)
             self.assertTrue(spin_until(lambda: "Lost connection" in node().text(0)))
@@ -659,7 +660,8 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         with self.assertRaises(can.CanOperationError):
             self.window.send_can_message(0x200, b"\x01")
         self.ecu.send(can.Message(arbitration_id=0x7E8, data=b"\x02\x7e\x00", is_extended_id=False))
-        self.assertTrue(spin_until(lambda: "RX" in self.window.can_log.toPlainText()), "it still receives")
+        self.assertTrue(spin_until(lambda: any(frame[1] == "RX" for frame in self.window.frame_history)),
+                        "it still receives")
         self.window.on_disconnect_clicked()
         self.window.check_ecus(channel)
         self.assertIsNone(self.window.ecu_monitor, "the ECU check is TesterPresent, so it is not started")
@@ -677,27 +679,6 @@ VAL_ 256 Enable 0 "Off" 1 "On";
             self.window.edit_channel_setup(channel)
         self.assertTrue(load_setup(self.settings, channel).listen_only)
         self.assertIn("[listen-only]", self.window._channel_label(channel))
-
-    def test_the_can_monitor_has_its_own_filter_and_shows_each_frames_own_time(self):
-        from canexpert.clock import absolute_text
-        window, base = self.window, 1_700_000_000.0
-        window.dispatch_frame(base + 0.25, "RX", 0x7E8, b"\x02\x7e\x00")
-        window.dispatch_frame(base + 0.50, "TX", 0x7E0, b"\x02\x3e\x00")
-        window.dispatch_frame(base + 0.75, "RX", 0x300, b"\x01")
-
-        def lines():
-            return [line for line in window.can_log.toPlainText().splitlines() if "ID: 0x" in line]
-
-        self.assertIn(absolute_text(base + 0.25), window.can_log.toPlainText(), "the frame's time, not the drawing's")
-        window.monitor_filter_bar.text_edit.setText("7E0-7EF")
-        self.assertEqual([line.split("ID: ")[1].split()[0] for line in lines()], ["0x7E8", "0x7E0"],
-                         "a new filter applies to what was already seen")
-        window.monitor_filter_bar.direction_combo.setCurrentText("RX only")
-        self.assertEqual(len(lines()), 1)
-        window.dispatch_frame(base + 1.0, "RX", 0x301, b"\x02")
-        self.assertEqual(len(lines()), 1, "a frame the filter stops is not added")
-        window.monitor_filter_bar.mode_combo.setCurrentText("Stop")
-        self.assertEqual([line.split("ID: ")[1].split()[0] for line in lines()], ["0x300", "0x301"])
 
     def test_every_window_counts_from_the_same_measurement_start(self):
         window = self.window
@@ -717,15 +698,17 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         window.dispatch_frame(start + 2.25, "RX", 0x7E8, b"\x02\x7e\x00")
         trace.flush()
 
-        self.assertIn("1.500   RX  ID: 0x300", window.can_log.toPlainText())   # direction is right-aligned
         rows = {trace.tree.topLevelItem(row).text(2): trace.tree.topLevelItem(row).text(0)
                 for row in range(trace.tree.topLevelItemCount())}
         self.assertEqual(rows["300"], "1.500000")
         series = logger._series["EngineData.Temperature"]
         self.assertAlmostEqual(float(series.t[0]), 1.5, places=6)      # the same number on the graph
         self.assertIn("2.250  RX  ID=0x7E8", diagnostics.monitor_log.toPlainText())
+        write = window.open_write()
+        window.write_message("info", "hello")
+        self.assertRegex(write.lines()[-1], r"^\d+\.\d{3}  hello$", "seconds since the start in Relative")
         window.set_time_display("Absolute")
-        self.assertNotIn("1.500  ", window.can_log.toPlainText(), "the monitor is redrawn in the new display")
+        self.assertRegex(write.lines()[-1], r"^\d\d:\d\d:\d\d\.\d{3}  hello$", "redrawn in the new display")
 
     def test_the_script_writes_to_its_own_window_hears_keys_and_shares_variables(self):
         from PyQt5.QtCore import QEvent

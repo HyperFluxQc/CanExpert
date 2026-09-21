@@ -33,7 +33,6 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QTabWidget,
     QTextEdit,
     QToolBar,
     QToolButton,
@@ -56,7 +55,6 @@ from canexpert.diagnostic_window import DiagnosticWindow
 from canexpert.clock import TIME_DISPLAYS, MeasurementClock, absolute_text
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
-from canexpert.frame_filter import FilterBar, FrameFilter
 from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
 from canexpert.help_window import show_manual
@@ -80,8 +78,7 @@ from canexpert.write_window import WriteWindow
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
-MONITOR_LINES = 5000                # lines the CAN monitor keeps
-TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the monitors
+TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window
 PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
@@ -308,29 +305,14 @@ class MainWindow(QMainWindow):
         add_pane(self.workspace, self.database_pane)
         self.database_pane.toggleView(False)   # shown once a database is loaded
 
-        # Dock: Log (Debug + CAN Monitor)
-        log_tabs = QTabWidget()
+        # Dock: Log (application messages; the frames are the Trace's)
         self.debug_log = QPlainTextEdit()
         self.debug_log.setReadOnly(True)
         self.debug_log.setPlaceholderText("Application debug and status messages…")
         self.debug_log.setMaximumBlockCount(2000)
-        log_tabs.addTab(self.debug_log, "Debug / Verbose")
-        self.can_log = QPlainTextEdit()
-        self.can_log.setReadOnly(True)
-        self.can_log.setPlaceholderText("CAN traffic (TX/RX) for the connected channel…")
-        self.can_log.setMaximumBlockCount(MONITOR_LINES)
-        self.monitor_filter = FrameFilter()
-        self.monitor_filter_bar = FilterBar("Filter the monitor: 7E8, 300-3FF, EngineData")
-        self.monitor_filter_bar.changed.connect(self._on_monitor_filter_changed)
-        monitor = QWidget()
-        monitor_layout = QVBoxLayout(monitor)
-        monitor_layout.setContentsMargins(0, 2, 0, 0)
-        monitor_layout.addWidget(self.monitor_filter_bar)
-        monitor_layout.addWidget(self.can_log, 1)
-        log_tabs.addTab(monitor, "CAN Monitor")
         self.log_dock = QDockWidget("Log", self)
         self.log_dock.setObjectName("dock_log")
-        self.log_dock.setWidget(log_tabs)
+        self.log_dock.setWidget(self.debug_log)
         self.log_dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
         self.log_dock.setTitleBarWidget(DockTitleBar(self.log_dock, self, Qt.BottomDockWidgetArea))
         self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock)
@@ -401,38 +383,15 @@ class MainWindow(QMainWindow):
         line = f"[{absolute_text(time.time())}] {msg}"
         self.debug_log.appendPlainText(line)
 
-    def _monitor_line(self, timestamp, direction: str, arbitration_id: int, data) -> str:
-        hex_str = " ".join(f"{b:02X}" for b in bytes(data)[:8])
-        return f"{self.clock.text(timestamp, self.time_display)}  {direction:>3}  ID: 0x{arbitration_id:X}  {hex_str}"
-
-    def _monitor_passes(self, direction: str, arbitration_id: int) -> bool:
-        rule = self.monitor_filter
-        return rule.empty or rule.passes(direction, arbitration_id, self.symbols.name(arbitration_id))
-
-    def log_can(self, direction: str, arbitration_id: int, data: list | bytes, timestamp: float | None = None):
-        """Append a CAN message to the CAN monitor (time, direction TX or RX, ID, hex data), if it passes
-        the monitor's filter. The time is the frame's own, so it matches the Trace."""
-        if getattr(self, "can_log", None) is None or not self._monitor_passes(direction, arbitration_id):
-            return
-        self.can_log.appendPlainText(self._monitor_line(time.time() if timestamp is None else timestamp,
-                                                        direction, arbitration_id, data))
-
     def set_time_display(self, display: str):
-        """Absolute (time of day) or Relative (seconds since the measurement started) in the monitors."""
+        """Absolute (time of day) or Relative (seconds since the measurement started) in the Write window."""
         self.time_display = display
         self._settings.setValue(TIME_DISPLAY, display)
         for action in self._time_display_actions:
             action.setChecked(action.text() == display)
-        self._on_monitor_filter_changed(self.monitor_filter)
-
-    def _on_monitor_filter_changed(self, rule):
-        """A new filter applies to what was already seen too: the monitor is rebuilt from the history."""
-        self.monitor_filter = rule
-        lines = [self._monitor_line(timestamp, direction, can_id, data)
-                 for timestamp, direction, can_id, data, _extended in list(self.frame_history)
-                 if self._monitor_passes(direction, can_id)]
-        self.can_log.setPlainText("\n".join(lines[-MONITOR_LINES:]))
-        self.can_log.moveCursor(self.can_log.textCursor().End)
+        write = self.tool_widget("write")
+        if write is not None:
+            write.rebuild()
 
     # --- Channel list ---
 
@@ -821,7 +780,8 @@ class MainWindow(QMainWindow):
 
     def open_write(self):
         """Write window: the script's output and its variables."""
-        window, created = self.open_tool("write", "Write", lambda: WriteWindow(self, self.clock, self.script_watch),
+        window, created = self.open_tool("write", "Write", lambda: WriteWindow(self, self.clock, self.script_watch,
+                                                             display=lambda: self.time_display),
                                          "bottom")
         if created:
             for entry in list(self.write_history):
@@ -1585,7 +1545,7 @@ class MainWindow(QMainWindow):
         self.dispatch_frame(time.time(), "TX", can_id, payload, extended)
 
     def dispatch_frame(self, timestamp, direction, can_id, data, extended=False):
-        """One frame of the measurement, from wherever: the monitor, the recording, and every window.
+        """One frame of the measurement, from wherever: the history, the recording, and every window.
 
         The timestamp is the adapter's for received frames, so the trace and the logger share one clock.
         """
@@ -1598,7 +1558,6 @@ class MainWindow(QMainWindow):
             except Exception as exc:                      # a full disk must not take the measurement down
                 self.log_verbose(f"Recording stopped: {exc}")
                 self.stop_recording()
-        self.log_can(direction, can_id, data, timestamp)
         # Every open window that wants frames declares on_frame(); nothing else needs to know who is open.
         for name in list(self.tool_panes):
             handler = getattr(self.tool_widget(name), "on_frame", None)

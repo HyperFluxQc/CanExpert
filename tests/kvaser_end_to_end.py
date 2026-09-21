@@ -94,7 +94,8 @@ def main_check():
         check("panel database loaded", window.panel is not None and window.app_database is not None,
               Path(window.app_database["source_path"]).name if window.app_database else None)
         check("ECU answers TesterPresent (node Responding)", spin(lambda: "Responding" in node_text()), node_text())
-        check("periodic frames received", spin(lambda: window.can_log.toPlainText().count("RX") > 5))
+        check("periodic frames received",
+              spin(lambda: sum(1 for frame in list(window.frame_history) if frame[1] == "RX") > 5))
 
         logger = window.open_can_logger()
         diagnostics = window.open_diagnostic_window()

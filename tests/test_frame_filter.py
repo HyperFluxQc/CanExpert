@@ -1,4 +1,4 @@
-"""Frame filters: identifiers, ranges, names and direction, shared by the Trace and the CAN monitor."""
+"""Frame filters: identifiers, ranges, names and direction, as the Trace applies them."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import unittest
@@ -6,7 +6,7 @@ import unittest
 from PyQt5.QtWidgets import QApplication
 
 from canexpert.clock import absolute_text
-from canexpert.frame_filter import FilterBar, FrameFilter
+from canexpert.frame_filter import FrameFilter
 from canexpert.trace_window import COL_ID, TraceWindow
 
 APP = QApplication.instance() or QApplication([])
@@ -34,15 +34,6 @@ class FrameFilterTest(unittest.TestCase):
     def test_no_filter_at_all_is_empty(self):
         self.assertTrue(FrameFilter().empty)
         self.assertFalse(FrameFilter.from_text("", direction="TX only").empty)
-
-    def test_the_bar_describes_its_filter(self):
-        bar = FilterBar()
-        seen = []
-        bar.changed.connect(seen.append)
-        bar.text_edit.setText("300-3FF")
-        bar.direction_combo.setCurrentText("TX only")
-        self.assertEqual(seen[-1].ranges, [(0x300, 0x3FF)])
-        self.assertEqual(seen[-1].direction, "TX only")
 
 
 class TraceDirectionTest(unittest.TestCase):

@@ -1,6 +1,5 @@
 """
-Which frames a window shows: identifiers and ranges, message names, and the direction - one syntax and
-one bar, shared by the Trace and the CAN monitor.
+Which frames the Trace shows: identifiers and ranges, message names, and the direction.
 
     7E0, 300-3FF, EngineData      identifiers, hexadecimal ranges, text found in the message name
 
@@ -10,9 +9,6 @@ applies on top of either.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-
-from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import QComboBox, QHBoxLayout, QLineEdit, QWidget
 
 FILTER_MODES = ("Pass", "Stop")
 DIRECTIONS = ("RX and TX", "RX only", "TX only")
@@ -65,32 +61,3 @@ class FrameFilter:
         matched = any(low <= can_id <= high for low, high in self.ranges) or \
             any(text in name for text in self.names if name)
         return matched if self.mode == "Pass" else not matched
-
-
-class FilterBar(QWidget):
-    """Pass/Stop, direction and the filter text; changed() carries the FrameFilter they describe."""
-    changed = pyqtSignal(object)
-
-    def __init__(self, placeholder="Filter: 7E0, 300-3FF, EngineData", parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(FILTER_MODES)
-        self.mode_combo.setToolTip("Pass shows only what matches; Stop hides what matches")
-        self.direction_combo = QComboBox()
-        self.direction_combo.addItems(DIRECTIONS)
-        self.direction_combo.setToolTip("Received frames, frames CAN Expert sent, or both")
-        self.text_edit = QLineEdit()
-        self.text_edit.setPlaceholderText(placeholder)
-        self.text_edit.setClearButtonEnabled(True)
-        layout.addWidget(self.mode_combo)
-        layout.addWidget(self.direction_combo)
-        layout.addWidget(self.text_edit, 1)
-        for signal in (self.mode_combo.currentTextChanged, self.direction_combo.currentTextChanged,
-                       self.text_edit.textChanged):
-            signal.connect(lambda *_: self.changed.emit(self.filter()))
-
-    def filter(self) -> FrameFilter:
-        return FrameFilter.from_text(self.text_edit.text(), self.mode_combo.currentText(),
-                                     self.direction_combo.currentText())

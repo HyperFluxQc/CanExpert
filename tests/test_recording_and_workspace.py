@@ -88,7 +88,6 @@ class MeasurementTest(unittest.TestCase):
         frame = next(f for f in self.window.frame_history if f[2] == 0x123)
         self.assertEqual((frame[1], frame[3]), ("RX", b"\xaa\xbb"))
         self.assertAlmostEqual(frame[0], time.time(), delta=30)   # the adapter's clock, not the GUI's
-        self.assertIn("ID: 0x123", self.window.can_log.toPlainText())
 
     def test_a_window_opened_later_still_shows_what_was_received(self):
         self.window.on_connect_clicked()
