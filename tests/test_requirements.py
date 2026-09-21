@@ -678,6 +678,27 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertTrue(load_setup(self.settings, channel).listen_only)
         self.assertIn("[listen-only]", self.window._channel_label(channel))
 
+    def test_the_can_monitor_has_its_own_filter_and_shows_each_frames_own_time(self):
+        from canexpert.clock import absolute_text
+        window, base = self.window, 1_700_000_000.0
+        window.dispatch_frame(base + 0.25, "RX", 0x7E8, b"\x02\x7e\x00")
+        window.dispatch_frame(base + 0.50, "TX", 0x7E0, b"\x02\x3e\x00")
+        window.dispatch_frame(base + 0.75, "RX", 0x300, b"\x01")
+
+        def lines():
+            return [line for line in window.can_log.toPlainText().splitlines() if "ID: 0x" in line]
+
+        self.assertIn(absolute_text(base + 0.25), window.can_log.toPlainText(), "the frame's time, not the drawing's")
+        window.monitor_filter_bar.text_edit.setText("7E0-7EF")
+        self.assertEqual([line.split("ID: ")[1].split()[0] for line in lines()], ["0x7E8", "0x7E0"],
+                         "a new filter applies to what was already seen")
+        window.monitor_filter_bar.direction_combo.setCurrentText("RX only")
+        self.assertEqual(len(lines()), 1)
+        window.dispatch_frame(base + 1.0, "RX", 0x301, b"\x02")
+        self.assertEqual(len(lines()), 1, "a frame the filter stops is not added")
+        window.monitor_filter_bar.mode_combo.setCurrentText("Stop")
+        self.assertEqual([line.split("ID: ")[1].split()[0] for line in lines()], ["0x300", "0x301"])
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)

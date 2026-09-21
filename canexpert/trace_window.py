@@ -28,13 +28,13 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from canexpert.frame_filter import DIRECTIONS, FILTER_MODES, FrameFilter, parse_filter
 from canexpert.uds.observer import assemble
 from canexpert.ui_common import enable_maximize, is_dark_theme, line_icon, style_toggle
 
 MAX_ROWS = 20000            # frames kept; the oldest are dropped
 FLUSH_INTERVAL_MS = 80      # how often buffered frames reach the view
 TIME_MODES = ("Absolute", "Relative", "Delta")
-FILTER_MODES = ("Pass", "Stop")
 COL_TIME, COL_DIR, COL_ID, COL_NAME, COL_DLC, COL_DATA = range(6)
 
 # Symbols of the small tool buttons, drawn in a 24 x 24 box (see ui_common.line_icon).
@@ -52,26 +52,6 @@ TOOL_ICONS = {
 # One colour per identifier, picked by the identifier itself so a message keeps its colour.
 _ID_COLORS_LIGHT = ["#1f77b4", "#b8410e", "#2e7d32", "#8a6d00", "#6a1b9a", "#00707f", "#a3145c", "#3f51b5"]
 _ID_COLORS_DARK = ["#5eb3f6", "#ff9d6b", "#7fd18a", "#ffd43b", "#cc92e2", "#4fd2e0", "#ff8ab5", "#9fa8ff"]
-
-
-def parse_filter(text: str) -> tuple[list[tuple[int, int]], list[str]]:
-    """'7E0, 300-3FF, Engine' -> ([(0x7E0, 0x7E0), (0x300, 0x3FF)], ['engine']).
-
-    Terms are hexadecimal identifiers, hexadecimal ranges, or text matched against the message name.
-    """
-    ranges, names = [], []
-    for term in (part.strip() for part in str(text).replace(";", ",").split(",")):
-        if not term:
-            continue
-        first, dash, last = term.replace("0x", "").replace("0X", "").partition("-")
-        try:
-            low = int(first.strip(), 16)
-            high = int(last.strip(), 16) if dash else low
-        except ValueError:
-            names.append(term.lower())
-            continue
-        ranges.append((min(low, high), max(low, high)))
-    return ranges, names
 
 
 class TraceWindow(QDialog):
@@ -162,6 +142,11 @@ class TraceWindow(QDialog):
         self.filter_mode.setToolTip("Pass shows only what matches; Stop hides what matches")
         self.filter_mode.currentTextChanged.connect(lambda _: self.rebuild())
         bar.addWidget(self.filter_mode)
+        self.direction_combo = QComboBox()
+        self.direction_combo.addItems(DIRECTIONS)
+        self.direction_combo.setToolTip("Received frames, frames CAN Expert sent, or both")
+        self.direction_combo.currentTextChanged.connect(lambda _: self.rebuild())
+        bar.addWidget(self.direction_combo)
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filter: 7E0, 300-3FF, EngineData")
         self.filter_edit.setClearButtonEnabled(True)
@@ -316,11 +301,8 @@ class TraceWindow(QDialog):
 
     def _passes(self, frame) -> bool:
         ranges, names = self._filter
-        if not ranges and not names:
-            return True
-        can_id, name = frame[2], self._name(frame[2]).lower()
-        matched = any(low <= can_id <= high for low, high in ranges) or any(text in name for text in names if name)
-        return matched if self.filter_mode.currentText() == "Pass" else not matched
+        rule = FrameFilter(ranges, names, self.filter_mode.currentText(), self.direction_combo.currentText())
+        return rule.empty or rule.passes(frame[1], frame[2], self._name(frame[2]))
 
     # --- rows ---------------------------------------------------------------------------
 

@@ -49,8 +49,10 @@ from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_c
 from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
+from canexpert.clock import absolute_text
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
+from canexpert.frame_filter import FilterBar, FrameFilter
 from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
 from canexpert.help_window import show_manual
@@ -72,6 +74,7 @@ from canexpert.workspace import add_pane, create_workspace, make_pane
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
+MONITOR_LINES = 5000                # lines the CAN monitor keeps
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
@@ -297,8 +300,16 @@ class MainWindow(QMainWindow):
         self.can_log = QPlainTextEdit()
         self.can_log.setReadOnly(True)
         self.can_log.setPlaceholderText("CAN traffic (TX/RX) for the connected channel…")
-        self.can_log.setMaximumBlockCount(5000)
-        log_tabs.addTab(self.can_log, "CAN Monitor")
+        self.can_log.setMaximumBlockCount(MONITOR_LINES)
+        self.monitor_filter = FrameFilter()
+        self.monitor_filter_bar = FilterBar("Filter the monitor: 7E8, 300-3FF, EngineData")
+        self.monitor_filter_bar.changed.connect(self._on_monitor_filter_changed)
+        monitor = QWidget()
+        monitor_layout = QVBoxLayout(monitor)
+        monitor_layout.setContentsMargins(0, 2, 0, 0)
+        monitor_layout.addWidget(self.monitor_filter_bar)
+        monitor_layout.addWidget(self.can_log, 1)
+        log_tabs.addTab(monitor, "CAN Monitor")
         self.log_dock = QDockWidget("Log", self)
         self.log_dock.setObjectName("dock_log")
         self.log_dock.setWidget(log_tabs)
@@ -376,14 +387,30 @@ class MainWindow(QMainWindow):
         line = f"[{self._time_str()}] {msg}"
         self.debug_log.appendPlainText(line)
 
-    def log_can(self, direction: str, arbitration_id: int, data: list | bytes):
-        """Append a CAN message to the CAN monitor (direction TX or RX, ID, hex data)."""
-        if getattr(self, "can_log", None) is None:
+    def _monitor_line(self, timestamp, direction: str, arbitration_id: int, data) -> str:
+        hex_str = " ".join(f"{b:02X}" for b in bytes(data)[:8])
+        return f"{absolute_text(timestamp)}  {direction:>3}  ID: 0x{arbitration_id:X}  {hex_str}"
+
+    def _monitor_passes(self, direction: str, arbitration_id: int) -> bool:
+        rule = self.monitor_filter
+        return rule.empty or rule.passes(direction, arbitration_id, self.symbols.name(arbitration_id))
+
+    def log_can(self, direction: str, arbitration_id: int, data: list | bytes, timestamp: float | None = None):
+        """Append a CAN message to the CAN monitor (time, direction TX or RX, ID, hex data), if it passes
+        the monitor's filter. The time is the frame's own, so it matches the Trace."""
+        if getattr(self, "can_log", None) is None or not self._monitor_passes(direction, arbitration_id):
             return
-        data = list(data) if not isinstance(data, (list, bytearray)) else list(data)
-        hex_str = " ".join(f"{b:02X}" for b in data[:8])
-        line = f"{self._time_str()}  {direction:>3}  ID: 0x{arbitration_id:X}  {hex_str}"
-        self.can_log.appendPlainText(line)
+        self.can_log.appendPlainText(self._monitor_line(time.time() if timestamp is None else timestamp,
+                                                        direction, arbitration_id, data))
+
+    def _on_monitor_filter_changed(self, rule):
+        """A new filter applies to what was already seen too: the monitor is rebuilt from the history."""
+        self.monitor_filter = rule
+        lines = [self._monitor_line(timestamp, direction, can_id, data)
+                 for timestamp, direction, can_id, data, _extended in list(self.frame_history)
+                 if self._monitor_passes(direction, can_id)]
+        self.can_log.setPlainText("\n".join(lines[-MONITOR_LINES:]))
+        self.can_log.moveCursor(self.can_log.textCursor().End)
 
     # --- Channel list ---
 
@@ -1420,7 +1447,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:                      # a full disk must not take the measurement down
                 self.log_verbose(f"Recording stopped: {exc}")
                 self.stop_recording()
-        self.log_can(direction, can_id, data)
+        self.log_can(direction, can_id, data, timestamp)
         # Every open window that wants frames declares on_frame(); nothing else needs to know who is open.
         for name in list(self.tool_panes):
             handler = getattr(self.tool_widget(name), "on_frame", None)
