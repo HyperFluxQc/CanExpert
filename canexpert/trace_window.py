@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import csv
 from collections import deque
-from datetime import datetime
 
 from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette
@@ -28,6 +27,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from canexpert.clock import absolute_text
 from canexpert.frame_filter import DIRECTIONS, FILTER_MODES, FrameFilter, parse_filter
 from canexpert.uds.observer import assemble
 from canexpert.ui_common import enable_maximize, is_dark_theme, line_icon, style_toggle
@@ -57,9 +57,10 @@ _ID_COLORS_DARK = ["#5eb3f6", "#ff9d6b", "#7fd18a", "#ffd43b", "#cc92e2", "#4fd2
 class TraceWindow(QDialog):
     """CANoe-style trace: frames as they arrive, symbolic where a database describes them."""
 
-    def __init__(self, parent=None, symbols=None):
+    def __init__(self, parent=None, symbols=None, clock=None):
         super().__init__(parent)
         self.setWindowTitle("Trace")
+        self.clock = clock                     # the measurement's (clock.py); Relative counts from its start
         enable_maximize(self)
         self.setMinimumSize(760, 380)
         self.resize(1100, 620)
@@ -312,9 +313,11 @@ class TraceWindow(QDialog):
     def _time_text(self, frame, previous) -> str:
         mode = self.time_combo.currentText()
         if mode == "Absolute":
-            return datetime.fromtimestamp(frame[0]).strftime("%H:%M:%S.%f")[:-3]
+            return absolute_text(frame[0])
         if mode == "Delta":
             return f"{frame[0] - previous[0]:.6f}" if previous is not None else "0.000000"
+        if self.clock is not None and self.clock.start is not None and self.clock.start <= frame[0]:
+            return f"{frame[0] - self.clock.start:.6f}"
         first = self.frames[0][0] if self.frames else frame[0]
         return f"{frame[0] - first:.6f}"
 

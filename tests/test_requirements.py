@@ -699,6 +699,34 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         window.monitor_filter_bar.mode_combo.setCurrentText("Stop")
         self.assertEqual([line.split("ID: ")[1].split()[0] for line in lines()], ["0x300", "0x301"])
 
+    def test_every_window_counts_from_the_same_measurement_start(self):
+        window = self.window
+        window.on_connect_clicked()
+        start = window.clock.start
+        self.assertIsNotNone(start, "connecting starts the measurement")
+        window.set_time_display("Relative")
+        self.assertEqual(self.settings.value("time_display"), "Relative")
+        engine = b"\x01\x2c\x00\x64\x00\x00\x00\x00"
+
+        logger = window.open_can_logger()
+        logger.load_dbc_from_path(Path(__file__).resolve().parents[1] / "DBC" / "dummy_ecu.dbc")
+        trace = window.open_trace()
+        trace.time_combo.setCurrentText("Relative")
+        diagnostics = window.open_diagnostic_window()
+        window.dispatch_frame(start + 1.5, "RX", 0x300, engine)
+        window.dispatch_frame(start + 2.25, "RX", 0x7E8, b"\x02\x7e\x00")
+        trace.flush()
+
+        self.assertIn("1.500   RX  ID: 0x300", window.can_log.toPlainText())   # direction is right-aligned
+        rows = {trace.tree.topLevelItem(row).text(2): trace.tree.topLevelItem(row).text(0)
+                for row in range(trace.tree.topLevelItemCount())}
+        self.assertEqual(rows["300"], "1.500000")
+        series = logger._series["EngineData.Temperature"]
+        self.assertAlmostEqual(float(series.t[0]), 1.5, places=6)      # the same number on the graph
+        self.assertIn("2.250  RX  ID=0x7E8", diagnostics.monitor_log.toPlainText())
+        window.set_time_display("Absolute")
+        self.assertNotIn("1.500  ", window.can_log.toPlainText(), "the monitor is redrawn in the new display")
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)

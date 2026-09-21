@@ -70,7 +70,23 @@ class TraceWindowTest(unittest.TestCase):
         self.trace.time_combo.setCurrentText("Delta")
         self.assertEqual(self.rows(COL_TIME), ["0.000000", "0.250000", "0.250000", "0.500000"])
         self.trace.time_combo.setCurrentText("Absolute")
-        self.assertEqual(len(self.rows(COL_TIME)[0].split(":")), 3)
+        # These timestamps are seconds from a recording's own zero, not times of day, and say so.
+        self.assertEqual(self.rows(COL_TIME)[0], f"{self.frames[0][0]:.3f}")
+        self.trace.add_frame(1_700_000_000.5, "RX", 0x200, b"\x09")
+        self.trace.flush()
+        self.assertEqual(len(self.rows(COL_TIME)[-1].split(":")), 3, "a time of day is shown as one")
+
+    def test_relative_counts_from_the_start_of_the_measurement(self):
+        from canexpert.clock import MeasurementClock
+        clock = MeasurementClock()
+        clock.begin(self.frames[0][0] - 2.0)                   # the measurement started 2 s before the first frame
+        trace = TraceWindow(symbols=self.symbols, clock=clock)
+        self.addCleanup(trace.close)
+        for frame in self.frames:
+            trace.add_frame(*frame)
+        trace.flush()
+        trace.time_combo.setCurrentText("Relative")
+        self.assertEqual(trace.tree.topLevelItem(0).text(COL_TIME), "2.000000")
 
     def test_pass_and_stop_filters(self):
         self.trace.filter_edit.setText("300-3FF")

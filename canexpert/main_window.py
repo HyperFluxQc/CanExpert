@@ -49,7 +49,7 @@ from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_c
 from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
-from canexpert.clock import absolute_text
+from canexpert.clock import TIME_DISPLAYS, MeasurementClock
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
 from canexpert.frame_filter import FilterBar, FrameFilter
@@ -75,6 +75,7 @@ from canexpert.workspace import add_pane, create_workspace, make_pane
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 MONITOR_LINES = 5000                # lines the CAN monitor keeps
+TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the monitors
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
@@ -126,6 +127,11 @@ class MainWindow(QMainWindow):
         # file. Windows opened later read the history.
         self._settings = app_settings()
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
+        # One clock for the monitor, the Trace, the Logger and the Diagnostic Window (clock.py).
+        self.clock = MeasurementClock()
+        self.time_display = self._settings.value(TIME_DISPLAY, TIME_DISPLAYS[0], type=str)
+        if self.time_display not in TIME_DISPLAYS:
+            self.time_display = TIME_DISPLAYS[0]
         self.frame_history = deque(maxlen=FRAME_HISTORY)
         self.recorder = None
         self.replay = None
@@ -389,7 +395,7 @@ class MainWindow(QMainWindow):
 
     def _monitor_line(self, timestamp, direction: str, arbitration_id: int, data) -> str:
         hex_str = " ".join(f"{b:02X}" for b in bytes(data)[:8])
-        return f"{absolute_text(timestamp)}  {direction:>3}  ID: 0x{arbitration_id:X}  {hex_str}"
+        return f"{self.clock.text(timestamp, self.time_display)}  {direction:>3}  ID: 0x{arbitration_id:X}  {hex_str}"
 
     def _monitor_passes(self, direction: str, arbitration_id: int) -> bool:
         rule = self.monitor_filter
@@ -402,6 +408,14 @@ class MainWindow(QMainWindow):
             return
         self.can_log.appendPlainText(self._monitor_line(time.time() if timestamp is None else timestamp,
                                                         direction, arbitration_id, data))
+
+    def set_time_display(self, display: str):
+        """Absolute (time of day) or Relative (seconds since the measurement started) in the monitors."""
+        self.time_display = display
+        self._settings.setValue(TIME_DISPLAY, display)
+        for action in self._time_display_actions:
+            action.setChecked(action.text() == display)
+        self._on_monitor_filter_changed(self.monitor_filter)
 
     def _on_monitor_filter_changed(self, rule):
         """A new filter applies to what was already seen too: the monitor is rebuilt from the history."""
@@ -632,6 +646,18 @@ class MainWindow(QMainWindow):
         refresh_channels_action = view_menu.addAction('Refresh Channels')
         refresh_channels_action.triggered.connect(self.refresh_channel_list)
         view_menu.addSeparator()
+        time_menu = view_menu.addMenu('Time display')
+        time_group = QActionGroup(self)
+        self._time_display_actions = []
+        for display in TIME_DISPLAYS:
+            action = time_menu.addAction(display)
+            action.setCheckable(True)
+            action.setChecked(display == self.time_display)
+            action.setToolTip("Time of day" if display == "Absolute" else "Seconds since the measurement started")
+            action.triggered.connect(lambda _checked, d=display: self.set_time_display(d))
+            time_group.addAction(action)
+            self._time_display_actions.append(action)
+        view_menu.addSeparator()
         self._desktop_menu = view_menu.addMenu('Desktops')
         view_menu.addAction('Save desktop as...').triggered.connect(lambda: self.save_desktop())
         view_menu.addAction('Reset layout').triggered.connect(self.reset_layout)
@@ -805,7 +831,7 @@ class MainWindow(QMainWindow):
 
     def open_trace(self):
         """Trace window, with the frames already recorded."""
-        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols), "bottom")
+        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols, self.clock), "bottom")
         if created:
             for frame in list(self.frame_history):
                 trace.add_frame(*frame)
@@ -826,7 +852,7 @@ class MainWindow(QMainWindow):
     def open_can_logger(self):
         """CAN Logger window, filled with the signals of the frames already recorded."""
         logger, created = self.open_tool("logger", "CAN Logger",
-                                         lambda: CANLoggerWindow(self, self.symbols))
+                                         lambda: CANLoggerWindow(self, self.symbols, self.clock))
         if created:
             for timestamp, direction, can_id, data, _extended in list(self.frame_history):
                 if direction == "RX":
@@ -1016,6 +1042,7 @@ class MainWindow(QMainWindow):
             return None
         if self.replay is not None:
             self.replay.close()                           # one replay at a time; it owns a reading thread
+        self.clock.begin()                           # counted from the recording's first frame
         trace = self.open_trace()
         trace.set_source(f"Offline: {Path(path).name}")
         self.replay = ReplayDialog(path, self.replay_frames, self)
@@ -1096,6 +1123,7 @@ class MainWindow(QMainWindow):
             self._remember_channel(cfg)
             self.session_generation += 1
             generation = self.session_generation
+            self.clock.begin(time.time())            # a new measurement: relative times count from here
             worker = CanWorker(self.can_bus, config, tester_present=not setup.listen_only)
             mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
             worker.add_mailbox(mailbox)
@@ -1212,6 +1240,7 @@ class MainWindow(QMainWindow):
             self.log_verbose(f"ECU check not started: {exc}")
             return
         worker = CanWorker(bus, config)
+        self.clock.begin(time.time())
         worker.message_received.connect(lambda msg, w=worker: self._on_monitor_message(w, msg))
         worker.message_sent.connect(lambda can_id, data, w=worker: self.dispatch_frame(time.time(), "TX", can_id, data)
                                     if w is self.ecu_monitor else None)
@@ -1440,6 +1469,7 @@ class MainWindow(QMainWindow):
         The timestamp is the adapter's for received frames, so the trace and the logger share one clock.
         """
         data = bytes(data)
+        self.clock.see(timestamp)
         self.frame_history.append((float(timestamp), direction, int(can_id), data, bool(extended)))
         if self.recorder is not None:
             try:

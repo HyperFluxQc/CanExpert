@@ -4,8 +4,8 @@ build request form from ODX parameters and data choices, send UDS requests over 
 (multi-frame requests and replies), monitor Server/ECU CAN IDs.
 """
 import threading
+import time
 from pathlib import Path
-from datetime import datetime
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -37,6 +37,7 @@ except ImportError:
 from canexpert.paths import ODX_DIR
 from canexpert.ui_common import SplitterPanel, enable_maximize
 from canexpert.can_bus import ReceiveMailbox
+from canexpert.clock import absolute_text
 from canexpert.config import uds_transport
 from canexpert.uds.client import uds_request
 
@@ -273,7 +274,7 @@ class DiagnosticWindow(QDialog):
         # competing with the panel script for replies.
         mailbox = ReceiveMailbox(bus, worker.message_sent.emit)
         worker.add_mailbox(mailbox)
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        ts = self._time_text(time.time())
         self._log(f"{ts}  TX  ID=0x{transport['request_id']:X}  {payload.hex(' ')}")
         if hasattr(self, "send_btn"):
             self.send_btn.setEnabled(False)
@@ -302,17 +303,24 @@ class DiagnosticWindow(QDialog):
             mailbox.close()
         self.request_finished.emit(line)
 
+    def _time_text(self, timestamp: float) -> str:
+        """A time as the main window shows them: the measurement's clock and its Absolute/Relative choice."""
+        clock = getattr(self.main, "clock", None)
+        if clock is None:
+            return absolute_text(timestamp)
+        return clock.text(timestamp, getattr(self.main, "time_display", "Absolute"))
+
     def _on_request_finished(self, line: str):
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        ts = self._time_text(time.time())
         self._log(f"{ts}  {line}")
         if hasattr(self, "send_btn"):
             self.send_btn.setEnabled(True)
 
     def on_frame(self, timestamp, direction, can_id, data, extended=False):
         """A frame of the measurement; the monitor keeps the ones addressed to or from the ECU."""
-        self.on_can_message(can_id, data, direction)
+        self.on_can_message(can_id, data, direction, timestamp)
 
-    def on_can_message(self, arb_id: int, data: bytes | list, direction: str = "RX"):
+    def on_can_message(self, arb_id: int, data: bytes | list, direction: str = "RX", timestamp=None):
         """Called by the main window for every frame; logs the ones addressed to or from the ECU."""
         main = self.main
         if not main or not getattr(main, "active_config", None) or not hasattr(self, "monitor_log"):
@@ -322,5 +330,5 @@ class DiagnosticWindow(QDialog):
         if arb_id not in (cfg.get("request_id"), uds_transport(cfg)["request_id"], cfg.get("response_id")):
             return
         data = bytes(data)[:8] if data else b""
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        ts = self._time_text(time.time() if timestamp is None else timestamp)
         self.monitor_log.appendPlainText(f"{ts}  {direction}  ID=0x{arb_id:X}  {data.hex()}")

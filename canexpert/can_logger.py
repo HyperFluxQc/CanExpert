@@ -213,9 +213,10 @@ class _Series:
 class CANLoggerWindow(QDialog):
     """CANoe-style graphics window: tick DBC signals to add one strip chart per signal."""
 
-    def __init__(self, parent=None, symbols=None):
+    def __init__(self, parent=None, symbols=None, clock=None):
         super().__init__(parent)
         self.setWindowTitle("CAN Logger")
+        self.clock = clock                   # the measurement's (clock.py): time 0 is when it started
         enable_maximize(self)
         self.setMinimumSize(900, 550)
         self.resize(1200, 750)
@@ -771,7 +772,10 @@ class CANLoggerWindow(QDialog):
             return
         now = float(timestamp) if timestamp is not None else time.monotonic()
         if self._t0 is None:
-            self._t0 = now
+            start = self.clock.start if self.clock is not None else None
+            # The measurement's start when it is on the same clock as the frame, so a time on the graph is
+            # the same number as the Trace's Relative time; the first frame otherwise.
+            self._t0 = start if start is not None and timestamp is not None and start <= now else now
         t = now - self._t0
         for signal_name, display_name in names:
             value = decoded.get(signal_name)
