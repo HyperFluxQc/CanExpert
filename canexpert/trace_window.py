@@ -10,18 +10,16 @@ from __future__ import annotations
 import csv
 from collections import deque
 
-from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
-from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtCore import QEvent, Qt, QTimer
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -30,31 +28,19 @@ from PyQt5.QtWidgets import (
 from canexpert.clock import absolute_text
 from canexpert.frame_filter import DIRECTIONS, FILTER_MODES, FrameFilter, parse_filter
 from canexpert.uds.observer import assemble
-from canexpert.ui_common import enable_maximize, is_dark_theme, line_icon, style_toggle
+from canexpert.ui_common import ToolButtonsMixin, enable_maximize, is_dark_theme
 
 MAX_ROWS = 20000            # frames kept; the oldest are dropped
 FLUSH_INTERVAL_MS = 80      # how often buffered frames reach the view
 TIME_MODES = ("Absolute", "Relative", "Delta")
 COL_TIME, COL_DIR, COL_ID, COL_NAME, COL_DLC, COL_DATA = range(6)
 
-# Symbols of the small tool buttons, drawn in a 24 x 24 box (see ui_common.line_icon).
-TOOL_ICONS = {
-    "clear": '<path d="M5 7h14M10 4h4"/><path d="M7 7l1 13h8l1-13"/><path d="M10.5 10.5v6M13.5 10.5v6"/>',
-    "pause": '<path d="M9.5 5v14M14.5 5v14" stroke-width="2.6"/>',
-    "play": '<path d="M8 5l11 7-11 7z"/>',
-    "follow": '<path d="M3 12h12"/><path d="M11 7l5 5-5 5"/><path d="M20 4v16"/>',
-    "colour": '<path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-1 2-1.8 0-1.6-1.6-1.8-1.6-3 0-.9.8-1.6 1.8-1.6H16a5 5 0 0 0 5-5"/>'
-              '<circle cx="7.5" cy="12" r="1.2" fill="currentColor"/><circle cx="9.5" cy="8" r="1.2" fill="currentColor"/>'
-              '<circle cx="14" cy="7" r="1.2" fill="currentColor"/>',
-    "transport": '<path d="M4 7h10a3 3 0 0 1 0 6H8a3 3 0 0 0 0 6h12"/><path d="M17 4l3 3-3 3"/>'
-                 '<path d="M7 16l-3 3 3 3"/>',
-}
 # One colour per identifier, picked by the identifier itself so a message keeps its colour.
 _ID_COLORS_LIGHT = ["#1f77b4", "#b8410e", "#2e7d32", "#8a6d00", "#6a1b9a", "#00707f", "#a3145c", "#3f51b5"]
 _ID_COLORS_DARK = ["#5eb3f6", "#ff9d6b", "#7fd18a", "#ffd43b", "#cc92e2", "#4fd2e0", "#ff8ab5", "#9fa8ff"]
 
 
-class TraceWindow(QDialog):
+class TraceWindow(ToolButtonsMixin, QDialog):
     """CANoe-style trace: frames as they arrive, symbolic where a database describes them."""
 
     def __init__(self, parent=None, symbols=None, clock=None):
@@ -80,36 +66,6 @@ class TraceWindow(QDialog):
         self._timer.start()
 
     # --- UI -----------------------------------------------------------------------------
-
-    def _tool_button(self, name, tip, checkable=False, checked=False, clicked=None, toggled=None):
-        button = QToolButton()
-        button.setAutoRaise(True)
-        button.setIconSize(QSize(18, 18))
-        button.setToolTip(tip)
-        button.setAccessibleName(tip.split(":")[0])
-        button.setCheckable(checkable)
-        button.setChecked(checked)
-        if clicked is not None:
-            button.clicked.connect(clicked)
-        if toggled is not None:
-            button.toggled.connect(toggled)
-        self._tool_buttons[name] = button
-        return style_toggle(button)
-
-    @staticmethod
-    def _separator():
-        line = QFrame()
-        line.setFrameShape(QFrame.VLine)
-        line.setFrameShadow(QFrame.Sunken)
-        return line
-
-    def _refresh_tool_icons(self):
-        colour = self.palette().color(QPalette.WindowText)
-        for name, button in self._tool_buttons.items():
-            symbol = "play" if name == "pause" and button.isChecked() else name
-            body = TOOL_ICONS[symbol].replace('fill="currentColor"', f'fill="{colour.name()}"')
-            button.setIcon(line_icon(body, colour))
-            style_toggle(button)          # the style sheet's palette(...) is resolved when it is set
 
     def _build_ui(self):
         layout = QVBoxLayout(self)

@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (
 
 from canexpert.can_bus import ReceiveMailbox
 from canexpert.config import uds_transport
-from canexpert.uds.client import FUNCTIONS, GROUPS, UdsFunctions, uds_request
+from canexpert.uds.client import FUNCTIONS, GROUPS, UdsFunctions, make_request
 from canexpert.uds.seed_key import SeedKeyError, dll_key, xor_key
 from canexpert.ui_common import SplitterPanel, enable_maximize
 
@@ -67,18 +67,6 @@ def parse_int(text: str, default=0) -> int:
     if not text:
         return default
     return int(text, 16 if not text.lower().startswith("0x") else 0)
-
-
-def make_request(mailbox, transport):
-    """The (payload, timeout, wait, pending) function UdsFunctions expects, bound to one mailbox."""
-    def request(payload, timeout=None, wait=True, pending=None):
-        options = dict(transport)
-        if timeout is not None:
-            options["timeout"] = timeout
-        if pending is not None:
-            options["pending_timeout"] = pending
-        return uds_request(mailbox, payload, wait=wait, **options)
-    return request
 
 
 class UdsConsoleWindow(QDialog):

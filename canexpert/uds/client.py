@@ -62,6 +62,18 @@ def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int =
                 return reply
 
 
+def make_request(mailbox, transport):
+    """The (payload, timeout, wait, pending) function UdsFunctions expects, bound to one mailbox."""
+    def request(payload, timeout=None, wait=True, pending=None):
+        options = dict(transport)
+        if timeout is not None:
+            options["timeout"] = timeout
+        if pending is not None:
+            options["pending_timeout"] = pending
+        return uds_request(mailbox, payload, wait=wait, **options)
+    return request
+
+
 P2_MARGIN = 0.05            # added to the P2 an ECU announces, for the frames to travel
 MAX_ANNOUNCED_TIME = 600.0  # a session answer claiming more than this is not believed
 

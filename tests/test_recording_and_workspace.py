@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import can
 from PyQt5.QtCore import QSettings
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QAction, QApplication
 
 from PyQtAds import ads
 
@@ -150,6 +150,14 @@ class MeasurementTest(unittest.TestCase):
         self.assertTrue(spin_until(lambda: (trace.flush(), len(trace.frames) >= 2)[1]))
         self.assertIn(0x300, [frame[2] for frame in trace.frames])
         self.assertIsNone(self.window.can_bus, "replaying must not open a bus")
+
+        # The menu item does the same: it asks for the file (Qt's "checked" must not stand in for it).
+        action = next(item for item in self.window.findChildren(QAction) if item.text() == "Replay a recorded file...")
+        with patch.object(main.QFileDialog, "getOpenFileName", return_value=(str(path), "")) as asked:
+            action.trigger()
+        asked.assert_called_once()
+        self.assertIsNot(self.window.replay, dialog)
+        self.addCleanup(self.window.replay.close)
 
     # --- the workspace ----------------------------------------------------------------------------
 

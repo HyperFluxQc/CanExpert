@@ -508,17 +508,18 @@ exist.
 
 - **Diagnostic Window**: needs ODX, `odxtools` and an active database session; encodes only "free
   parameters" with an `int(text, 0)` fallback; response decoding failures are swallowed by a bare
-  `except: pass` ([diagnostic_window.py:294](canexpert/diagnostic_window.py#L294)); its monitor shows
-  three IDs and no ISO-TP reassembly.
+  `except: pass` (now it says why, in the reply line); its monitor shows three IDs and no ISO-TP
+  reassembly (the Trace's transport view, item 18, does that).
 - **`workers` is a one-entry dict** — scaffolding from a multi-channel design that was never built.
-- **Dead parameters**: `isotp_recv`'s `block_size` and `st_min`, and `uds_request`'s `padding`, are
-  reachable in code but unreachable from the UI.
-- **`message.timestamp`** is emitted and never consumed.
-- **Activity scan** result is a string suffix on a tree label, not data anything else can use.
+- ~~Dead parameters: `isotp_recv`'s `block_size` and `st_min`, and `uds_request`'s `padding`~~ — reachable
+  from the configuration dialog since items 19 and 20.
+- ~~`message.timestamp` is emitted and never consumed~~ — every window uses it since tier 1 and item 32.
+- **Activity scan** result is a string suffix on a tree label, not data anything else can use (Scan for
+  ECUs, item 29, is the real answer).
 - **`Configurations/config_test.json`** still points at database family `FFFFFFFF…`, which was
   deleted, so that configuration always reports "No matching database".
 - **`requirements-build.txt`** describes a build that does not exist in the repo.
-- **Dummy ECU**: `RDTCI` only 0x01/0x02, `WDBI` only `F190`, DIDs and DTCs not user-editable.
+- ~~Dummy ECU: `RDTCI` only 0x01/0x02, `WDBI` only `F190`, DIDs and DTCs not user-editable~~ — item 28.
 
 ---
 

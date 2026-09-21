@@ -382,7 +382,7 @@ class TransmitWindow(QDialog):
             return False
         try:
             self.send(row["id"], row["data"], row["extended"])
-        except Exception as exc:                          # not connected, passive mode, adapter error
+        except Exception as exc:                          # not connected, listen-only, adapter error
             row["enabled"] = False                        # a failing row would otherwise repeat the error
             self._refresh_row(index)
             self.status.setText(f"{row['name']}: {exc}")

@@ -94,7 +94,7 @@ class ChannelSetupDialog(QDialog):
         self.detect_btn = QPushButton("Find the bit rate")
         self.detect_btn.setToolTip("Listen at each common bit rate, without acknowledging anything, until one "
                                    "carries frames and no error frames")
-        self.detect_btn.clicked.connect(self.find_bitrate)
+        self.detect_btn.clicked.connect(lambda: self.find_bitrate())     # not clicked's checked as candidates
         self.detect_label = QLabel("")
         self.detect_label.setWordWrap(True)
         detect_row.addWidget(self.detect_btn)
@@ -171,7 +171,6 @@ class ChannelSetupDialog(QDialog):
             self.detect_label.setText("No bit rate carried clean traffic" +
                                       (f" ({'; '.join(heard)})" if heard else " - is the bus quiet?"))
             return
-        self.detected_bitrate = bitrate
         self.detect_label.setStyleSheet("color: green;")
         note = "" if bitrate == self.bitrate else f" - the configuration uses {bitrate_text(self.bitrate)}"
         self.detect_label.setText(f"Traffic at {bitrate_text(bitrate)}{note}")

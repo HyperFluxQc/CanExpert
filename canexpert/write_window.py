@@ -37,7 +37,6 @@ from PyQt5.QtWidgets import (
 from canexpert.clock import absolute_text
 from canexpert.ui_common import enable_maximize
 
-LEVELS = ("info", "warning", "error")
 LEVEL_FILTERS = ("Everything", "Warnings and errors", "Errors only")
 COLOURS = {"info": None, "warning": "#b8860b", "error": "#d62728"}
 MAX_LINES = 5000

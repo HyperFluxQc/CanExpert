@@ -294,8 +294,8 @@ class DiagnosticWindow(QDialog):
                 line = f"Response ({len(reply)} bytes): {reply.hex(' ')}"
                 try:
                     line += "\n    " + str(service.decode_message(reply))
-                except Exception:
-                    pass
+                except Exception as exc:              # the reply stands; say why the ODX could not read it
+                    line += f"\n    (not decoded: {exc})"
         except Exception as e:
             line = f"[UDS error] {e}"
         finally:

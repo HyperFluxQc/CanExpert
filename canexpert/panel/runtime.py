@@ -442,7 +442,7 @@ class ScriptRuntime(QObject):
         self.thread = threading.Thread(target=self._run, args=(code, path), daemon=True)
         self.thread.start()
 
-    def _trace(self, frame, event, arg):
+    def _trace(self, frame, event, _arg):     # sys.settrace calls it with three arguments
         if self.stop_event.is_set():
             raise ScriptStopped()
         return self._trace

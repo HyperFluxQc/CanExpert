@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from PyQt5.QtCore import QEvent, QRectF, Qt
 from PyQt5.QtGui import QKeyEvent
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.designer.side_panels import DraggablePaletteItem, default_handler_name
@@ -181,6 +181,18 @@ class FormDesignerTest(unittest.TestCase):
         self.assertTrue(self.designer.properties_panel.isVisible())
         self.assertTrue(self.designer.symbols_panel.isVisible())
         self.assertEqual(self.designer.design_splitter.sizes(), form_sizes)      # and the form its layout back
+
+    def test_the_test_panel_button_runs_against_the_simulated_ecu(self):
+        from canexpert.designer.form_designer import TestPanelDialog
+        self.canvas.add_widget_at("label", 10, 10, text="Button test")
+        button = next(item for item in self.designer.findChildren(QPushButton) if item.text() == "Test panel...")
+        button.click()                                   # clicked's "checked" must not switch the ECU off
+        dialogs = self.designer.findChildren(TestPanelDialog)
+        self.assertEqual(len(dialogs), 1)
+        try:
+            self.assertTrue(hasattr(dialogs[0], "ecu"), "the Test panel has its simulated ECU")
+        finally:
+            dialogs[0].close()
 
     def test_test_panel_flashes_firmware_into_the_simulated_ecu(self):
         from canexpert.flashing import load_firmware

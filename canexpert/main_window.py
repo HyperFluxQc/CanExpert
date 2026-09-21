@@ -8,7 +8,6 @@ import re
 import sys
 import time
 from collections import deque
-from datetime import datetime
 from pathlib import Path
 
 import can
@@ -54,7 +53,7 @@ from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.ecu_scan import EcuScanDialog
 from canexpert.diagnostic_window import DiagnosticWindow
-from canexpert.clock import TIME_DISPLAYS, MeasurementClock
+from canexpert.clock import TIME_DISPLAYS, MeasurementClock, absolute_text
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
 from canexpert.frame_filter import FilterBar, FrameFilter
@@ -399,16 +398,12 @@ class MainWindow(QMainWindow):
         colors = {"gray": "gray", "green": "green", "red": "red", "orange": "orange"}
         self.status_label.setStyleSheet(f"QLabel {{ color: {colors.get(color, 'gray')}; }}")
 
-    def _time_str(self) -> str:
-        """Return current time as HH:MM:SS:mmm."""
-        now = datetime.now()
-        return now.strftime("%H:%M:%S") + f":{now.microsecond // 1000:03d}"
 
     def log_verbose(self, msg: str):
         """Append a message to the debug/verbose log."""
         if getattr(self, "debug_log", None) is None:
             return
-        line = f"[{self._time_str()}] {msg}"
+        line = f"[{absolute_text(time.time())}] {msg}"
         self.debug_log.appendPlainText(line)
 
     def _monitor_line(self, timestamp, direction: str, arbitration_id: int, data) -> str:
@@ -646,7 +641,7 @@ class MainWindow(QMainWindow):
         self._stop_record_action = measurement_menu.addAction('Stop recording')
         self._stop_record_action.setEnabled(False)
         self._stop_record_action.triggered.connect(self.stop_recording)
-        measurement_menu.addAction('Replay a recorded file...').triggered.connect(self.replay_log)
+        measurement_menu.addAction('Replay a recorded file...').triggered.connect(lambda: self.replay_log())
         measurement_menu.addSeparator()
         measurement_menu.addAction('Scan for ECUs...').triggered.connect(lambda: self.open_ecu_scan())
 

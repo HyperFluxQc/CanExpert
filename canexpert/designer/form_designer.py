@@ -286,7 +286,7 @@ class FormDesigner(QDialog):
             btn_layout.addWidget(button)
         test_btn = QPushButton("Test panel...")
         test_btn.setToolTip("Run this panel and its script against the simulated ECU on a virtual CAN bus")
-        test_btn.clicked.connect(self.test_panel)
+        test_btn.clicked.connect(lambda: self.test_panel())      # with the simulated ECU, not clicked's False
         btn_layout.addWidget(test_btn)
         btn_layout.addStretch()
 
@@ -418,7 +418,6 @@ class FormDesigner(QDialog):
         self.db_name_edit.setText(f"new_{date.today().isoformat()}")
         self.desc_edit.clear()
         self.dbc_path_edit.clear()
-        self.symbol_list._dbc_path = None
         self.symbol_list._dbc_db = None
         self.symbol_list.symbol_tree.clear()
         self.code_editor.setPlainText(SCRIPT_TEMPLATE)

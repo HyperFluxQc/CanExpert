@@ -221,6 +221,15 @@ class SettingsAndDialogTest(unittest.TestCase):
         self.assertIn("Traffic at 125 kbit/s", dialog.detect_label.text())
         self.assertIn("the configuration uses 500 kbit/s", dialog.detect_label.text())
 
+    def test_the_button_finds_the_bit_rate(self):
+        dialog = ChannelSetupDialog(KVASER, ChannelSetup(), 500_000)
+        self.addCleanup(dialog.close)
+        with patch.object(channel_setup, "open_channel", lambda cfg, rate, **options: FakeBus(rate, 250_000)):
+            dialog.detect_btn.click()                    # clicked's "checked" must not stand in for the candidates
+            self.assertTrue(spin_until(lambda: dialog.detector is not None and dialog.detector.isFinished()))
+            APP.processEvents()
+        self.assertIn("Traffic at 250 kbit/s", dialog.detect_label.text())
+
     def test_a_channel_in_use_cannot_be_probed(self):
         dialog = ChannelSetupDialog(KVASER, ChannelSetup(), 500_000, in_use=True)
         self.addCleanup(dialog.close)

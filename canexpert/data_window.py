@@ -7,7 +7,6 @@ changed hands.
 """
 from __future__ import annotations
 
-import csv
 import time
 
 from PyQt5.QtCore import Qt, QTimer
@@ -25,7 +24,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from canexpert.ui_common import enable_maximize
+from canexpert.ui_common import enable_maximize, write_tree_csv
 
 REFRESH_MS = 200
 COL_SIGNAL, COL_PHYSICAL, COL_UNIT, COL_RAW, COL_AGE, COL_COUNT, COL_ID = range(7)
@@ -193,9 +192,4 @@ class DataWindow(QDialog):
             self.export_csv(path)
 
     def export_csv(self, path):
-        with open(path, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(HEADERS)
-            for index in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(index)
-                writer.writerow([item.text(column) for column in range(len(HEADERS))])
+        write_tree_csv(path, self.tree, HEADERS)

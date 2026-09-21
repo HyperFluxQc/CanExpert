@@ -7,7 +7,6 @@ bus rather than averaging since the measurement started.
 """
 from __future__ import annotations
 
-import csv
 import time
 from collections import deque
 
@@ -26,7 +25,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from canexpert.ui_common import enable_maximize
+from canexpert.ui_common import enable_maximize, write_tree_csv
 
 RATE_WINDOW = 3.0        # seconds of history the rates and the bus load are worked out over
 REFRESH_MS = 500
@@ -240,9 +239,4 @@ class StatisticsWindow(QDialog):
 
     def export_csv(self, path):
         """Write the rows now shown to a CSV file."""
-        with open(path, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(HEADERS)
-            for index in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(index)
-                writer.writerow([item.text(column) for column in range(len(HEADERS))])
+        write_tree_csv(path, self.tree, HEADERS)

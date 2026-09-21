@@ -14,8 +14,7 @@ from PyQt5.QtCore import QObject, pyqtSignal
 from canexpert.can_bus import ReceiveMailbox
 from canexpert.config import uds_transport
 from canexpert.flash_sequence import FlashCancelled, FlashError, FlashRun, run_flash
-from canexpert.uds.client import UdsFunctions
-from canexpert.uds_console import make_request      # the transport the console already binds to a mailbox
+from canexpert.uds.client import UdsFunctions, make_request
 
 
 class FlashRunner(QObject):
