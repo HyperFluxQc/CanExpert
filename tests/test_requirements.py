@@ -649,6 +649,35 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         config_file = self.configs / f"config_{name}.json"
         self.assertNotIn("isotp", config_file.read_text(encoding="utf-8"))
 
+    def test_a_listen_only_channel_sends_nothing_at_all(self):
+        from canexpert.channel_setup import ChannelSetup, save_setup
+        channel = self.window.selected_channel_config
+        save_setup(self.settings, channel, ChannelSetup(listen_only=True))
+        self.window.on_connect_clicked()
+        self.assertIsNotNone(self.window.can_bus)
+        self.assertIsNone(self.ecu.recv(0.4), "no TesterPresent on a listen-only channel")
+        with self.assertRaises(can.CanOperationError):
+            self.window.send_can_message(0x200, b"\x01")
+        self.ecu.send(can.Message(arbitration_id=0x7E8, data=b"\x02\x7e\x00", is_extended_id=False))
+        self.assertTrue(spin_until(lambda: "RX" in self.window.can_log.toPlainText()), "it still receives")
+        self.window.on_disconnect_clicked()
+        self.window.check_ecus(channel)
+        self.assertIsNone(self.window.ecu_monitor, "the ECU check is TesterPresent, so it is not started")
+        self.assertIn("listen-only", self.window.debug_log.toPlainText())
+
+    def test_the_channel_setup_is_edited_from_the_channel(self):
+        from canexpert.channel_setup import load_setup
+        channel = {"interface": "virtual", "channel": 0}
+        self.window.channel_items = {}
+        def edit(dialog):                                   # the user ticking listen-only and pressing OK
+            dialog.listen_only_cb.setChecked(True)
+            dialog._accept()
+            return dialog.Accepted
+        with patch.object(main.ChannelSetupDialog, "exec_", edit):
+            self.window.edit_channel_setup(channel)
+        self.assertTrue(load_setup(self.settings, channel).listen_only)
+        self.assertIn("[listen-only]", self.window._channel_label(channel))
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)

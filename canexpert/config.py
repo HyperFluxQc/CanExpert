@@ -32,6 +32,8 @@ from canexpert.transport_settings import TransportGroup, load_transport, save_tr
 DEFAULT_TESTER_PRESENT_INTERVAL = 0.5
 DEFAULT_NODE_TIMEOUT = 2.0
 DEFAULT_BITRATE = 500000
+# Offered in the dialog; any other whole number of bits per second can be typed in.
+BITRATE_PRESETS = (33333, 50000, 83333, 100000, 125000, 250000, 500000, 800000, 1000000)
 OBD_FUNCTIONAL_ID = 0x7DF
 DEFAULT_CONFIGURATION = {"name": "Default Configuration", "bitrate": DEFAULT_BITRATE, "identifier_11_bit": True,
                          "request_id": OBD_FUNCTIONAL_ID, "response_id": 0x7E8, "timeout_ms": 5000,
@@ -167,8 +169,11 @@ class ConfigurationDialog(QDialog):
         self.name_edit.setEditable(True)
         form.addRow("Name:", self.name_edit)
         self.bitrate_combo = QComboBox()
-        self.bitrate_combo.addItems(["125000", "250000", "500000", "1000000"])
+        self.bitrate_combo.setEditable(True)
+        self.bitrate_combo.addItems([str(rate) for rate in BITRATE_PRESETS])
         self.bitrate_combo.setCurrentText(str(DEFAULT_BITRATE))
+        self.bitrate_combo.setToolTip("Pick one, or type any bit rate; the sample point is set per channel "
+                                      "(right-click the channel, Channel setup...)")
         form.addRow("Bitrate (bps):", self.bitrate_combo)
         self.id_size_combo = QComboBox()
         self.id_size_combo.addItem("11 bits (Standard)", 11)
@@ -253,7 +258,7 @@ class ConfigurationDialog(QDialog):
         config.pop("did", None)  # only used by the removed database-ID discovery
         config.update({
             "name": self.name_edit.currentText().strip() or "Unnamed",
-            "bitrate": int(self.bitrate_combo.currentText()),
+            "bitrate": self._bitrate(),
             "identifier_11_bit": self.id_size_combo.currentData() == 11,
             "timeout_ms": self.timeout_spin.value(),
             "extended_id": self.extended_id_cb.isChecked(),
@@ -268,6 +273,15 @@ class ConfigurationDialog(QDialog):
         if config["extended_id"]:
             config["extended_id_byte"] = _hex(self.extended_id_byte_edit.text(), "Extended ID byte", 0xFF)
         return config
+
+    def _bitrate(self) -> int:
+        try:
+            bitrate = int(self.bitrate_combo.currentText().strip())
+        except ValueError:
+            raise ValueError("The bit rate must be a whole number of bits per second, e.g. 500000") from None
+        if not 10_000 <= bitrate <= 1_000_000:
+            raise ValueError("Classic CAN runs between 10000 and 1000000 bit/s")
+        return bitrate
 
     def save_config(self):
         try:

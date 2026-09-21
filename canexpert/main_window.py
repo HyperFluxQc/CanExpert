@@ -40,9 +40,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from canexpert.can_bus import (SUPPORTED_INTERFACES, CanWorker, ChannelActivityScanner, ReceiveMailbox, channel_key,
-                               open_channel)
+from canexpert.can_bus import SUPPORTED_INTERFACES, CanWorker, ChannelActivityScanner, ReceiveMailbox, channel_key
 from canexpert.can_logger import CANLoggerWindow
+from canexpert.channel_setup import load_setup, open_configured, save_setup
+from canexpert.channel_setup_dialog import ChannelSetupDialog
 from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
                               uds_transport, validate_config)
 from canexpert.data_window import DataWindow
@@ -428,6 +429,8 @@ class MainWindow(QMainWindow):
         active = self.channel_activity.get(channel_key(cfg))
         if active is not None:
             label += " — traffic" if active else " — no traffic"
+        if load_setup(self._settings, cfg).listen_only:
+            label += " [listen-only]"
         if self.connected_channel_config and channel_key(cfg) == channel_key(self.connected_channel_config):
             label += " [Connected]"
         elif self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
@@ -1057,13 +1060,16 @@ class MainWindow(QMainWindow):
             # Validate/build before opening hardware, so errors leave a usable UI.
             self.build_application_ui(database)
             cfg = self.selected_channel_config
-            self.can_bus = open_channel(cfg, config["bitrate"])
+            setup = load_setup(self._settings, cfg)
+            self.can_bus = open_configured(cfg, config["bitrate"], setup, config)
+            if setup.describe():
+                self.log_verbose(f"Channel setup: {setup.describe()}")
             self.session_config = config
             self.connected_channel_config = dict(cfg)
             self._remember_channel(cfg)
             self.session_generation += 1
             generation = self.session_generation
-            worker = CanWorker(self.can_bus, config)
+            worker = CanWorker(self.can_bus, config, tester_present=not setup.listen_only)
             mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
             worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
@@ -1168,8 +1174,13 @@ class MainWindow(QMainWindow):
         each ECU shows Responding, or Lost connection after the node loss timeout."""
         self.stop_ecu_monitor()
         channel = channel_config.get("channel", 0)
+        setup = load_setup(self._settings, channel_config)
+        if setup.listen_only:
+            self.log_verbose("ECU check not started: it sends TesterPresent, and the channel is set to "
+                             "listen-only (right-click the channel, Channel setup...)")
+            return
         try:
-            bus = open_channel(channel_config, config["bitrate"])
+            bus = open_configured(channel_config, config["bitrate"], setup, config)
         except Exception as exc:
             self.log_verbose(f"ECU check not started: {exc}")
             return
@@ -1233,8 +1244,25 @@ class MainWindow(QMainWindow):
             menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
         elif self.can_bus is None and self.active_config:
             menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
-        if menu.actions():
-            menu.exec_(self.channel_list.viewport().mapToGlobal(position))
+        menu.addSeparator()
+        menu.addAction("Channel setup...", lambda: self.edit_channel_setup(cfg))
+        menu.exec_(self.channel_list.viewport().mapToGlobal(position))
+
+    def edit_channel_setup(self, channel_config):
+        """Sample point, listen-only, receive filter and bit rate detection for one adapter channel."""
+        key = channel_key(channel_config)
+        in_use = self._channel_checked(key) or (self.can_bus is not None and self.connected_channel_config is not None
+                                                and key == channel_key(self.connected_channel_config))
+        bitrate = int((self.session_config or self.active_config or {}).get("bitrate", 500000))
+        dialog = ChannelSetupDialog(channel_config, load_setup(self._settings, channel_config), bitrate, self,
+                                    in_use=in_use)
+        if dialog.exec_() == ChannelSetupDialog.Accepted:
+            save_setup(self._settings, channel_config, dialog.setup)
+            self._label_channels()
+            self.log_verbose(f"Channel setup of [{channel_config['interface']}] Ch {channel_config.get('channel', 0)}: "
+                             f"{dialog.setup.describe() or 'the defaults'}"
+                             + (" - used from the next connection" if in_use else ""))
+        return dialog
 
     def check_ecus(self, channel_config):
         """Start the ECU check on a channel with the selected configuration, without loading its database."""
