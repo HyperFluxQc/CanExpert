@@ -136,7 +136,7 @@ flowchart LR
 | **transmit_pane.py** | `TransmitPane`: the Transmit window, the transmit list and the simulated nodes as two tabs. Both pages are built with `stop_when_hidden=False`, so they keep sending behind another tab; the main window calls `stop_sending()` when the pane is closed. `open_transmit(nodes=True)` brings the nodes tab to the front. |
 | **uds_console.py** | The UDS console: a service tree built from `uds.client.FUNCTIONS`, a request form generated from each function's signature (`_field()`/`_arguments()`), exchanges on a background thread over a private mailbox (`uds.client.make_request()`), the ODX tab (`odx_services.OdxTab`) whose requests go through the same exchange and whose layer decodes every answer once a file is loaded, log lines with the measurement time, the session/security bar with the state strip (session, the P2/P2* the ECU asked for, lock state) and the key source (mask or seed & key DLL), and a fault-memory tab (`status_text()` spells out the DTC status bits). |
 | **recording.py** | `Recorder` (python-can writers, format by file name), `read_frames()`, `ReplayWorker` (a thread that hands frames back at their recorded spacing) and `ReplayDialog`. |
-| **workspace.py** | The central workspace: the Qt Advanced Docking System (PyQtAds) configured for CAN Expert (`create_workspace()`), and the windows put into it (`make_pane()`, `add_pane()`). |
+| **workspace.py** | The central workspace: the Qt Advanced Docking System (PyQtAds) configured for CAN Expert (`create_workspace()`), the windows put into it (`make_pane()`, `add_pane()`, `set_content()` for a window made before its content), and `pane_names()` - the windows a saved state places. |
 | **symbols.py** | `SymbolDatabases`: the DBC files the application shares (paths in the settings), frame id → message, `decode()`, `signal_names()`, `unit()`, and the dialog that edits the list. A file that cannot be read lands in `errors` without failing the others. |
 | **odx_services.py** | ODX with odxtools: `load_database()` (ODX/PDX/CDD), `first_layer()`, `services()`, `decoded()` (a reply decoded by the service that asked, or by the layer), and `OdxTab`, the console tab that lists a layer's services and builds their request forms. |
 | **simulator/ecu.py** | The simulated UDS ECU (sessions, security, DID and DTC tables with snapshot and extended data, forced NRCs, flashing with RequestDownload/RequestUpload, ISO-TP flow control, periodic frames) for Kvaser virtual channels or any python-can interface; the channel lock goes by request ID, so several can share a channel. `EcuConfig` holds every setting and is read for each frame, so changes apply while running; `load_profile()`/`save_profile()` store it as JSON; `main()` opens the window, or runs headless with `--console`. |
@@ -380,9 +380,16 @@ The window system has two halves:
 - **The workspace** is a `CDockManager` (PyQtAds) as the main window's central widget. The Database
   panel and every tool window are `CDockWidget`s in it, so they tab together, split an area, float as
   windows of their own and show drop guides while being dragged. `workspace.py` holds the
-  configuration; `MainWindow.open_tool(name, title, factory, area)` builds each window on first use and
-  `tool_widget(name)` returns an already-open one, which is what `dispatch_frame()` asks who needs a
-  frame.
+  configuration.
+
+Every workspace window has its `CDockWidget` from the start: the Database window, a pane per tool in
+`TOOL_PANES` (`_tool_slots`, empty and closed), and a pane per page of the databases seen
+(`_page_slots`, made on demand and kept, empty, between databases). A saved state only places the
+windows that exist when it is applied, and places them once: `MainWindow.open_tool(name, title, factory)`
+builds a tool on first use and puts it into its pane with `set_content()`, where the arrangement left
+it; `tool_widget(name)` returns an already-open one, which is what `dispatch_frame()` asks who needs a
+frame. Nothing re-applies a state when a window is opened, so opening one never moves, opens or closes
+another.
 
 The toolbar action of each window in `TOOL_PANES` is checkable and works as a switch: `_toggle_tool()`
 opens or closes it, and the pane's `viewToggled` signal keeps the button in step whichever way the
@@ -391,13 +398,13 @@ is hidden rather than destroyed, so it keeps what it recorded.
 
 `layout_state()` returns both halves (`QMainWindow.saveState()` and `CDockManager.saveState()`) and
 `apply_layout_state()` puts them back; the saved layout, the desktops and Reset layout all go through
-that pair. A workspace state only places the windows that existed when it was saved, so `_apply_layout()`
-re-applies it whenever a window is created later.
-
-`restoreState()` only places docks that exist, so `_apply_layout()` re-applies the saved arrangement
-whenever a pane is created later; `_default_state` is captured before the first restore, which is what
-**Reset layout** goes back to. An embedded dialog's `finished` signal (Esc) closes its pane instead of
-leaving an empty one.
+that pair. It first makes the page panes the state names (`pane_names()` reads them from the compressed
+XML), and afterwards `_settle_panes()` applies what the state cannot know: a window with nothing to
+show - the Database with no database loaded, a tool not opened yet, a page the database does not have -
+is closed again, keeping its place, and a window the state does not know at all (saved before it
+existed) is put back at its usual place, since PyQtAds would otherwise leave it out of the workspace and
+reopen it floating. `_default_layout`, captured before the first restore, is what **Reset layout** goes
+back to. An embedded dialog's `finished` signal (Esc) closes its pane instead of leaving an empty one.
 
 ---
 

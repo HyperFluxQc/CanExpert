@@ -275,6 +275,81 @@ class MeasurementTest(unittest.TestCase):
         self.assertIsNotNone(restored.open_trace())
         restored.close()          # closed here, not in a cleanup: the settings patch is still in place
 
+    def test_an_empty_database_window_does_not_come_back_with_the_layout(self):
+        self.window.on_connect_clicked()
+        self.assertFalse(self.window.database_pane.isClosed())
+        self.window.close()                                # the arrangement is saved with the database open
+        restored = main.MainWindow()
+        try:
+            self.assertIsNone(restored.app_database)
+            self.assertTrue(restored.database_pane.isClosed(), "no database loaded: nothing to show")
+            restored.open_can_logger()                     # used to apply the saved arrangement again
+            restored.open_trace()
+            self.assertTrue(restored.database_pane.isClosed())
+            self.assertFalse(restored.tool_panes["logger"].isClosed())
+            restored.save_desktop("Measuring")
+            restored.apply_desktop("Measuring")
+            self.assertTrue(restored.database_pane.isClosed())
+        finally:
+            restored.close()
+
+    def test_a_window_opens_where_the_layout_put_it_and_leaves_the_others_alone(self):
+        self.window.show()
+        self.assertNotIn("logger", self.window.tool_panes, "nothing is built before it is opened")
+        self.window.open_can_logger()
+        self.window.tool_panes["logger"].setFloating()
+        self.window.close()
+        restored = main.MainWindow()
+        try:
+            restored.show()
+            restored.open_can_logger()
+            logger = restored.tool_panes["logger"]
+            APP.processEvents()
+            self.assertTrue(logger.isFloating(), "where the saved arrangement put it")
+            restored.workspace.addDockWidget(ads.BottomDockWidgetArea, logger, restored.database_pane.dockAreaWidget())
+            APP.processEvents()
+            self.assertFalse(logger.isFloating())
+            restored.open_trace()                          # the first time this session
+            restored.open_data()
+            APP.processEvents()
+            self.assertFalse(logger.isFloating(), "opening another window does not put this one back")
+            self.assertFalse(logger.isClosed())
+        finally:
+            restored.close()
+
+    def test_a_window_the_layout_did_not_know_reopens_docked(self):
+        # A state only places the windows it knows; the others used to be left out and reopen floating.
+        self.window.show()
+        self.window.open_trace()
+        self.window.reset_layout()
+        self.window.open_trace()
+        APP.processEvents()
+        self.assertFalse(self.window.tool_panes["trace"].isFloating())
+        self.window.save_desktop("Before the logger")
+        self.window.open_can_logger()
+        self.window.apply_desktop("Before the logger")
+        self.assertTrue(self.window.tool_panes["logger"].isClosed(), "it was not open in that desktop")
+        self.window.open_can_logger()
+        APP.processEvents()
+        self.assertFalse(self.window.tool_panes["logger"].isFloating())
+
+    def test_the_pages_of_a_database_after_reset_layout(self):
+        (self.databases / "panel_2026-09-18.xml").write_text(PANEL.replace(
+            "</page></pages>", '</page><page name="Body"><value id="2" label="Door" binding_value="door" '
+                               'x="10" y="10"/></page></pages>'))
+        self.window.show()
+        self.window.on_connect_clicked()
+        body = self.window.page_panes[0]
+        body.setFloating()
+        self.window.reset_layout()                         # a layout from before the page window existed
+        APP.processEvents()
+        self.assertFalse(body.isClosed())
+        self.assertFalse(body.isFloating(), "back beside the first page")
+        self.assertFalse(self.window.database_pane.isClosed())
+        self.window.on_disconnect_clicked()
+        self.assertTrue(body.isClosed())
+        self.assertTrue(self.window.database_pane.isClosed())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,7 +70,7 @@ from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
-from canexpert.workspace import add_pane, create_workspace, make_pane
+from canexpert.workspace import add_pane, create_workspace, make_pane, pane_names, set_content
 from canexpert.write_window import WriteWindow
 
 # A question mark in a circle, for the manual button beside the Help menu.
@@ -88,6 +88,8 @@ DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement 
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
               "write", "sysvars")   # the windows with a switch on the toolbar
+TOOL_AREAS = {"trace": "bottom", "transmit": "bottom", "write": "bottom"}   # the others tab with the panel
+PAGE_PANE = re.compile(r"pane_page_(\d+)$")
 WRITE_HISTORY = 5000               # Write window lines kept for when it is opened
 
 
@@ -143,7 +145,7 @@ class MainWindow(QMainWindow):
         self.frame_history = deque(maxlen=FRAME_HISTORY)
         self.recorder = None
         self.replay = None
-        self.tool_panes = {}
+        self.tool_panes = {}       # the tool windows opened so far (their panes are in _tool_slots from the start)
         self._bus_state = "unknown"
 
         self.init_ui()
@@ -297,10 +299,22 @@ class MainWindow(QMainWindow):
         self.app_db_layout = QVBoxLayout()
         self.app_db_layout.setContentsMargins(0, 0, 0, 0)
         self.app_db_container.setLayout(self.app_db_layout)
-        self.page_panes = []
+        self.page_panes = []       # the page windows holding a page of the loaded database
+        self._page_slots = []      # every page window made so far; they are kept, empty, between databases
         self.database_pane = make_pane("Database", self.app_db_container, "pane_database")
         add_pane(self.workspace, self.database_pane)
         self.database_pane.toggleView(False)   # shown once a database is loaded
+        # Every tool window has its pane from the start - empty and closed until it is first opened - so
+        # a saved arrangement places it when it is applied. Placing windows made later would mean
+        # applying the arrangement again, which moves and reopens everything else too.
+        self._tool_slots = {}
+        for name, label, _hint, _callback in entries:
+            if name in TOOL_PANES:
+                area = TOOL_AREAS.get(name, "center")
+                slot = make_pane(label, QWidget(), f"pane_{name}")
+                add_pane(self.workspace, slot, area, beside=self.database_pane if area != "center" else None)
+                slot.toggleView(False)
+                self._tool_slots[name] = slot
 
         # Dock: Log (application messages; the frames are the Trace's)
         self.debug_log = QPlainTextEdit()
@@ -317,7 +331,6 @@ class MainWindow(QMainWindow):
         self.create_menu()
         # The arrangement the window starts with, so Reset layout has somewhere to go back to.
         self._default_layout = (self.saveState(), self.workspace.saveState())
-        self._workspace_state = None
         self.restore_layout()
         self.refresh_channel_list()
         self.log_verbose("Application started.")
@@ -728,13 +741,14 @@ class MainWindow(QMainWindow):
         pane = self.tool_panes.get(name)
         return pane.widget() if pane is not None else None
 
-    def open_tool(self, name, title, factory, area="center"):
+    def open_tool(self, name, title, factory):
         """Show a tool in the workspace, building it the first time. Returns (widget, is new)."""
         pane, created = self.tool_panes.get(name), False
         if pane is None:
             widget = factory()
-            pane = make_pane(title, widget, f"pane_{name}")
-            add_pane(self.workspace, pane, area, beside=self.database_pane if area != "center" else None)
+            pane = self._tool_slots[name]
+            pane.setWindowTitle(title)
+            set_content(pane, widget)
             self.tool_panes[name] = pane
             created = True
             action = self._toolbar_actions.get(name)
@@ -746,7 +760,6 @@ class MainWindow(QMainWindow):
                 # Esc in an embedded dialog would hide it inside its window and leave an empty one;
                 # close the window and keep the widget ready for the next time it is opened.
                 widget.finished.connect(lambda _result, p=pane, w=widget: (p.toggleView(False), w.show()))
-            self._apply_layout()      # place it where the saved arrangement wants it
         pane.toggleView(True)
         pane.setAsCurrentTab()
         return pane.widget(), created
@@ -779,8 +792,7 @@ class MainWindow(QMainWindow):
     def open_write(self):
         """Write window: the script's output and its variables."""
         window, created = self.open_tool("write", "Write", lambda: WriteWindow(self, self.clock, self.script_watch,
-                                                             display=lambda: self.time_display),
-                                         "bottom")
+                                                             display=lambda: self.time_display))
         if created:
             for entry in list(self.write_history):
                 window.add(*entry)
@@ -833,7 +845,7 @@ class MainWindow(QMainWindow):
 
     def open_trace(self):
         """Trace window, with the frames already recorded."""
-        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols, self.clock), "bottom")
+        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols, self.clock))
         if created:
             for frame in list(self.frame_history):
                 trace.add_frame(*frame)
@@ -890,8 +902,7 @@ class MainWindow(QMainWindow):
     def open_transmit(self, nodes=False):
         """Transmit window: messages once or cyclically, and the simulated nodes (nodes=True shows that tab)."""
         pane, created = self.open_tool("transmit", "Transmit",
-                                       lambda: TransmitPane(self, self.symbols, self.send_can_message, self._settings),
-                                       "bottom")
+                                       lambda: TransmitPane(self, self.symbols, self.send_can_message, self._settings))
         if created:
             # Closing the window stops what it sends; a tab of another window in front of it does not.
             self.tool_panes["transmit"].viewToggled.connect(lambda shown, p=pane: None if shown else p.stop_sending())
@@ -926,8 +937,45 @@ class MainWindow(QMainWindow):
         if panels:
             self.restoreState(panels)
         if workspace:
-            self._workspace_state = workspace
+            for index in sorted({int(match.group(1)) for match in map(PAGE_PANE.match, pane_names(workspace))
+                                 if match}):
+                self._page_slot(index)          # so the arrangement can place the pages it knows
             self.workspace.restoreState(workspace)
+            self._settle_panes()
+
+    def _settle_panes(self):
+        """After an arrangement was applied: it says where the windows go, not what is in them.
+
+        A window it opened that has nothing to show - the Database with no database loaded, a tool not
+        opened yet, a page the database does not have - is closed again, keeping its place. A window it
+        did not know at all (saved before that window existed) would otherwise be left out of the
+        workspace, and come back floating: it goes to its usual place instead."""
+        for name, pane in self._tool_slots.items():
+            if pane.dockAreaWidget() is None:
+                area = TOOL_AREAS.get(name, "center")
+                add_pane(self.workspace, pane, area, beside=self.database_pane if area != "center" else None)
+                pane.toggleView(False)
+            elif name not in self.tool_panes:
+                pane.toggleView(False)
+        for pane in self._page_slots:
+            if pane.dockAreaWidget() is None:
+                add_pane(self.workspace, pane, beside=self.database_pane)
+                pane.toggleView(pane in self.page_panes)
+            elif pane not in self.page_panes:
+                pane.toggleView(False)
+        if self.database_pane.dockAreaWidget() is None:
+            add_pane(self.workspace, self.database_pane)
+        if self.app_database is None:
+            self.database_pane.toggleView(False)
+
+    def _page_slot(self, index):
+        """The window for page index (1 onwards; page 0 is the Database window), made the first time."""
+        while len(self._page_slots) < index:
+            slot = make_pane(f"Page {len(self._page_slots) + 1}", QWidget(), f"pane_page_{len(self._page_slots) + 1}")
+            add_pane(self.workspace, slot, beside=self.database_pane)
+            slot.toggleView(False)
+            self._page_slots.append(slot)
+        return self._page_slots[index - 1]
 
     def save_layout(self):
         panels, workspace = self.layout_state()
@@ -941,12 +989,6 @@ class MainWindow(QMainWindow):
         if geometry:
             self.restoreGeometry(geometry)
         self.apply_layout_state((self._settings.value(LAYOUT_STATE), self._settings.value(LAYOUT_WORKSPACE)))
-
-    def _apply_layout(self):
-        """Re-apply the workspace arrangement after a window was added: a saved state only places the
-        windows that existed when it was saved."""
-        if self._workspace_state:
-            self.workspace.restoreState(self._workspace_state)
 
     def desktops(self) -> list[str]:
         self._settings.beginGroup(DESKTOPS)
@@ -981,6 +1023,8 @@ class MainWindow(QMainWindow):
         for pane in self.tool_panes.values():
             pane.toggleView(False)
         self.database_pane.toggleView(self.app_database is not None)
+        for pane in self.page_panes:
+            pane.toggleView(True)
 
     def _refresh_desktop_menu(self):
         menu = getattr(self, "_desktop_menu", None)
@@ -1484,8 +1528,8 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         for pane in self.page_panes:
-            self.workspace.removeDockWidget(pane)
-            pane.deleteLater()
+            set_content(pane, QWidget())      # the window stays, closed, where it was: the next database's
+            pane.toggleView(False)            # pages come back to the same places
         self.page_panes = []
         self.database_pane.setWindowTitle("Database")
         self.app_database = None
@@ -1509,11 +1553,12 @@ class MainWindow(QMainWindow):
                 self.app_db_layout.addWidget(window, 1)
                 self.database_pane.setWindowTitle(name if len(self.panel.page_windows) > 1 else "Database")
                 continue
-            pane = make_pane(name, window, f"pane_page_{index}")
-            add_pane(self.workspace, pane, beside=self.database_pane)
+            pane = self._page_slot(index)
+            pane.setWindowTitle(name)
+            set_content(pane, window)
+            pane.toggleView(True)
             self.page_panes.append(pane)
         if self.page_panes:
-            self._apply_layout()
             self.database_pane.setAsCurrentTab()
         self.app_database = app_db
 

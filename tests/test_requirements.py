@@ -761,6 +761,7 @@ def key(api, key):
         self.assertEqual(self.window.database_pane.windowTitle(), "Database")
         self.window.on_connect_clicked()
         self.assertEqual(self.window.panel.page_windows[1][1].page.zoom, 1.5, "the page keeps its zoom")
+        self.assertTrue(self.window.page_panes[0].isFloating(), "and comes back where it was")
 
     def test_a_scan_runs_beside_the_measurement(self):
         import threading

@@ -8,6 +8,9 @@ fixed panels of CANoe do.
 """
 from __future__ import annotations
 
+import re
+
+from PyQt5.QtCore import QByteArray, qUncompress
 from PyQt5.QtWidgets import QWidget
 # PyQtAds is a compiled binding against the Qt libraries PyQt5 ships, and importing PyQt5 is what puts
 # those libraries on the search path. This import must therefore stay below the one above.
@@ -58,3 +61,19 @@ def add_pane(workspace, pane, area: str = "center", beside=None):
     """Put a pane in the workspace: tabbed with beside ('center'), or splitting off it."""
     target = beside.dockAreaWidget() if beside is not None else None
     return workspace.addDockWidget(AREAS.get(area, ads.CenterDockWidgetArea), pane, target)
+
+
+def set_content(pane, widget: QWidget):
+    """Put widget into a window made earlier, dropping what it held until now."""
+    old = pane.takeWidget()
+    if old is not None:
+        old.deleteLater()
+    pane.setWidget(widget)
+
+
+def pane_names(state) -> set[str]:
+    """The names of the windows a saved workspace state places (it is XML, compressed by default)."""
+    data = bytes(state or b"")
+    if data and not data.lstrip().startswith(b"<"):
+        data = bytes(qUncompress(QByteArray(data)))
+    return {name.decode() for name in re.findall(rb'<Widget Name="([^"]+)"', data)}
