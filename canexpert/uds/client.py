@@ -58,6 +58,20 @@ def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int =
                 return reply
 
 
+P2_MARGIN = 0.05            # added to the P2 an ECU announces, for the frames to travel
+MAX_ANNOUNCED_TIME = 600.0  # a session answer claiming more than this is not believed
+
+
+def _accepts_pending(request) -> bool:
+    """Whether the request function takes the response-pending timeout as a fourth argument."""
+    try:
+        parameters = inspect.signature(request).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = [p for p in parameters if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 4 or any(p.kind == p.VAR_POSITIONAL for p in parameters)
+
+
 def _positive(reply: bytes | None, sid: int) -> bool:
     return bool(reply) and reply[0] == sid + 0x40
 
@@ -181,33 +195,68 @@ class UdsResult:
 
 
 class UdsFunctions:
-    """The ISO 14229-1 service functions, bound to a request function (payload, timeout, wait) -> reply."""
+    """The ISO 14229-1 service functions, bound to a request function (payload, timeout, wait) -> reply.
 
-    def __init__(self, request, log=None):
+    An ECU announces how long it may take to answer (P2) and how long a "response pending" may extend
+    that (P2*) in its DiagnosticSessionControl reply; those are picked up and honoured from then on.
+    timeout is the configuration's own value, which the announced P2 may lengthen but never shortens.
+    """
+
+    def __init__(self, request, log=None, timeout=None):
         self._request = request
         self._log = log
         self.log_requests = False
+        self.timeout = timeout          # what the configuration allows a reply
+        self.p2 = None                  # seconds the ECU asked for, from its session answer
+        self.p2_star = None
+        self._accepts_pending = _accepts_pending(request)
+
+    def _timeout(self, explicit):
+        """How long to wait: what the caller asked for, else the longer of the configured time and P2."""
+        if explicit is not None:
+            return explicit
+        if self.p2 is None:
+            return None                 # the transport's own default
+        return max(self.p2 + P2_MARGIN, self.timeout or 0)
+
+    def _ask(self, payload, timeout, wait):
+        if self._accepts_pending and self.p2_star:
+            return self._request(payload, timeout, wait, self.p2_star)
+        return self._request(payload, timeout, wait)
 
     def _send(self, payload, echo=0, suppress=False, timeout=None):
         payload = bytes(payload)
+        timeout = self._timeout(timeout)
         if suppress:
             if len(payload) < 2:
                 raise ValueError("suppress needs a sub-function")
             payload = payload[:1] + bytes([payload[1] | 0x80]) + payload[2:]
-            self._request(payload, timeout, False)
+            self._ask(payload, timeout, False)
             result = UdsResult(payload, None, suppressed=True)
         else:
-            result = UdsResult(payload, self._request(payload, timeout, True), echo)
+            result = UdsResult(payload, self._ask(payload, timeout, True), echo)
         if self.log_requests and self._log:
             self._log(f"UDS {result!r}")
         return result
+
+    def _learn_timing(self, result):
+        """Read P2 and P2* out of a sessionParameterRecord: P2 in milliseconds, P2* in tens."""
+        data = result.data if result else b""
+        if len(data) < 4:
+            return
+        p2, p2_star = int.from_bytes(data[0:2], "big") / 1000.0, int.from_bytes(data[2:4], "big") / 100.0
+        if 0 < p2 <= MAX_ANNOUNCED_TIME and p2 <= p2_star <= MAX_ANNOUNCED_TIME:
+            self.p2, self.p2_star = p2, p2_star
 
     # --- Diagnostic and communication management ----------------------------------------
 
     def DSC(self, session: int, suppress=False, timeout=None):
         """0x10 DiagnosticSessionControl. session: 0x01 default, 0x02 programming, 0x03 extended,
-        0x04 safety system. data = sessionParameterRecord (P2 and P2* timing)."""
-        return self._send([0x10, session], 1, suppress, timeout)
+        0x04 safety system. data = sessionParameterRecord (P2 and P2* timing), which is picked up:
+        later requests wait as long as the ECU asked for, if that is longer than the configured time."""
+        result = self._send([0x10, session], 1, suppress, timeout)
+        self._learn_timing(result)
+        return result
 
     def ER(self, reset_type: int = 0x01, suppress=False, timeout=None):
         """0x11 ECUReset. reset_type: 0x01 hardReset, 0x02 keyOffOnReset, 0x03 softReset,

@@ -44,10 +44,13 @@ from canexpert.can_bus import (SUPPORTED_INTERFACES, CanWorker, ChannelActivityS
                                open_channel)
 from canexpert.can_logger import CANLoggerWindow
 from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
-                              validate_config)
+                              uds_transport, validate_config)
+from canexpert.data_window import DataWindow
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.diagnostic_window import DiagnosticWindow
-from canexpert.flashing import (choose_firmware, close_progress, confirm_flash, progress_dialog, report_result,
+from canexpert.flash_runner import FlashRunner
+from canexpert.flash_sequence import FlashProfile
+from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
 from canexpert.help_window import show_manual
 from canexpert.panel.database import load_application_database, select_database
@@ -55,6 +58,8 @@ from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
 from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
+from canexpert.simulation_window import SimulationWindow
+from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
 from canexpert.trace_window import TraceWindow
 from canexpert.transmit_window import TransmitWindow
@@ -66,13 +71,15 @@ from canexpert.workspace import add_pane, create_workspace, make_pane
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
+FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
 LAYOUT_GEOMETRY = "layout/geometry"
 LAYOUT_STATE = "layout/state"
 LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
-TOOL_PANES = ("trace", "logger", "transmit", "console", "diagnostics")   # toolbar buttons that open a pane
+TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "simulation", "console",
+              "diagnostics")   # the windows with a switch on the toolbar
 
 
 class MainWindow(QMainWindow):
@@ -95,6 +102,8 @@ class MainWindow(QMainWindow):
         self.activity_scanner = None
         self.script_runtime = None
         self.flash_dialog = None
+        self.flash_runner = None   # the built-in flashing sequence while it runs
+        self.script_flash = False  # whether the panel script offers a Flashing(api, firmware)
         self._auto_minimized = []  # dock title bars minimized on connect, restored on disconnect
         self._left_split = None    # Configuration / CAN Channels heights before they were minimized
         self.panel = None
@@ -116,6 +125,7 @@ class MainWindow(QMainWindow):
         self.recorder = None
         self.replay = None
         self.tool_panes = {}
+        self._bus_state = "unknown"
 
         self.init_ui()
         self.load_configurations()
@@ -158,12 +168,19 @@ class MainWindow(QMainWindow):
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
+            ("data", "Data", "Every signal of the symbol databases with the value it holds now",
+             self.open_data),
+            ("statistics", "Statistics", "Frames per identifier, their rate and cycle time, and the bus load",
+             self.open_statistics),
             ("transmit", "Transmit", "Send messages once or cyclically", self.open_transmit),
+            ("simulation", "Simulation", "Send the messages of a database's nodes, as those ECUs would",
+             self.open_simulation),
             ("console", "UDS Console", "Send any UDS service and read the fault memory (no ODX file needed)",
              self.open_uds_console),
             ("diagnostics", "Diagnostics", "Open ECU diagnostic services", self.open_diagnostic_window),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
-            ("flashing", "Flashing", "Flash ECU firmware using the database's Flashing() function", self.open_flashing),
+            ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",
+             self.open_flashing),
         ]
         for name, label, hint, callback in entries:
             if name == "trace":
@@ -762,7 +779,18 @@ class MainWindow(QMainWindow):
             for frame in list(self.frame_history):
                 trace.add_frame(*frame)
             trace.flush()
+        self._update_diagnostic_ids()
         return trace
+
+    def _update_diagnostic_ids(self):
+        """Which identifiers the Trace assembles in its transport view: the ones this configuration uses."""
+        trace = self.tool_widget("trace")
+        config = self.session_config or self.monitor_config or self.active_config
+        if trace is None or not config:
+            return
+        transport = uds_transport(config)
+        identifiers = {config.get("request_id"), transport["request_id"], *config.get("response_ids", [])}
+        trace.set_diagnostic_ids({i for i in identifiers if i is not None}, transport["address_byte"])
 
     def open_can_logger(self):
         """CAN Logger window, filled with the signals of the frames already recorded."""
@@ -774,11 +802,42 @@ class MainWindow(QMainWindow):
                     logger.on_can_message(can_id, data, timestamp)
         return logger
 
+    def open_data(self):
+        """Data window, filled from the frames already recorded."""
+        data, created = self.open_tool("data", "Data", lambda: DataWindow(self, self.symbols))
+        if created:
+            for frame in list(self.frame_history):
+                data.on_frame(*frame)
+            data.rebuild()
+        return data
+
+    def open_statistics(self):
+        """Statistics window, counting from the frames already recorded."""
+        statistics, created = self.open_tool("statistics", "Statistics",
+                                             lambda: StatisticsWindow(self, self.symbols, self.session_bitrate))
+        if created:
+            for frame in list(self.frame_history):
+                statistics.on_frame(*frame)
+            statistics.refresh()
+        return statistics
+
+    def session_bitrate(self) -> int:
+        """The bit rate the measurement runs at, for the bus load; 0 when nothing is connected."""
+        config = self.session_config or self.active_config or {}
+        return int(config.get("bitrate", 0)) if self.can_bus is not None else 0
+
     def open_transmit(self):
         """Transmit window: send messages once or cyclically."""
         widget, _ = self.open_tool("transmit", "Transmit",
                                    lambda: TransmitWindow(self, self.symbols, self.send_can_message,
                                                           app_settings()), "bottom")
+        return widget
+
+    def open_simulation(self):
+        """Simulated nodes: send the messages of the symbol databases' nodes."""
+        widget, _ = self.open_tool("simulation", "Simulated nodes",
+                                   lambda: SimulationWindow(self, self.symbols, self.send_can_message,
+                                                            app_settings()), "bottom")
         return widget
 
     def open_uds_console(self):
@@ -1009,6 +1068,8 @@ class MainWindow(QMainWindow):
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
             worker.message_sent.connect(lambda cid, data, g=generation: self.dispatch_frame(time.time(), "TX", cid, data) if g == self.session_generation else None)
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
+            worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
+            worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
             self.workers["main"] = worker
             runtime = ScriptRuntime(mailbox, config, self.panel.values(), self)
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
@@ -1033,6 +1094,7 @@ class MainWindow(QMainWindow):
             self.channels_dock.show()
             self._minimize_side_panels()
             self.refresh_channel_list()
+            self._update_diagnostic_ids()
             self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
             self.log_verbose(f"Loaded {database['source_path']}")
         except Exception as exc:
@@ -1054,6 +1116,8 @@ class MainWindow(QMainWindow):
 
     def on_disconnect_clicked(self):
         self.session_generation += 1
+        if self.flash_runner is not None:
+            self.flash_runner.cancel()      # the bus is about to go away under it
         self._close_flash_dialog()
         self.flashing_toolbar_item.setVisible(False)
         if self.script_runtime:
@@ -1109,6 +1173,7 @@ class MainWindow(QMainWindow):
         worker.error_occurred.connect(lambda error, w=worker: self._monitor_failed(w, error))
         self.ecu_monitor, self.monitor_bus = worker, bus
         self.monitor_channel, self.monitor_config = dict(channel_config), config
+        self._update_diagnostic_ids()
         worker.start()
         self._label_channels()
         self._update_nodes()
@@ -1195,22 +1260,53 @@ class MainWindow(QMainWindow):
     # --- Flashing ---
 
     def _set_flashing_available(self, available):
+        """Whether the panel script offers a Flashing(); flashing itself needs only a connection."""
+        self.script_flash = available
         action = self._toolbar_actions["flashing"]
-        action.setEnabled(available and self.flash_dialog is None)
-        action.setToolTip("Flash ECU firmware using the database's Flashing() function" if available
-                          else "The database script does not define Flashing(api, firmware)")
+        action.setEnabled(self.active_session() is not None and self.flash_dialog is None)
+        action.setToolTip("Flash ECU firmware with the database script's Flashing()" if available else
+                          "Flash ECU firmware with the built-in sequence\n"
+                          "(the database script does not define Flashing(api, firmware))")
+
+    def flash_profile(self):
+        """The built-in sequence's settings, as they were last left."""
+        try:
+            return FlashProfile.from_dict(json.loads(self._settings.value(FLASH_PROFILE, "{}", type=str) or "{}"))
+        except (TypeError, ValueError):
+            return FlashProfile()
 
     def open_flashing(self):
-        """Choose an S-record / Intel HEX file and pass it to the database script's Flashing()."""
-        if self.script_runtime is None or self.script_runtime.flash_function is None:
+        """Choose a firmware file, then flash it with the script's Flashing() or the built-in sequence."""
+        if self.active_session() is None:
             return
         settings = app_settings()
         firmware = choose_firmware(self, settings.value("last_firmware_dir", str(APP_DIR), type=str))
         if firmware is None:
             return
         settings.setValue("last_firmware_dir", str(Path(firmware.path).parent))
-        if confirm_flash(self, firmware):
+        dialog = FlashDialog(firmware, self.flash_profile(), script_available=self.script_flash, parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self._settings.setValue(FLASH_PROFILE, json.dumps(dialog.profile.to_dict()))
+        if dialog.use_script():
             self.start_flashing(firmware)
+        else:
+            self.start_built_in_flash(firmware, dialog.profile)
+
+    def start_built_in_flash(self, firmware, profile):
+        """Flash without a panel script: the ISO 14229 sequence the profile describes, on its own thread."""
+        if self.active_session() is None or self.flash_dialog is not None:
+            return
+        self.flash_runner = FlashRunner(self.active_session, self)
+        self.flash_runner.logged.connect(self.log_verbose)
+        self.flash_runner.progress.connect(self._on_flash_progress)
+        self.flash_runner.finished.connect(self._on_flash_finished)
+        self._toolbar_actions["flashing"].setEnabled(False)
+        self.flash_dialog = progress_dialog(self, firmware, self.flash_runner.cancel)
+        self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in "
+                         f"{len(firmware.segments)} segment(s), built-in sequence")
+        if not self.flash_runner.start(firmware, profile):
+            self._on_flash_finished(False, "Flashing could not be started.")
 
     def start_flashing(self, firmware):
         if self.script_runtime is None:
@@ -1229,7 +1325,8 @@ class MainWindow(QMainWindow):
 
     def _on_flash_finished(self, ok, text):
         self._close_flash_dialog()
-        self._set_flashing_available(self.script_runtime is not None and self.script_runtime.flash_function is not None)
+        self.flash_runner = None
+        self._set_flashing_available(self.script_flash)
         self.log_verbose(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
         self._set_status(f"Flashing {'complete' if ok else 'failed'}", "green" if ok else "red")
         report_result(self, ok, text)
@@ -1289,15 +1386,27 @@ class MainWindow(QMainWindow):
                 self.log_verbose(f"Recording stopped: {exc}")
                 self.stop_recording()
         self.log_can(direction, can_id, data)
-        trace = self.tool_widget("trace")
-        if trace is not None:
-            trace.add_frame(timestamp, direction, can_id, data, extended)
-        logger = self.tool_widget("logger")
-        if logger is not None and direction == "RX":
-            logger.on_can_message(can_id, data, timestamp)
-        diagnostics = self.tool_widget("diagnostics")
-        if diagnostics is not None:
-            diagnostics.on_can_message(can_id, data, direction)
+        # Every open window that wants frames declares on_frame(); nothing else needs to know who is open.
+        for name in list(self.tool_panes):
+            handler = getattr(self.tool_widget(name), "on_frame", None)
+            if handler is not None:
+                handler(timestamp, direction, can_id, data, extended)
+
+    def _on_error_frame(self, timestamp):
+        """An error frame: no data, so it is counted rather than listed."""
+        statistics = self.tool_widget("statistics")
+        if statistics is not None:
+            statistics.on_error_frame(timestamp)
+
+    def _on_bus_status(self, status):
+        """The adapter's error state, read while the session runs."""
+        statistics = self.tool_widget("statistics")
+        if statistics is not None:
+            statistics.on_bus_status(status)
+        if status.get("state") == "bus off" and self._bus_state != "bus off":
+            self.log_verbose("The adapter reports bus off: no frames are being sent or received")
+            self._set_status("Bus off — check the wiring, the bit rate and the termination", "red")
+        self._bus_state = status.get("state", "unknown")
 
     def replay_frames(self, frames):
         """Frames read back from a recorded file (offline mode): they reach the windows, not the bus."""

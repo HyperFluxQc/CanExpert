@@ -137,7 +137,7 @@ class ConsoleAgainstTheEcuTest(unittest.TestCase):
         self.run_and_wait(lambda uds: uds.RDBI(0xF190), "RDBI")
         text = self.console.log.toPlainText()
         self.assertIn("WVWZZZ1KZAW000001", text)          # the VIN, over several frames
-        self.assertIn("RDBI ok", self.console.state_label.text())
+        self.assertIn("RDBI: 22 F1 90 ->", text)
 
     def test_a_negative_response_is_named(self):
         self.run_and_wait(lambda uds: uds.RDBI(0x1234), "RDBI")

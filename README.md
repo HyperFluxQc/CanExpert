@@ -5,9 +5,12 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 ## Features
 
 - **Multiple interfaces**: Kvaser, Vector, IXXAT (via python-can)
-- **Trace window**: every frame of the session with its symbolic message name, expandable into decoded signals, absolute/relative/delta time, pass and stop filters by identifier, range or name, find, colour per identifier and CSV export
+- **Trace window**: every frame of the session with its symbolic message name, expandable into decoded signals, absolute/relative/delta time, pass and stop filters by identifier, range or name, find, colour per identifier and CSV export, and a **transport view** that turns the ISO 15765-2 frames of a diagnostic request or response into one row with its service name and whole payload
+- **Statistics**: frames, rate, average/min/max cycle time, bus load and last data per identifier, with the totals for the bus - bus load, error frames and the controller state (error active, error passive, bus off) - plus freeze, filter and CSV export
+- **Data window**: every signal of the symbol databases with the value it holds now, physical and raw, with its unit, age and count; signals that never arrived are listed too
+- **Simulated nodes**: the messages of a database's sending nodes, sent at their cycle times as those ECUs would - a rest-bus simulation for the ECU on the bench, edited signal by signal
 - **Transmit list**: raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator)
-- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, with session control, SecurityAccess and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits
+- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, with session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits; the P2/P2* timing the ECU announces is picked up and honoured by every later request
 - **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached
 - **Symbol databases**: one list of DBC files shared by the Trace window, the CAN Logger and the Transmit list
 - **CANoe-style window system**: the Database panel and the analysis windows live in a workspace where they tab together, split, and float as windows of their own, with drop guides while dragging (Qt Advanced Docking System); the arrangement is remembered and can be saved as named desktops
@@ -17,8 +20,8 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
 - **Channel Selection & Bitrate**: Configure CAN channel and speed per interface
-- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, with small symbol buttons for clear, pause, follow, fit, the X/Y axis locks and the measurement cursors, a hover crosshair with time/value readout and CSV export. **Graph options** chooses how signals are drawn (step line, line with a dot per sample, or dots only), the follow window, and exact time and value ranges (for example 50.0134 s to 55.2455 s)
-- **Firmware flashing**: While connected, the **Flashing** toolbar button asks for an S-record or Intel HEX file, asks for confirmation and runs the database script's `Flashing(api, firmware)` with a progress dialog; a sample ISO 14229 sequence and test images (`examples/firmware/demo_app.s19` / `.hex`) are in `examples/`, and the Form Designer's Test panel can flash the simulated ECU
+- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, or draw several in one graph with a legend and a shared value axis, with small symbol buttons for clear, pause, follow, fit, combine, the X/Y axis locks and the measurement cursors, a hover crosshair with time/value readout and CSV export. **Graph options** chooses how signals are drawn (step line, line with a dot per sample, or dots only), the follow window, and exact time and value ranges (for example 50.0134 s to 55.2455 s)
+- **Firmware flashing**: While connected, the **Flashing** toolbar button asks for an S-record or Intel HEX file and how to flash it: the database script's `Flashing(api, firmware)`, or the **built-in ISO 14229 sequence** (sessions, DTCs and normal messages off, security access, erase, RequestDownload / TransferData / RequestTransferExit per segment, dependency check, reset and version read) whose every step is editable in a dialog and can be saved as a profile file. Both report progress with a Cancel button and leave a `<firmware>.flash-report.txt` beside the image. Test images (`examples/firmware/demo_app.s19` / `.hex`) and a sample script sequence are in `examples/`, and the Form Designer's Test panel can flash the simulated ECU
 
 ## Requirements
 
@@ -48,7 +51,7 @@ pip install -r requirements.txt
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 
-The [user manual](docs/USER_MANUAL.md) walks through the main window, the symbol databases, the Trace window, the Form Designer, the CAN Logger, the Transmit list, the UDS Console, the Diagnostic Window, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+The [user manual](docs/USER_MANUAL.md) walks through the main window, the symbol databases, the Trace window, Statistics, the Data window, the Form Designer, the CAN Logger, the Transmit list, the simulated nodes, the UDS Console, the Diagnostic Window, firmware flashing, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
 ## Application Database (XML)
 

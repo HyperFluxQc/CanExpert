@@ -35,11 +35,21 @@ def open_channel(channel_config: dict, bitrate) -> can.BusABC:
     return create_can_bus(channel_config["interface"], channel_config.get("channel", 0), int(bitrate), **options)
 
 
+BUS_STATES = {"ACTIVE": "error active", "PASSIVE": "error passive", "ERROR": "bus off"}
+STATUS_INTERVAL = 0.5   # how often the adapter's error state is read and reported
+
+
 class CanWorker(QThread):
     """Reads the bus and delivers every frame to the GUI (message_received) and to the mailboxes; sends
-    TesterPresent at the configuration's interval, deferred while a mailbox is in a UDS exchange."""
+    TesterPresent at the configuration's interval, deferred while a mailbox is in a UDS exchange.
+
+    Error frames do not carry data, so they go to error_frame() instead; bus_status() reports the
+    adapter's error state (error active, error passive, bus off) while the session runs.
+    """
     message_received = pyqtSignal(dict)
     message_sent = pyqtSignal(int, bytes)
+    error_frame = pyqtSignal(float)
+    bus_status = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, bus, config, tester_present=True):
@@ -47,6 +57,7 @@ class CanWorker(QThread):
         self.bus, self.config = bus, config  # config: validated (canexpert.config.validate_config)
         self.running = True
         self.tester_present = tester_present   # off in tests that must see no heartbeat on the bus
+        self.error_frames = 0
         self.mailboxes = []
 
     def add_mailbox(self, mailbox):
@@ -61,6 +72,7 @@ class CanWorker(QThread):
         if cfg.get("extended_id"):
             heartbeat = bytes([cfg["extended_id_byte"]]) + heartbeat
         next_heartbeat = 0.0 if self.tester_present else float("inf")
+        next_status = 0.0
         while self.running:
             try:
                 now = time.monotonic()
@@ -71,8 +83,14 @@ class CanWorker(QThread):
                                               is_extended_id=not cfg["identifier_11_bit"]))
                     self.message_sent.emit(cfg["request_id"], heartbeat)
                     next_heartbeat = now + cfg["tester_present_interval_seconds"]
+                if now >= next_status:
+                    next_status = now + STATUS_INTERVAL
+                    self.bus_status.emit({"state": self.state(), "error_frames": self.error_frames})
                 message = self.bus.recv(timeout=min(0.05, max(0.001, next_heartbeat - time.monotonic())))
-                if message and not message.is_error_frame and not message.is_remote_frame:
+                if message is not None and message.is_error_frame:
+                    self.error_frames += 1
+                    self.error_frame.emit(message.timestamp)
+                elif message and not message.is_remote_frame:
                     for mailbox in self.mailboxes:
                         mailbox.push(message)
                     self.message_received.emit({"timestamp": message.timestamp, "arbitration_id": message.arbitration_id,
@@ -80,6 +98,13 @@ class CanWorker(QThread):
             except Exception as exc:
                 self.error_occurred.emit(f"CAN session failed: {exc}")
                 self.running = False
+
+    def state(self) -> str:
+        """The adapter's error state in words, or "unknown" where python-can does not report one."""
+        try:
+            return BUS_STATES.get(getattr(self.bus.state, "name", ""), "unknown")
+        except Exception:                      # most interfaces, including virtual, have no state
+            return "unknown"
 
     def stop(self):
         self.running = False

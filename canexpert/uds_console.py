@@ -13,6 +13,7 @@ import threading
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QFileDialog,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -36,6 +37,7 @@ from PyQt5.QtWidgets import (
 from canexpert.can_bus import ReceiveMailbox
 from canexpert.config import uds_transport
 from canexpert.uds.client import FUNCTIONS, GROUPS, UdsFunctions, uds_request
+from canexpert.uds.seed_key import SeedKeyError, dll_key, xor_key
 from canexpert.ui_common import SplitterPanel, enable_maximize
 
 # ISO 14229-1 Annex D: the bits of a DTC status byte, lowest first.
@@ -43,6 +45,8 @@ STATUS_BITS = ("testFailed", "testFailedThisOperationCycle", "pendingDTC", "conf
                "testNotCompletedSinceLastClear", "testFailedSinceLastClear",
                "testNotCompletedThisOperationCycle", "warningIndicatorRequested")
 SESSIONS = (("Default (0x01)", 0x01), ("Programming (0x02)", 0x02), ("Extended (0x03)", 0x03))
+SESSION_NAMES = {0x01: "default", 0x02: "programming", 0x03: "extended", 0x04: "safety system"}
+KEY_SOURCES = ("key = seed XOR mask", "seed & key DLL")
 # Parameters that carry a byte string rather than a number.
 BYTE_PARAMETERS = {"data", "record", "parameter", "state", "mask", "event_record", "service_record", "key"}
 
@@ -66,11 +70,13 @@ def parse_int(text: str, default=0) -> int:
 
 
 def make_request(mailbox, transport):
-    """The (payload, timeout, wait) function UdsFunctions expects, bound to one mailbox."""
-    def request(payload, timeout=None, wait=True):
+    """The (payload, timeout, wait, pending) function UdsFunctions expects, bound to one mailbox."""
+    def request(payload, timeout=None, wait=True, pending=None):
         options = dict(transport)
         if timeout is not None:
             options["timeout"] = timeout
+        if pending is not None:
+            options["pending_timeout"] = pending
         return uds_request(mailbox, payload, wait=wait, **options)
     return request
 
@@ -91,6 +97,10 @@ class UdsConsoleWindow(QDialog):
         self._parameters = []
         self._entry = None
         self._busy = False
+        self.p2 = self.p2_star = None       # what the ECU said it needs, from its session answer
+        self.session_state = "unknown"
+        self.security_state = "locked"
+        self._library = None                # the seed & key DLL, loaded once
         self._build_ui()
         self.finished_request.connect(self._on_result)
 
@@ -111,7 +121,9 @@ class UdsConsoleWindow(QDialog):
 
     def _session_bar(self):
         box = QGroupBox("Session and security")
-        row = QHBoxLayout(box)
+        rows = QVBoxLayout(box)
+        row = QHBoxLayout()
+        rows.addLayout(row)
         self.session_combo = QComboBox()
         for label, value in SESSIONS:
             self.session_combo.addItem(label, value)
@@ -126,26 +138,76 @@ class UdsConsoleWindow(QDialog):
         tester = QPushButton("Tester present")
         tester.clicked.connect(lambda: self.run(lambda uds: uds.TP(), "TesterPresent"))
         row.addWidget(tester)
-        row.addSpacing(16)
-        row.addWidget(QLabel("Security level:"))
+        row.addStretch()
+        self.state_label = QLabel("")
+        row.addWidget(self.state_label)
+
+        security = QHBoxLayout()
+        rows.addLayout(security)
+        security.addWidget(QLabel("Security level:"))
         self.level_edit = QLineEdit("01")
-        self.level_edit.setFixedWidth(50)
+        self.level_edit.setFixedWidth(46)
         self.level_edit.setToolTip("requestSeed sub-function (odd); sendKey is the next one")
-        row.addWidget(self.level_edit)
-        row.addWidget(QLabel("key = seed XOR"))
+        security.addWidget(self.level_edit)
+        self.key_source = QComboBox()
+        self.key_source.addItems(KEY_SOURCES)
+        self.key_source.currentIndexChanged.connect(self._update_key_source)
+        security.addWidget(self.key_source)
         self.mask_edit = QLineEdit("A5")
-        self.mask_edit.setFixedWidth(50)
+        self.mask_edit.setFixedWidth(46)
         self.mask_edit.setToolTip("The simple mask the simulated ECU uses; replace it for a real ECU")
-        row.addWidget(self.mask_edit)
+        security.addWidget(self.mask_edit)
+        self.dll_edit = QLineEdit()
+        self.dll_edit.setPlaceholderText("Path to the seed & key DLL (GenerateKeyEx)")
+        self.dll_edit.textChanged.connect(lambda _: setattr(self, "_library", None))
+        security.addWidget(self.dll_edit, 1)
+        self.browse_btn = QPushButton("Browse...")
+        self.browse_btn.clicked.connect(self._browse_dll)
+        security.addWidget(self.browse_btn)
+        security.addWidget(QLabel("Variant:"))
+        self.variant_edit = QLineEdit()
+        self.variant_edit.setFixedWidth(90)
+        self.variant_edit.setToolTip("The variant name the DLL expects, if it asks for one")
+        security.addWidget(self.variant_edit)
         unlock = QPushButton("Unlock")
         unlock.setToolTip("SecurityAccess (0x27): requestSeed, then sendKey")
         unlock.clicked.connect(self._unlock)
-        row.addWidget(unlock)
-        row.addStretch()
-        self.state_label = QLabel("Not connected")
-        self.state_label.setStyleSheet("color: gray;")
-        row.addWidget(self.state_label)
+        security.addWidget(unlock)
+        self._update_key_source()
+        self._update_state()
         return box
+
+    def _update_key_source(self):
+        """Show the mask or the DLL fields, whichever the key comes from."""
+        from_dll = self.key_source.currentIndex() == 1
+        self.mask_edit.setVisible(not from_dll)
+        for widget in (self.dll_edit, self.browse_btn, self.variant_edit):
+            widget.setVisible(from_dll)
+
+    def _browse_dll(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Seed & key DLL", "", "DLL (*.dll);;All files (*.*)")
+        if path:
+            self.dll_edit.setText(path)
+
+    def compute_key(self):
+        """compute_key(seed) -> key, from the mask or from the DLL; SeedKeyError if it cannot be had."""
+        level = parse_int(self.level_edit.text(), 1)
+        if self.key_source.currentIndex() == 0:
+            return xor_key(parse_int(self.mask_edit.text(), 0xA5))
+        if not self.dll_edit.text().strip():
+            raise SeedKeyError("No seed & key DLL chosen")
+        if self._library is None:
+            self._library = dll_key(self.dll_edit.text().strip(), level, self.variant_edit.text().strip())
+        return self._library
+
+    def _update_state(self):
+        """The strip saying which session is open, what the ECU asked for, and whether it is unlocked."""
+        timing = ""
+        if self.p2 is not None:
+            timing = f"   P2 {self.p2 * 1000:.0f} ms / P2* {self.p2_star * 1000:.0f} ms"
+        self.state_label.setText(f"Session: {self.session_state}{timing}   Security: {self.security_state}")
+        self.state_label.setStyleSheet("color: green;" if self.security_state.startswith("unlocked")
+                                       else "color: gray;")
 
     def _services_tab(self):
         splitter = QSplitter(Qt.Horizontal)
@@ -332,19 +394,21 @@ class UdsConsoleWindow(QDialog):
         bus, worker, config = session
         mailbox = ReceiveMailbox(bus, worker.message_sent.emit)
         worker.add_mailbox(mailbox)
-        functions = UdsFunctions(make_request(mailbox, uds_transport(config)), self._log)
+        transport = uds_transport(config)
+        functions = UdsFunctions(make_request(mailbox, transport), self._log, transport["timeout"])
+        functions.p2, functions.p2_star = self.p2, self.p2_star
         self._busy = True
-        self.state_label.setText(f"{title}...")
         thread = threading.Thread(target=self._exchange, args=(call, functions, worker, mailbox, title),
                                   daemon=True)
         thread.start()
         return thread
 
     def _exchange(self, call, functions, worker, mailbox, title):
-        outcome = {"title": title, "text": "", "result": None}
+        outcome = {"title": title, "text": "", "result": None, "p2": None, "p2_star": None}
         try:
             result = call(functions)
             outcome["result"] = result
+            outcome["p2"], outcome["p2_star"] = functions.p2, functions.p2_star
             outcome["text"] = repr(result) if result is not None else "sent"
         except Exception as exc:                          # transport failure, or a bad parameter
             outcome["text"] = f"{type(exc).__name__}: {exc}"
@@ -356,15 +420,25 @@ class UdsConsoleWindow(QDialog):
     def _on_result(self, outcome):
         self._busy = False
         result, title = outcome["result"], outcome["title"]
+        if outcome.get("p2") is not None:
+            self.p2, self.p2_star = outcome["p2"], outcome["p2_star"]
+        if title == "DiagnosticSessionControl" and getattr(result, "ok", False):
+            session = self.session_combo.currentData()
+            self.session_state = SESSION_NAMES.get(session, f"0x{session:02X}")
+            if session == 0x01:
+                self.security_state = "locked"     # the default session drops security access
+        if title == "SecurityAccess":
+            self.security_state = (f"unlocked (level {parse_int(self.level_edit.text(), 1)})"
+                                   if getattr(result, "ok", False) else "locked")
+        self._update_state()
+        # The log says how the request went; the strip stays on the session and the security state.
         if isinstance(result, list):                      # ReadDTCs
             self._fill_dtcs(result)
             self._log(f"{title}: {len(result)} DTC(s)")
-            self.state_label.setText(f"{title}: {len(result)} DTC(s)")
             return
         self._log(f"{title}: {outcome['text']}")
         if getattr(result, "ok", False) and getattr(result, "data", b""):
             self._log(f"    data: {result.hex()}   int: {result.int}   text: {result.text!r}")
-        self.state_label.setText(title + (" ok" if getattr(result, "ok", False) else " failed"))
 
     def _log(self, text):
         self.log.appendPlainText(str(text))
@@ -393,9 +467,12 @@ class UdsConsoleWindow(QDialog):
 
     def _unlock(self):
         level = parse_int(self.level_edit.text(), 1)
-        mask = parse_int(self.mask_edit.text(), 0xA5)
-        return self.run(lambda uds: uds.SecurityUnlock(level, lambda seed: bytes(b ^ mask for b in seed)),
-                        "SecurityAccess")
+        try:
+            compute_key = self.compute_key()
+        except SeedKeyError as exc:
+            self._log(f"SecurityAccess: {exc}")
+            return None
+        return self.run(lambda uds: uds.SecurityUnlock(level, compute_key), "SecurityAccess")
 
     # --- fault memory ----------------------------------------------------------------------------
 
