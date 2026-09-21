@@ -250,7 +250,7 @@ class DiagnosticWindow(QDialog):
             return
         main = self.main
         bus = getattr(main, "can_bus", None) if main else None
-        worker = (getattr(main, "workers", None) or {}).get("main") if main else None
+        worker = getattr(main, "worker", None) if main else None
         cfg = getattr(main, "session_config", None) if main else None
         if bus is None or worker is None or cfg is None:
             self._log("[No CAN bus] Connect from main window first.")

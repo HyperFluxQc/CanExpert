@@ -1,4 +1,0 @@
-# Install for building the .exe: pip install -r requirements-build.txt
-PyInstaller>=6.0.0
-Pillow>=10.0.0
-# PyQtAds ships a compiled extension: check it is collected when the .exe is built

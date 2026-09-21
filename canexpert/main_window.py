@@ -107,7 +107,7 @@ class MainWindow(QMainWindow):
         # Configuration management
         self.configurations = []
         self.active_config = None
-        self.workers = {}
+        self.worker = None          # the session's CanWorker while connected
         self.can_bus = None
         self.app_database = None
         self.channel_activity = {}  # channel key -> traffic seen by the last activity scan
@@ -1220,7 +1220,7 @@ class MainWindow(QMainWindow):
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
             worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
             worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
-            self.workers["main"] = worker
+            self.worker = worker
             self.sysvars.reset()                   # every variable back to its initial value
             runtime = ScriptRuntime(mailbox, config, self.panel.values(), self, sysvars=self.sysvars)
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
@@ -1264,10 +1264,9 @@ class MainWindow(QMainWindow):
 
     def active_session(self):
         """(bus, worker, configuration) while connected, for the UDS console; else None."""
-        worker = self.workers.get("main")
-        if self.can_bus is None or worker is None or self.session_config is None:
+        if self.can_bus is None or self.worker is None or self.session_config is None:
             return None
-        return self.can_bus, worker, self.session_config
+        return self.can_bus, self.worker, self.session_config
 
     def _session_failed(self, error):
         self.log_verbose(error)
@@ -1284,9 +1283,9 @@ class MainWindow(QMainWindow):
         if self.script_runtime:
             self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
             self.script_runtime = None
-        for worker in self.workers.values():
-            worker.stop()
-        self.workers.clear()
+        if self.worker is not None:
+            self.worker.stop()
+            self.worker = None
         if self.can_bus:
             try:
                 self.can_bus.shutdown()
@@ -1413,7 +1412,7 @@ class MainWindow(QMainWindow):
         wanted = channel_config or self.connected_channel_config or self.monitor_channel or self.selected_channel_config
         if wanted is None:
             raise ValueError("Select a CAN channel first.")
-        running = [(self.can_bus, self.workers.get("main"), self.session_config, self.connected_channel_config),
+        running = [(self.can_bus, self.worker, self.session_config, self.connected_channel_config),
                    (self.monitor_bus, self.ecu_monitor, self.monitor_config, self.monitor_channel)]
         for bus, worker, config, channel in running:
             if bus is not None and worker is not None and channel is not None and \

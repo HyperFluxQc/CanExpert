@@ -144,7 +144,7 @@ class RequirementsTest(unittest.TestCase):
         field.editingFinished.emit()
         self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "user text"))
         runtime = self.window.script_runtime
-        worker = self.window.workers["main"]
+        worker = self.window.worker
         self.window.on_disconnect_clicked()
         self.assertFalse(worker.isRunning())
         self.assertFalse(runtime.thread.is_alive())
@@ -381,7 +381,7 @@ class RequirementsTest(unittest.TestCase):
             self.ecu.send(can.Message(arbitration_id=can_id, data=[2,0x7e,0], is_extended_id=False))
         self.assertTrue(spin_until(lambda: len(self.window.node_items) == 2))
         runtime = self.window.script_runtime
-        worker = self.window.workers['main']
+        worker = self.window.worker
         self.window.close()
         self.assertFalse(worker.isRunning())
         self.assertFalse(runtime.thread.is_alive())
@@ -437,7 +437,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         (self.databases/'panel_2026-09-18_script.py').write_text('def broken(')
         self.window.on_connect_clicked()
         self.assertIsNone(self.window.can_bus)
-        self.assertEqual(self.window.workers, {})
+        self.assertIsNone(self.window.worker)
         self.assertIsNone(self.window.script_runtime)
         self.assertTrue(self.window.connect_btn.isEnabled())
 
@@ -475,7 +475,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertEqual(state["data"][:state["total"]], request)
         self.assertIn(f"Response (13 bytes): {reply.hex(' ')}", dialog.monitor_log.toPlainText())
         self.assertTrue(dialog.send_btn.isEnabled())
-        self.assertEqual(self.window.workers["main"].mailboxes[1:], [])
+        self.assertEqual(self.window.worker.mailboxes[1:], [])
 
     def test_flashing_button_calls_database_flashing(self):
         from canexpert.flashing import Firmware
@@ -802,7 +802,7 @@ def key(api, key):
         # The session's own TesterPresent is paused during the sweep, so its answers are not taken for
         # answers to 7E1 and 7E2.
         self.assertEqual(rows, [["7E0", "7E8"]])
-        self.assertEqual(self.window.workers["main"].mailboxes[1:], [], "the scan's mailbox is gone")
+        self.assertEqual(self.window.worker.mailboxes[1:], [], "the scan's mailbox is gone")
         self.window._configuration_for(dialog.responders[0])        # a configuration for the ECU found
         configuration = next(widget for widget in APP.topLevelWidgets()
                              if type(widget).__name__ == "ConfigurationDialog" and widget.isVisible())

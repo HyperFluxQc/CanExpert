@@ -123,9 +123,6 @@ class UdsConsoleWindow(QDialog):
         set_session.clicked.connect(lambda: self.run(lambda uds: uds.DSC(self.session_combo.currentData()),
                                                      "DiagnosticSessionControl"))
         row.addWidget(set_session)
-        tester = QPushButton("Tester present")
-        tester.clicked.connect(lambda: self.run(lambda uds: uds.TP(), "TesterPresent"))
-        row.addWidget(tester)
         row.addStretch()
         self.state_label = QLabel("")
         row.addWidget(self.state_label)
