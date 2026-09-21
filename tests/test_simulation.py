@@ -227,8 +227,13 @@ class TransmitPaneTest(unittest.TestCase):
         symbols = SymbolDatabases([str(DBC)], settings=self.settings)
         for page in (TransmitWindow(None, symbols, lambda *args: None, self.settings),
                      SimulationWindow(None, symbols, lambda *args: None, self.settings)):
+            page._timer.stop()                   # in a real teardown nothing ticks between clearing and deleting
+            attributes = dict(page.__dict__)
             page.__dict__.clear()
             page.hideEvent(QHideEvent())
+            page.__dict__.update(attributes)     # and back, so the page goes away like any other
+            page.deleteLater()
+        APP.processEvents()
 
 
 if __name__ == "__main__":
