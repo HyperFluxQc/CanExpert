@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import QAction, QApplication, QDialog, QMessageBox
 
 from canexpert import can_bus
 from canexpert import main_window as main
+from canexpert.channel_setup_dialog import ChannelSetupDialog
 from canexpert.config import validate_config
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.designer.side_panels import PropertyEditor
@@ -677,7 +678,7 @@ VAL_ 256 Enable 0 "Off" 1 "On";
             dialog.listen_only_cb.setChecked(True)
             dialog._accept()
             return dialog.Accepted
-        with patch.object(main.ChannelSetupDialog, "exec_", edit):
+        with patch.object(ChannelSetupDialog, "exec_", edit):
             self.window.edit_channel_setup(channel)
         self.assertTrue(load_setup(self.settings, channel).listen_only)
         self.assertIn("[listen-only]", self.window._channel_label(channel))

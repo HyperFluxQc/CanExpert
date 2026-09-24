@@ -11,21 +11,17 @@ from collections import deque
 from pathlib import Path
 
 import can
-from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
+from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QKeySequence, QPalette
 from PyQt5.QtWidgets import (
-    QAbstractSpinBox,
     QAction,
     QActionGroup,
     QApplication,
-    QComboBox,
     QDialog,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -33,68 +29,51 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QTextEdit,
     QToolBar,
     QToolButton,
     QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from canexpert.can_bus import SUPPORTED_INTERFACES, CanWorker, ReceiveMailbox, channel_key
-from canexpert.can_logger import CANLoggerWindow
-from canexpert.channel_setup import ChannelSetup, load_setup, open_configured, save_setup
-from canexpert.channel_setup_dialog import ChannelSetupDialog
-from canexpert.config import (DEFAULT_CONFIGURATION, ConfigurationDialog, read_configurations, save_configuration,
-                              uds_transport, validate_config)
-from canexpert.data_window import DataWindow
-from canexpert.designer.form_designer import FormDesigner
-from canexpert.ecu_scan import EcuScanDialog
+from canexpert.config import (
+    DEFAULT_CONFIGURATION,
+    ConfigurationDialog,
+    read_configurations,
+    save_configuration,
+    validate_config,
+)
 from canexpert.clock import TIME_DISPLAYS, MeasurementClock, absolute_text
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
 from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
 from canexpert.help_window import show_manual
-from canexpert.panel.database import load_application_database, select_database
-from canexpert.panel.runtime import ScriptRuntime
 from canexpert.panel.view import PanelView
 from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
 from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
-from canexpert.statistics_window import StatisticsWindow
-from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
+from canexpert.symbols import SymbolDatabases
 from canexpert import features
-from canexpert.sysvars import SystemVariables, SystemVariablesWindow
-from canexpert.trace_window import TraceWindow
-from canexpert.transport_settings import apply_transport, load_transport
-from canexpert.transmit_pane import TransmitPane
-from canexpert.uds_console import UdsConsoleWindow
+from canexpert.sysvars import SystemVariables
 from canexpert.about import AboutDialog
-from canexpert.status_strip import DiagnosticState, StatusStrip
-from canexpert.testing.window import TestWindow
+from canexpert.status_strip import StatusStrip
 from canexpert.ui_common import DockTitleBar, app_icon, app_settings, line_icon, toolbar_icon
-from canexpert.workspace import (add_pane, create_workspace, drop_empty_floating, fit_on_screen, make_pane,
-                                 pane_names, put_back, set_content)
-from canexpert.write_window import WriteWindow
+from canexpert.workspace import add_pane, create_workspace, fit_on_screen, make_pane, set_content
+from canexpert.main_layouts import TOOL_AREAS
+from canexpert.main_tools import ToolWindows
+from canexpert.main_layouts import Layouts
+from canexpert.main_channels import Channels
+from canexpert.main_session import Session
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window and the console
 PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
-LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
-USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
-LAYOUT_GEOMETRY = "layout/geometry"
-LAYOUT_STATE = "layout/state"
-LAYOUT_WORKSPACE = "layout/workspace"
-DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
                   "write", "tests", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
-TOOL_AREAS = {"trace": "bottom", "transmit": "bottom", "write": "bottom"}   # the others: an area of their own
-PAGE_PANE = re.compile(r"pane_page_(\d+)$")
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
 SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
@@ -112,13 +91,14 @@ def tool_panes() -> tuple:
 WRITE_HISTORY = 5000               # Write window lines kept for when it is opened
 
 
-class MainWindow(QMainWindow):
+class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
     """Main application window"""
     
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CAN Expert")
         self.setGeometry(100, 100, 1000, 700)
+        self._settings = app_settings()      # the settings every part of the window reads and writes
         
         # Configuration management
         self.configurations = []
@@ -145,9 +125,6 @@ class MainWindow(QMainWindow):
         self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
         self.last_channel, self.used_channels = None, set()
         self._read_channel_history()
-        # What is on the bus, whoever opened it: the database session, the ECU check, or a replayed
-        # file. Windows opened later read the history.
-        self._settings = app_settings()
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
         # One clock for the Trace, the Logger, the Write window and the UDS Console (clock.py).
         self.clock = MeasurementClock()
@@ -164,6 +141,8 @@ class MainWindow(QMainWindow):
         self.time_display = self._settings.value(TIME_DISPLAY, TIME_DISPLAYS[0], type=str)
         if self.time_display not in TIME_DISPLAYS:
             self.time_display = TIME_DISPLAYS[0]
+        # What is on the bus, whoever opened it: the database session, the ECU check, or a replayed
+        # file. Windows opened later read the history.
         self.frame_history = deque(maxlen=FRAME_HISTORY)
         self.recorder = None
         self.replay = None
@@ -178,6 +157,11 @@ class MainWindow(QMainWindow):
         self.node_timer.timeout.connect(self._update_nodes)
         self.node_timer.start()
         self.check_last_channel()
+
+    @property
+    def databases_dir(self):
+        """The panel databases' folder, looked up here when it is needed (the tests point it elsewhere)."""
+        return DATABASES_DIR
 
     # --- UI setup ---
 
@@ -375,53 +359,13 @@ class MainWindow(QMainWindow):
             for error in self.symbols.errors:
                 self.log_verbose(f"Symbol database: {error}")
 
-    # --- The channels used before ---------------------------------------------------
-
-    def _read_channel_history(self):
-        """The channel used last and every channel connected before, as saved by _remember_channel()."""
-        settings = app_settings()
-        try:
-            used = json.loads(settings.value(USED_CHANNELS, "[]") or "[]")
-            last = json.loads(settings.value(LAST_CHANNEL, "null") or "null")
-        except ValueError:
-            used, last = [], None
-        self.used_channels = {tuple(key) for key in used if isinstance(key, list)}
-        self.last_channel = tuple(last) if isinstance(last, list) else None
-
-    def _remember_channel(self, channel_config):
-        """Keep the channel as the one to select and check at the next start."""
-        key = channel_key(channel_config)
-        self.last_channel = key
-        self.used_channels.add(key)
-        settings = app_settings()
-        settings.setValue(LAST_CHANNEL, json.dumps(list(key)))
-        settings.setValue(USED_CHANNELS, json.dumps([list(used) for used in self.used_channels]))
-
-    def check_last_channel(self):
-        """At startup: select the channel used last and start checking its ECUs with TesterPresent, so a
-        responding ECU and the database it can load appear without connecting first."""
-        item = self.channel_items.get(self.last_channel)
-        if item is None or self.can_bus is not None or not self.active_config:
-            return
-        self.on_channel_selected(item)
-        self.check_ecus(item.data(0, Qt.UserRole))
-
-    def _matching_database(self):
-        """The panel database Connect would load for the active configuration, or None."""
-        if not self.active_config:
-            return None
-        try:
-            return select_database(DATABASES_DIR, str(self.active_config.get("database_family", "")))
-        except (OSError, ValueError) as exc:
-            self.log_verbose(f"Database selection: {exc}")
-            return None
+    # --- Status and log ---
 
     def _set_status(self, text: str, color: str = "gray"):
         """Update status label text and optional color (gray, green, red, orange)."""
         self.status_label.setText(text)
         colors = {"gray": "gray", "green": "green", "red": "red", "orange": "orange"}
         self.status_label.setStyleSheet(f"QLabel {{ color: {colors.get(color, 'gray')}; }}")
-
 
     def log_verbose(self, msg: str):
         """Append a message to the debug/verbose log."""
@@ -441,120 +385,7 @@ class MainWindow(QMainWindow):
         if write is not None:
             write.rebuild()
 
-    # --- Channel list ---
-
-    def refresh_channel_list(self):
-        self.channel_list.clear()
-        self.channel_items.clear()
-        self.node_items.clear()
-        self.can_channels = []
-        for interface, label in SUPPORTED_INTERFACES:
-            try:
-                for cfg in can.detect_available_configs(interfaces=[interface], timeout=2.0):
-                    cfg["interface"] = interface
-                    self.can_channels.append(cfg)
-            except Exception as exc:
-                self.log_verbose(f"{label} detection: {exc}")
-        for in_use in (self.connected_channel_config, self.monitor_channel if self.ecu_monitor else None):
-            if in_use and not any(channel_key(c) == channel_key(in_use) for c in self.can_channels):
-                self.can_channels.append(in_use)
-        self.database_items.clear()
-        for cfg in self.can_channels:
-            item = QTreeWidgetItem([self._channel_label(cfg)])
-            item.setData(0, Qt.UserRole, cfg)
-            key = channel_key(cfg)
-            if key in self.used_channels:  # channels connected before stand out
-                font = item.font(0)
-                font.setBold(True)
-                item.setFont(0, font)
-            self.channel_list.addTopLevelItem(item)
-            self.channel_items[key] = item
-        if not self.can_channels:
-            self.channel_list.addTopLevelItem(QTreeWidgetItem(["No CAN receivers found"]))
-        remembered = self.channel_items.get(self.last_channel)
-        if remembered is not None and self.can_bus is None:
-            self.channel_list.setCurrentItem(remembered)
-            self.selected_channel_config = remembered.data(0, Qt.UserRole)
-        self._update_nodes()
-
-    def _channel_label(self, cfg):
-        label = f"[{cfg['interface']}] Ch {cfg.get('channel', 0)}: {cfg.get('device_name', cfg.get('description', 'CAN receiver'))}"
-        serial = cfg.get("serial") or cfg.get("unique_hardware_id")
-        if serial:
-            label += f" ({serial})"
-        if load_setup(self._settings, cfg).listen_only:
-            label += " [listen-only]"
-        if self.connected_channel_config and channel_key(cfg) == channel_key(self.connected_channel_config):
-            label += " [Connected]"
-        elif self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
-            label += " [Checking ECUs]"
-        return label
-
-    def _label_channels(self):
-        for item in self.channel_items.values():
-            item.setText(0, self._channel_label(item.data(0, Qt.UserRole)))
-
-    def _channel_checked(self, key):
-        """True while ECU replies on this channel are being watched: a database session or the ECU check."""
-        if self.can_bus is not None and self.connected_channel_config is not None:
-            if key == channel_key(self.connected_channel_config):
-                return True
-        return self.ecu_monitor is not None and key == channel_key(self.monitor_channel)
-
-    def _update_nodes(self):
-        now, responding = time.monotonic(), set()
-        for (channel, can_id), state in self.node_states.items():
-            parent = self.channel_items.get(channel)
-            if parent is None:
-                continue
-            item = self.node_items.get((channel, can_id))
-            if item is None:
-                item = QTreeWidgetItem(parent)
-                self.node_items[(channel, can_id)] = item
-                parent.setExpanded(True)
-            if not self._channel_checked(channel):
-                symbol, status, colour = "○", "Not checked", "gray"
-            elif now - state["last_seen"] > state["timeout"]:
-                symbol, status, colour = "✗", "Lost connection", "red"
-            else:
-                symbol, status, colour = "●", "Responding", "green"
-                responding.add(channel)
-            item.setText(0, f"{symbol} ECU 0x{can_id:X} — {status}")
-            item.setForeground(0, QColor(colour))
-            item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))
-        self._update_databases(responding)
-
-    def _update_databases(self, responding):
-        """Offer the database that Connect would load under every channel with a responding ECU."""
-        database = self._matching_database() if responding else None
-        for key, parent in self.channel_items.items():
-            item = self.database_items.get(key)
-            if database is None or key not in responding:
-                if item is not None:
-                    parent.removeChild(item)
-                    del self.database_items[key]
-                continue
-            if item is None:
-                item = QTreeWidgetItem(parent)
-                self.database_items[key] = item
-                parent.setExpanded(True)
-            loaded = (self.app_database or {}).get("source_path") == str(database.resolve())
-            item.setText(0, f"▣ {database.stem} — {'loaded' if loaded else 'double-click to load'}")
-            item.setForeground(0, QColor("#1566ae"))
-            item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))  # double-click connects this channel
-
-    def on_channel_selected(self, item, column=0):
-        cfg = item.data(0, Qt.UserRole)
-        if cfg:
-            self.selected_channel_config = cfg
-            self.last_channel = channel_key(cfg)
-            app_settings().setValue(LAST_CHANNEL, json.dumps(list(self.last_channel)))
-            self.status_label.setText(f"Selected {cfg['interface']} channel {cfg.get('channel', 0)}")
-
-    def on_channel_double_clicked(self, item, column=0):
-        self.on_channel_selected(item, column)
-        if self.can_bus is None:
-            self.on_connect_clicked()
+    # --- Side panels, menus, help and theme ---
 
     def _show_can_channels_dock(self):
         """Show CAN Channels dock (e.g. after user closed it or after disconnect)."""
@@ -795,328 +626,6 @@ class MainWindow(QMainWindow):
         self.on_config_selected(self.config_list.item(selected))
         self.log_verbose(f"Loaded {len(self.configurations)} configuration(s).")
 
-    def open_form_designer(self):
-        """Open the Form Designer dialog."""
-        designer = FormDesigner(self)
-        designer.saved.connect(lambda p: self.load_configurations())
-        designer.exec_()
-
-    # --- The workspace: tool panes, saved layouts and desktops ---
-
-    def tool_widget(self, name):
-        """The widget of a tool window that was opened, else None (nothing is created here)."""
-        pane = self.tool_panes.get(name)
-        return pane.widget() if pane is not None else None
-
-    def open_tool(self, name, title, factory):
-        """Show a tool in the workspace, building it the first time. Returns (widget, is new)."""
-        pane, created = self.tool_panes.get(name), False
-        if pane is None:
-            widget = factory()
-            pane = self._tool_slots[name]
-            pane.setWindowTitle(title)
-            set_content(pane, widget)
-            self.tool_panes[name] = pane
-            created = True
-            action = self._toolbar_actions.get(name)
-            if action is not None and action.isCheckable():
-                # However the window is opened or closed - its tab's close button, a saved desktop,
-                # Reset layout - the toolbar button follows.
-                pane.viewToggled.connect(action.setChecked)
-            if isinstance(widget, QDialog):
-                # Esc in an embedded dialog would hide it inside its window and leave an empty one;
-                # close the window and keep the widget ready for the next time it is opened.
-                widget.finished.connect(lambda _result, p=pane, w=widget: (p.toggleView(False), w.show()))
-        pane.toggleView(True)
-        pane.setAsCurrentTab()
-        fit_on_screen(pane)
-        return pane.widget(), created
-
-    def _toggle_tool(self, name, shown, show):
-        """The toolbar switch of a tool window: open it, or close the one that is open."""
-        if self._settling:
-            return
-        pane = self.tool_panes.get(name)
-        if shown:
-            show()
-        elif pane is not None:
-            pane.toggleView(False)   # hidden, not destroyed: reopening shows what it recorded meanwhile
-
-    # --- the script's side: Write window, system variables, keys ---
-
-    def write_message(self, level: str, text: str):
-        """A line of the panel script's output. Errors go to the Debug log as well."""
-        entry = (time.time(), level, text)
-        self.write_history.append(entry)
-        window = self.tool_widget("write")
-        if window is not None:
-            window.add(*entry)
-        if level == "error":
-            self.log_verbose(text)
-            self.status_strip.set_error(text)
-
-    def script_watch(self):
-        """(the script's globals, the names CAN Expert put there), for the Write window's watch."""
-        runtime = self.script_runtime
-        return (runtime.namespace, runtime.hidden_names) if runtime is not None else ({}, ())
-
-    def open_write(self):
-        """Write window: the script's output and its variables."""
-        window, created = self.open_tool("write", "Write", lambda: WriteWindow(self, self.clock, self.script_watch,
-                                                             display=lambda: self.time_display))
-        if created:
-            for entry in list(self.write_history):
-                window.add(*entry)
-        return window
-
-    def open_tests(self):
-        """Test window: a test module's test cases, run against the measurement's bus."""
-        window, _ = self.open_tool("tests", "Test", lambda: TestWindow(
-            self, self.active_session, lambda can_id, data: (self.symbols.name(can_id), self.symbols.decode(can_id, data)),
-            self._settings, time_text=lambda t: self.clock.text(t, self.time_display)))
-        return window
-
-    def open_sysvars(self):
-        """System variables: the values the script, the windows and the user share."""
-        window, _ = self.open_tool("sysvars", "System Variables", lambda: SystemVariablesWindow(self.sysvars, self))
-        return window
-
-    def _on_sysvar_changed(self, name, value, when):
-        """A system variable changed: numeric ones are kept for the Logger, which plots them."""
-        if isinstance(value, str):
-            return
-        definition = self.sysvars.definition(name)
-        unit = definition.unit if definition is not None else ""
-        self.sysvar_history.append((when, name, value, unit))
-        logger = self.tool_widget("logger")
-        if logger is not None:
-            logger.on_sysvar(name, value, when, unit)
-
-    def _watch_keys(self, on: bool):
-        """While a measurement runs, key presses reach the script's @on_key handlers."""
-        application = QApplication.instance()
-        if on and not self._keys_watched:
-            application.installEventFilter(self)
-        elif not on and self._keys_watched:
-            application.removeEventFilter(self)
-        self._keys_watched = on
-
-    def eventFilter(self, watched, event):
-        if event.type() == QEvent.KeyPress and watched.isWindowType() and self.script_runtime is not None:
-            self._key_pressed(event)
-        return super().eventFilter(watched, event)
-
-    def _key_pressed(self, event):
-        """Hand a key to the script - unless it is being typed into a field, or a dialog is waiting."""
-        if event.isAutoRepeat() or QApplication.activeModalWidget() is not None:
-            return
-        focus = QApplication.focusWidget()
-        if isinstance(focus, (QLineEdit, QAbstractSpinBox)) or \
-                (isinstance(focus, (QPlainTextEdit, QTextEdit)) and not focus.isReadOnly()) or \
-                (isinstance(focus, QComboBox) and focus.isEditable()):
-            return
-        text = event.text()
-        key = text if len(text) == 1 and text.isprintable() and not text.isspace() else \
-            QKeySequence(event.key()).toString()
-        if key:
-            self.script_runtime.post("key", key, None)
-
-    def open_trace(self):
-        """Trace window, with the frames already recorded."""
-        trace, created = self.open_tool("trace", "Trace", lambda: TraceWindow(self, self.symbols, self.clock))
-        if created:
-            for frame in list(self.frame_history):
-                trace.add_frame(*frame)
-            trace.flush()
-        self._update_diagnostic_ids()
-        return trace
-
-    def _update_diagnostic_ids(self):
-        """Which identifiers the Trace assembles in its transport view: the ones this configuration uses."""
-        trace = self.tool_widget("trace")
-        config = self.session_config or self.monitor_config or self.active_config
-        if trace is None or not config:
-            return
-        transport = uds_transport(config)
-        identifiers = {config.get("request_id"), transport["request_id"], *config.get("response_ids", [])}
-        trace.set_diagnostic_ids({i for i in identifiers if i is not None}, transport["address_byte"])
-
-    def open_can_logger(self):
-        """CAN Logger window, filled with the signals of the frames already recorded."""
-        logger, created = self.open_tool("logger", "CAN Logger",
-                                         lambda: CANLoggerWindow(self, self.symbols, self.clock))
-        if created:
-            for timestamp, direction, can_id, data, _extended in list(self.frame_history):
-                if direction == "RX":
-                    logger.on_can_message(can_id, data, timestamp)
-            for when, name, value, unit in list(self.sysvar_history):
-                logger.on_sysvar(name, value, when, unit)
-        return logger
-
-    def open_data(self):
-        """Data window, filled from the frames already recorded."""
-        data, created = self.open_tool("data", "Data", lambda: DataWindow(self, self.symbols))
-        if created:
-            for frame in list(self.frame_history):
-                data.on_frame(*frame)
-            data.rebuild()
-        return data
-
-    def open_statistics(self):
-        """Statistics window, counting from the frames already recorded."""
-        statistics, created = self.open_tool("statistics", "Statistics",
-                                             lambda: StatisticsWindow(self, self.symbols, self.session_bitrate))
-        if created:
-            for frame in list(self.frame_history):
-                statistics.on_frame(*frame)
-            statistics.refresh()
-        return statistics
-
-    def session_bitrate(self) -> int:
-        """The bit rate the measurement runs at, for the bus load; 0 when nothing is connected."""
-        config = self.session_config or self.active_config or {}
-        return int(config.get("bitrate", 0)) if self.can_bus is not None else 0
-
-    def open_transmit(self, nodes=False):
-        """Transmit window: messages once or cyclically, and the simulated nodes (nodes=True shows that tab)."""
-        pane, created = self.open_tool("transmit", "Transmit",
-                                       lambda: TransmitPane(self, self.symbols, self.send_can_message, self._settings))
-        if created:
-            # Closing the window stops what it sends; a tab of another window in front of it does not.
-            self.tool_panes["transmit"].viewToggled.connect(lambda shown, p=pane: None if shown else p.stop_sending())
-        if nodes:
-            pane.show_nodes()
-        return pane
-
-    def open_uds_console(self):
-        """UDS Console window: any ISO 14229 service, the services of an ODX file, and the fault memory."""
-        widget, _ = self.open_tool("console", "UDS Console",
-                                   lambda: UdsConsoleWindow(self, self.active_session,
-                                                            time_text=lambda t: self.clock.text(t, self.time_display)))
-        return widget
-
-    def edit_symbol_databases(self):
-        """Add or remove the DBC files every window uses."""
-        dialog = SymbolDatabaseDialog(self.symbols, self)
-        dialog.exec_()
-        self.log_verbose(f"Symbol databases: {len(self.symbols.messages())} message(s) "
-                         f"from {len(self.symbols.databases)} file(s)")
-        return dialog
-
-    # --- Layouts (CANoe's desktops) ---
-
-    def layout_state(self):
-        """Everything about the arrangement: the docked panels, and the workspace windows."""
-        return self.saveState(), self.workspace.saveState()
-
-    def apply_layout_state(self, layout):
-        """Put the panels and the workspace windows back as layout describes them."""
-        panels, workspace = layout
-        if panels:
-            self.restoreState(panels)
-        if workspace:
-            for index in sorted({int(match.group(1)) for match in map(PAGE_PANE.match, pane_names(workspace))
-                                 if match}):
-                self._page_slot(index)          # so the arrangement can place the pages it knows
-            self.workspace.restoreState(workspace)
-            self._settle_panes()
-
-    def _settle_panes(self):
-        """After an arrangement was applied: it says where the windows go, not what is in them.
-
-        A window it opened that has nothing to show - the Database with no database loaded, a tool not
-        opened yet, a page the database does not have - is closed again, keeping its place. A window it
-        did not know at all (saved before that window existed) goes back to its usual place (put_back).
-        Floating windows it kept with nothing in them go."""
-        self._settling = True
-        try:
-            for name, pane in self._tool_slots.items():
-                if pane.dockAreaWidget() is None:
-                    area = TOOL_AREAS.get(name, "center")
-                    put_back(self.workspace, pane, area, beside=self.database_pane if area != "center" else None)
-                elif name not in self.tool_panes:
-                    pane.toggleView(False)
-            for pane in self._page_slots:
-                if pane.dockAreaWidget() is None:
-                    put_back(self.workspace, pane, beside=self.database_pane, open_=pane in self.page_panes)
-                elif pane not in self.page_panes:
-                    pane.toggleView(False)
-            if self.database_pane.dockAreaWidget() is None:
-                put_back(self.workspace, self.database_pane, open_=self.app_database is not None)
-            if self.app_database is None:
-                self.database_pane.toggleView(False)
-        finally:
-            self._settling = False
-        drop_empty_floating(self.workspace)
-
-    def _page_slot(self, index):
-        """The window for page index (1 onwards; page 0 is the Database window), made the first time."""
-        while len(self._page_slots) < index:
-            slot = make_pane(f"Page {len(self._page_slots) + 1}", QWidget(), f"pane_page_{len(self._page_slots) + 1}")
-            add_pane(self.workspace, slot, beside=self.database_pane)
-            slot.toggleView(False)
-            self._page_slots.append(slot)
-        return self._page_slots[index - 1]
-
-    def save_layout(self):
-        panels, workspace = self.layout_state()
-        self._settings.setValue(LAYOUT_GEOMETRY, self.saveGeometry())
-        self._settings.setValue(LAYOUT_STATE, panels)
-        self._settings.setValue(LAYOUT_WORKSPACE, workspace)
-
-    def restore_layout(self):
-        """Put the window, its panels and its workspace windows back where they were left."""
-        geometry = self._settings.value(LAYOUT_GEOMETRY)
-        if geometry:
-            self.restoreGeometry(geometry)
-        self.apply_layout_state((self._settings.value(LAYOUT_STATE), self._settings.value(LAYOUT_WORKSPACE)))
-
-    def desktops(self) -> list[str]:
-        self._settings.beginGroup(DESKTOPS)
-        names = sorted(self._settings.childGroups())
-        self._settings.endGroup()
-        return names
-
-    def save_desktop(self, name=None):
-        """Keep the current arrangement under a name, as CANoe keeps desktops."""
-        if name is None:
-            name, ok = QInputDialog.getText(self, "Save desktop", "Name of this window arrangement:")
-            if not ok or not name.strip():
-                return None
-        name = name.strip()
-        panels, workspace = self.layout_state()
-        self._settings.setValue(f"{DESKTOPS}/{name}/panels", panels)
-        self._settings.setValue(f"{DESKTOPS}/{name}/workspace", workspace)
-        self._refresh_desktop_menu()
-        self._set_status(f"Desktop '{name}' saved", "green")
-        return name
-
-    def apply_desktop(self, name):
-        layout = (self._settings.value(f"{DESKTOPS}/{name}/panels"),
-                  self._settings.value(f"{DESKTOPS}/{name}/workspace"))
-        if any(layout):
-            self.apply_layout_state(layout)
-            self._set_status(f"Desktop '{name}'", "gray")
-
-    def reset_layout(self):
-        """Back to the arrangement the window starts with."""
-        self.apply_layout_state(self._default_layout)
-        for pane in self.tool_panes.values():
-            pane.toggleView(False)
-        self.database_pane.toggleView(self.app_database is not None)
-        for pane in self.page_panes:
-            pane.toggleView(True)
-
-    def _refresh_desktop_menu(self):
-        menu = getattr(self, "_desktop_menu", None)
-        if menu is None:
-            return
-        menu.clear()
-        for name in self.desktops():
-            menu.addAction(name, lambda checked=False, n=name: self.apply_desktop(n))
-        if not self.desktops():
-            menu.addAction("(none saved yet)").setEnabled(False)
-
     # --- Recording and offline replay ---
 
     def start_recording(self):
@@ -1173,6 +682,8 @@ class MainWindow(QMainWindow):
         self.log_verbose(f"Replaying {path}")
         return self.replay
 
+    # --- Configurations ---
+
     def edit_configuration(self, item=None):
         if self.can_bus is None:
             self._open_configuration_dialog(dict(self.active_config or {}))
@@ -1216,319 +727,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to export configuration: {str(e)}")
                 
-    # --- Connect / Disconnect / UDS ---
-
-    def on_connect_clicked(self):
-        """Connect: load the active configuration's panel database and run its script on the bus."""
-        if self.can_bus is not None:
-            return
-        if not self.active_config or not self.selected_channel_config:
-            QMessageBox.warning(self, "Connection", "Select a configuration and a CAN receiver first.")
-            return
-        self.stop_ecu_monitor()  # the session sends TesterPresent itself
-        try:
-            config = self.session_configuration()
-            database = load_application_database(config["database_family"], DATABASES_DIR)
-            if database is None:
-                raise ValueError("No matching database. Create a panel in Form Designer first.")
-            # Validate/build before opening hardware, so errors leave a usable UI.
-            self.build_application_ui(database)
-            cfg = self.selected_channel_config
-            setup = load_setup(self._settings, cfg)
-            self.can_bus = open_configured(cfg, config["bitrate"], setup, config)
-            if setup.describe():
-                self.log_verbose(f"Channel setup: {setup.describe()}")
-            self.session_config = config
-            transport = uds_transport(config)
-            self._diagnostic_answers = (transport["response_id"], transport["extended"], transport["address_byte"])
-            self.connected_channel_config = dict(cfg)
-            self._remember_channel(cfg)
-            self.session_generation += 1
-            generation = self.session_generation
-            self.clock.begin(time.time())            # a new measurement: relative times count from here
-            worker = CanWorker(self.can_bus, config, tester_present=not setup.listen_only,
-                               unsolicited=not setup.listen_only)
-            mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
-            worker.add_mailbox(mailbox)
-            worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
-            worker.message_sent.connect(lambda cid, data, g=generation: self.dispatch_frame(time.time(), "TX", cid, data) if g == self.session_generation else None)
-            worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
-            worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
-            worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
-            worker.unsolicited.connect(lambda ts, payload, g=generation: self._on_unsolicited(ts, payload) if g == self.session_generation else None)
-            self.worker = worker
-            if self.sysvars is not None:
-                self.sysvars.reset()               # every variable back to its initial value
-            runtime = ScriptRuntime(mailbox, config, self.panel.values(), self, sysvars=self.sysvars)
-            runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
-            runtime.message.connect(lambda level, text, g=generation: self.write_message(level, text)
-                                    if g == self.session_generation else None)
-            runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
-            runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
-            runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
-            self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
-            self.script_runtime = runtime
-            self._bus_state = None
-            self._watch_keys(True)
-            worker.start()
-            script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
-            runtime.dbc = self.panel.dbc
-            runtime.handlers = self.panel.handlers()
-            runtime.start(script_path)
-            self._toolbar_actions["connect"].setEnabled(False)
-            self._toolbar_actions["disconnect"].setEnabled(True)
-            self.status_strip.connected()
-            self._set_flashing_available(False)
-            self.flashing_toolbar_item.setVisible(True)
-            self.config_list.setEnabled(False)
-            self.database_pane.toggleView(True)
-            self.database_pane.setAsCurrentTab()
-            fit_on_screen(self.database_pane)
-            self.channels_dock.show()
-            self._minimize_side_panels()
-            self.refresh_channel_list()
-            self._update_diagnostic_ids()
-            self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
-            self.log_verbose(f"Loaded {database['source_path']}")
-        except Exception as exc:
-            self.on_disconnect_clicked()
-            self._set_status(f"Connection failed: {exc}", "red")
-            self.log_verbose(str(exc))
-
-    def session_configuration(self) -> dict:
-        """The selected configuration as a session uses it: validated, with its ISO-TP settings folded in
-        (they live in the settings, not in the configuration file). ValueError when it is invalid."""
-        config = validate_config(self.active_config)
-        return apply_transport(config, load_transport(self._settings, config["name"]))
-
-    def active_session(self):
-        """(bus, worker, configuration) while connected, for the UDS console; else None."""
-        if self.can_bus is None or self.worker is None or self.session_config is None:
-            return None
-        return self.can_bus, self.worker, self.session_config
-
-    def _session_failed(self, error):
-        self.log_verbose(error)
-        self.status_strip.set_error(error)
-        self.on_disconnect_clicked()
-        self._set_status(error, "red")
-
-    def on_disconnect_clicked(self):
-        self.session_generation += 1
-        self._watch_keys(False)
-        if self.flash_runner is not None:
-            self.flash_runner.cancel()      # the bus is about to go away under it
-        tests = self.tool_widget("tests")
-        if tests is not None:
-            tests.stop()                    # the running test case ends; its mailboxes close with the worker
-        self._close_flash_dialog()
-        self.flashing_toolbar_item.setVisible(False)
-        if self.script_runtime:
-            self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
-            self.script_runtime = None
-        if self.worker is not None:
-            self.worker.stop()
-            self.worker = None
-        if self.can_bus:
-            try:
-                self.can_bus.shutdown()
-            except Exception as exc:
-                self.log_verbose(str(exc))
-        self.can_bus = None
-        self.session_config = None
-        self.connected_channel_config = None
-        self.stop_recording()
-        self._label_channels()
-        self._toolbar_actions["connect"].setEnabled(True)
-        self._toolbar_actions["disconnect"].setEnabled(False)
-        self.status_strip.disconnected()
-        self.config_list.setEnabled(True)
-        self._restore_side_panels()
-        self.database_pane.toggleView(False)
-        self.channels_dock.show()
-        self._set_status("Disconnected", "gray")
-        self.clear_application_ui()
-        self._update_nodes()
-
-    # --- ECU check while no database is connected ---
-
-    def disconnect_database(self):
-        """Toolbar Disconnect: close the database session, then keep checking its ECUs so the CAN Channels
-        tree still shows which ones respond."""
-        channel, config = self.connected_channel_config, self.session_config
-        self.on_disconnect_clicked()
-        if channel and config:
-            self.start_ecu_monitor(channel, config)
-
-    def start_ecu_monitor(self, channel_config, config):
-        """Send TesterPresent on the channel at the configuration's interval and watch the ECU replies:
-        each ECU shows Responding, or Lost connection after the node loss timeout."""
-        self.stop_ecu_monitor()
-        channel = channel_config.get("channel", 0)
-        setup = load_setup(self._settings, channel_config)
-        if setup.listen_only:
-            self.log_verbose("ECU check not started: it sends TesterPresent, and the channel is set to "
-                             "listen-only (right-click the channel, Channel setup...)")
-            return
-        try:
-            bus = open_configured(channel_config, config["bitrate"], setup, config)
-        except Exception as exc:
-            self.log_verbose(f"ECU check not started: {exc}")
-            return
-        worker = CanWorker(bus, config)
-        self.clock.begin(time.time())
-        worker.message_received.connect(lambda msg, w=worker: self._on_monitor_message(w, msg))
-        worker.message_sent.connect(lambda can_id, data, w=worker: self.dispatch_frame(time.time(), "TX", can_id, data)
-                                    if w is self.ecu_monitor else None)
-        worker.error_occurred.connect(lambda error, w=worker: self._monitor_failed(w, error))
-        self.ecu_monitor, self.monitor_bus = worker, bus
-        self.monitor_channel, self.monitor_config = dict(channel_config), config
-        self._update_diagnostic_ids()
-        worker.start()
-        self._label_channels()
-        self._update_nodes()
-        self.log_verbose(f"Checking ECUs on {channel_config['interface']} channel {channel}: TesterPresent to "
-                         f"0x{config['request_id']:X} every {config['tester_present_interval_seconds']:g} s "
-                         f"(right-click the channel to stop)")
-
-    def stop_ecu_monitor(self):
-        worker, bus = self.ecu_monitor, self.monitor_bus
-        if worker is None:
-            return
-        self.ecu_monitor = self.monitor_bus = None
-        worker.stop()
-        try:
-            bus.shutdown()
-        except Exception as exc:
-            self.log_verbose(str(exc))
-        self._label_channels()
-        self._update_nodes()
-        self.log_verbose("Stopped checking ECUs")
-
-    def _on_monitor_message(self, worker, msg):
-        """Every frame seen while the ECUs are checked: the trace and the logger see the whole bus,
-        the node tree only the configured response identifiers."""
-        config = self.monitor_config
-        if worker is not self.ecu_monitor:
-            return
-        self.dispatch_frame(msg["timestamp"], "RX", msg["arbitration_id"], msg["data"],
-                            msg.get("is_extended_frame", False))
-        if msg["arbitration_id"] not in config["response_ids"]:
-            return
-        if msg.get("is_extended_frame", False) != (not config["identifier_11_bit"]):
-            return
-        self.node_states[(channel_key(self.monitor_channel), msg["arbitration_id"])] = {
-            "last_seen": time.monotonic(), "timeout": config["node_timeout_seconds"]}
-        self._update_nodes()
-
-    def _monitor_failed(self, worker, error):
-        if worker is self.ecu_monitor:
-            self.log_verbose(f"ECU check stopped: {error}")
-            self.stop_ecu_monitor()
-
-    def _channel_menu(self, position):
-        item = self.channel_list.itemAt(position)
-        cfg = item.data(0, Qt.UserRole) if item else None
-        if not cfg:
-            return
-        menu = QMenu(self)
-        if self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
-            menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
-        elif self.can_bus is None and self.active_config:
-            menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
-        menu.addSeparator()
-        menu.addAction("Scan for ECUs on this channel...", lambda: self.open_ecu_scan(cfg))
-        menu.addAction("Channel setup...", lambda: self.edit_channel_setup(cfg))
-        menu.exec_(self.channel_list.viewport().mapToGlobal(position))
-
-    def open_ecu_scan(self, channel_config=None):
-        """Find the ECUs of a channel: the connected one by default, over the running session."""
-        dialog = EcuScanDialog(self, open_bus=lambda: self._scan_bus(channel_config),
-                               new_configuration=self._configuration_for,
-                               detect_bitrate=lambda _dialog: self.edit_channel_setup(
-                                   channel_config or self.selected_channel_config))
-        dialog.show()
-        return dialog
-
-    def _scan_bus(self, channel_config=None):
-        """(bus, mailbox or None, close, padding) for a scan: a mailbox on the session or the ECU check when
-        they run on that channel - their TesterPresent is paused meanwhile - else the channel itself."""
-        wanted = channel_config or self.connected_channel_config or self.monitor_channel or self.selected_channel_config
-        if wanted is None:
-            raise ValueError("Select a CAN channel first.")
-        running = [(self.can_bus, self.worker, self.session_config, self.connected_channel_config),
-                   (self.monitor_bus, self.ecu_monitor, self.monitor_config, self.monitor_channel)]
-        for bus, worker, config, channel in running:
-            if bus is not None and worker is not None and channel is not None and \
-                    channel_key(channel) == channel_key(wanted):
-                if getattr(bus, "listen_only", False):
-                    raise ValueError("The channel is open listen-only: a scan has to send TesterPresent.")
-                mailbox = ReceiveMailbox(bus, worker.message_sent.emit)
-                worker.add_mailbox(mailbox)
-                return mailbox, mailbox, lambda w=worker, m=mailbox: (w.remove_mailbox(m), m.close()), \
-                    config.get("isotp_padding")
-        setup = load_setup(self._settings, wanted)
-        if setup.listen_only:
-            raise ValueError("The channel is set to listen-only (Channel setup): a scan has to send TesterPresent.")
-        try:
-            config = self.session_configuration()
-        except ValueError:
-            config = {"bitrate": 500000, "isotp_padding": 0xCC}
-        # The channel's receive filter would hide the answers of ECUs it does not expect, so it is left out.
-        bus = open_configured(wanted, config.get("bitrate", 500000),
-                              ChannelSetup(setup.sample_point, setup.sjw, False, ""))
-        return bus, None, bus.shutdown, config.get("isotp_padding")
-
-    def _configuration_for(self, responder):
-        """A new configuration for an ECU the scan found, in the ordinary configuration dialog."""
-        self._open_configuration_dialog({
-            "name": f"ECU {responder.response_id:X}", "request_id": responder.request_id,
-            "response_id": responder.response_id, "identifier_11_bit": not responder.extended,
-            "bitrate": int((self.session_config or self.active_config or {}).get("bitrate", 500000))})
-
-    def edit_channel_setup(self, channel_config):
-        """Sample point, listen-only, receive filter and bit rate detection for one adapter channel."""
-        key = channel_key(channel_config)
-        in_use = self._channel_checked(key) or (self.can_bus is not None and self.connected_channel_config is not None
-                                                and key == channel_key(self.connected_channel_config))
-        bitrate = int((self.session_config or self.active_config or {}).get("bitrate", 500000))
-        dialog = ChannelSetupDialog(channel_config, load_setup(self._settings, channel_config), bitrate, self,
-                                    in_use=in_use)
-        if dialog.exec_() == ChannelSetupDialog.Accepted:
-            save_setup(self._settings, channel_config, dialog.setup)
-            self._label_channels()
-            self.log_verbose(f"Channel setup of [{channel_config['interface']}] Ch {channel_config.get('channel', 0)}: "
-                             f"{dialog.setup.describe() or 'the defaults'}"
-                             + (" - used from the next connection" if in_use else ""))
-        return dialog
-
-    def check_ecus(self, channel_config):
-        """Start the ECU check on a channel with the selected configuration, without loading its database."""
-        try:
-            config = self.session_configuration()
-        except ValueError as exc:
-            self._set_status(f"Invalid configuration: {exc}", "red")
-            return
-        self.start_ecu_monitor(channel_config, config)
-
-    def _minimize_side_panels(self):
-        """Give the loaded database the room: collapse Configuration, CAN Channels and Log to strips."""
-        self._left_split = [self.config_dock.height(), self.channels_dock.height()]
-        for dock in (self.config_dock, self.channels_dock, self.log_dock):
-            title_bar = dock.titleBarWidget()
-            if not dock.isHidden() and not title_bar.is_minimized:
-                title_bar.minimize()
-                self._auto_minimized.append(title_bar)
-
-    def _restore_side_panels(self):
-        """Undo _minimize_side_panels; panels the user minimized or restored themselves are left alone."""
-        for title_bar in self._auto_minimized:
-            if title_bar.is_minimized:
-                title_bar.restore()
-        if self._auto_minimized and self._left_split and min(self._left_split) > 0:
-            self.resizeDocks([self.config_dock, self.channels_dock], self._left_split, Qt.Vertical)
-        self._auto_minimized = []
-        self._left_split = None
 
     # --- Flashing ---
 
@@ -1662,100 +860,6 @@ class MainWindow(QMainWindow):
             return {name: self._settings.value(name, "", type=str) for name in self._settings.childKeys()}
         finally:
             self._settings.endGroup()
-
-    def send_can_message(self, can_id, data, extended=None):
-        if self.can_bus is None:
-            raise RuntimeError("Connect before sending CAN messages")
-        if extended is None:
-            extended = not self.session_config.get("identifier_11_bit", True)
-        payload = bytes(data)
-        if len(payload) > 8:
-            raise ValueError("Classic CAN messages cannot exceed eight bytes")
-        message = can.Message(arbitration_id=can_id, data=payload, is_extended_id=extended, check=True)
-        self.can_bus.send(message)
-        self.dispatch_frame(time.time(), "TX", can_id, payload, extended)
-
-    def dispatch_frame(self, timestamp, direction, can_id, data, extended=False):
-        """One frame of the measurement, from wherever: the history, the recording, and every window.
-
-        The timestamp is the adapter's for received frames, so the trace and the logger share one clock.
-        """
-        data = bytes(data)
-        self.clock.see(timestamp)
-        self.frame_history.append((float(timestamp), direction, int(can_id), data, bool(extended)))
-        if self.recorder is not None:
-            try:
-                self.recorder.write(timestamp, direction, can_id, data, extended)
-            except Exception as exc:                      # a full disk must not take the measurement down
-                self.log_verbose(f"Recording stopped: {exc}")
-                self.stop_recording()
-        # Every open window that wants frames declares on_frame(); nothing else needs to know who is open.
-        for name in list(self.tool_panes):
-            handler = getattr(self.tool_widget(name), "on_frame", None)
-            if handler is not None:
-                handler(timestamp, direction, can_id, data, extended)
-
-    def _on_error_frame(self, timestamp):
-        """An error frame: no data, so it is counted rather than listed."""
-        if self.script_runtime is not None:
-            self.script_runtime.post("error_frame", None, timestamp)
-        statistics = self.tool_widget("statistics")
-        if statistics is not None:
-            statistics.on_error_frame(timestamp)
-
-    def _on_unsolicited(self, timestamp, payload):
-        """A diagnostic response the ECU sent by itself: periodic data (0x2A) or an event's (0x86)."""
-        if self.script_runtime is not None:
-            self.script_runtime.post("unsolicited", None, bytes(payload))   # @on_periodic_data, @on_response_event
-        console = self.tool_widget("console")
-        if console is not None:
-            console.on_unsolicited(timestamp, bytes(payload))
-
-    def _on_bus_status(self, status):
-        """The adapter's error state, read while the session runs."""
-        statistics = self.tool_widget("statistics")
-        if statistics is not None:
-            statistics.on_bus_status(status)
-        if status.get("state") == "bus off" and self._bus_state != "bus off":
-            self.log_verbose("The adapter reports bus off: no frames are being sent or received")
-            self._set_status("Bus off — check the wiring, the bit rate and the termination", "red")
-            self.status_strip.set_error("Bus off")
-        state = status.get("state", "unknown")
-        if self.session_config is not None:
-            self.status_strip.set_bus(state, status.get("error_frames", 0))
-        if self._bus_state is not None and state != self._bus_state and self.script_runtime is not None:
-            self.script_runtime.post("bus_state", None, state)      # @on_bus_state
-        self._bus_state = state
-
-    def replay_frames(self, frames):
-        """Frames read back from a recorded file (offline mode): they reach the windows, not the bus."""
-        for timestamp, direction, can_id, data, extended in frames:
-            self.dispatch_frame(timestamp, direction, can_id, data, extended)
-
-    def on_can_message(self, msg_dict):
-        if self.session_config is None:
-            return
-        can_id, data = msg_dict["arbitration_id"], bytes(msg_dict["data"])
-        if can_id in self.session_config["response_ids"] and msg_dict.get("is_extended_frame", False) == (not self.session_config["identifier_11_bit"]):
-            self.node_states[(channel_key(self.connected_channel_config), can_id)] = {
-                "last_seen": time.monotonic(), "timeout": self.session_config["node_timeout_seconds"]}
-            self._update_nodes()
-        response_id, extended, address_byte = self._diagnostic_answers
-        if can_id == response_id and bool(msg_dict.get("is_extended_frame", False)) == extended:
-            payload = DiagnosticState.payload(data, address_byte)       # session, security, NRCs
-            if payload:
-                self.status_strip.on_response(payload)
-        self.dispatch_frame(msg_dict.get("timestamp") or time.time(), "RX", can_id, data,
-                            msg_dict.get("is_extended_frame", False))
-        if self.panel:
-            try:
-                self.panel.on_message(can_id, data)
-            except Exception as exc:
-                self.log_verbose(f"Panel decode: {exc}")
-        if self.script_runtime:
-            with self.script_runtime.lock:
-                self.script_runtime.values.update(self.panel.values() if self.panel else {})
-            self.script_runtime.post("can", can_id, data)
 
     # --- Configuration selection ---
 

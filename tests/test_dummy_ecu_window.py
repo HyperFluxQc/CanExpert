@@ -9,12 +9,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import can
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtWidgets import QApplication
 
 from canexpert.simulator import window as dummy_ecu_window
 from canexpert.simulator.ecu import EcuConfig, claim_channel, load_profile
-from canexpert.simulator.window import DummyEcuWindow, parse_address_format, parse_byte_list, parse_ranges
+from canexpert.simulator import window_tables as tables
+from canexpert.simulator.fields import parse_address_format, parse_byte_list, parse_ranges
+from canexpert.simulator.window import DummyEcuWindow
 from canexpert.uds.client import uds_rdbi, uds_request
 
 APP = QApplication.instance() or QApplication([])
@@ -173,16 +175,16 @@ class SimulationTabsTest(unittest.TestCase):
     def test_a_generator_is_changed_while_the_ecu_runs(self):
         window = self.window
         row = self.row_of(window.signal_table, "EngineData.Temperature")
-        self.assertEqual(window.signal_table.cellWidget(row, dummy_ecu_window.SIG_KIND).currentData(), "running")
-        window.signal_table.cellWidget(row, dummy_ecu_window.SIG_KIND).setCurrentIndex(
-            window.signal_table.cellWidget(row, dummy_ecu_window.SIG_KIND).findData("constant"))
-        window.signal_table.item(row, dummy_ecu_window.SIG_LOW).setText("50")
+        self.assertEqual(window.signal_table.cellWidget(row, tables.SIG_KIND).currentData(), "running")
+        window.signal_table.cellWidget(row, tables.SIG_KIND).setCurrentIndex(
+            window.signal_table.cellWidget(row, tables.SIG_KIND).findData("constant"))
+        window.signal_table.item(row, tables.SIG_LOW).setText("50")
         self.assertEqual(window.ecu.signals.value("EngineData.Temperature"), 50.0)
         self.assertIn("Constant", window.generator_hint.text())
         window.tabs.setCurrentWidget(window.signals_tab)
         window._refresh_status()
-        self.assertEqual(window.signal_table.item(row, dummy_ecu_window.SIG_NOW).text(), "50")
-        window.signal_table.item(row, dummy_ecu_window.SIG_LOW).setText("warm")
+        self.assertEqual(window.signal_table.item(row, tables.SIG_NOW).text(), "50")
+        window.signal_table.item(row, tables.SIG_LOW).setText("warm")
         self.assertIn("Not applied", window.statusBar().currentMessage())
 
     def test_another_dbc(self):
@@ -196,7 +198,7 @@ class SimulationTabsTest(unittest.TestCase):
         self.assertEqual(window.signal_table.rowCount(), 2)
         self.assertEqual(window.ecu.signals.message_ids(), {0x400, 0x401})
         seats = self.row_of(window.message_table, "Seats")
-        window.message_table.item(seats, dummy_ecu_window.MSG_SEND).setCheckState(dummy_ecu_window.Qt.Unchecked)
+        window.message_table.item(seats, tables.MSG_SEND).setCheckState(Qt.Unchecked)
         self.assertEqual(window.ecu.signals.message_ids(), {0x400})
         self.assertIn({"message": "Seats", "on": False, "cycle_ms": 0}, window.ecu.config.messages)
         with patch.object(dummy_ecu_window.QMessageBox, "warning") as warned:
@@ -206,7 +208,7 @@ class SimulationTabsTest(unittest.TestCase):
         self.assertTrue(window.choose_dbc(""))
         self.assertEqual(window.ecu.signals.message_ids(), {0x300, 0x301})
         row = self.row_of(window.signal_table, "EngineData.Temperature")
-        self.assertEqual(window.signal_table.cellWidget(row, dummy_ecu_window.SIG_KIND).currentData(), "running",
+        self.assertEqual(window.signal_table.cellWidget(row, tables.SIG_KIND).currentData(), "running",
                          "the built-in database comes back with the ECU's usual traffic")
 
     def test_security_levels_service_rules_and_errors(self):
@@ -231,22 +233,22 @@ class SimulationTabsTest(unittest.TestCase):
     def test_faults_and_operation_cycles_from_the_data_tab(self):
         window = self.window
         row = self.row_of(window.dtc_table, "C10000")                          # U0100: 08, confirmed
-        window.dtc_table.item(row, dummy_ecu_window.DTC_FAULT).setCheckState(dummy_ecu_window.Qt.Checked)
+        window.dtc_table.item(row, tables.DTC_FAULT).setCheckState(Qt.Checked)
         self.assertEqual(window.ecu.dtcs[0xC10000], 0xAF)
-        self.assertEqual(window.dtc_table.item(row, dummy_ecu_window.DTC_NOW).text(), "AF")
-        self.assertIn("warningIndicatorRequested", window.dtc_table.item(row, dummy_ecu_window.DTC_NOW).toolTip())
-        window.dtc_table.item(row, dummy_ecu_window.DTC_FAULT).setCheckState(dummy_ecu_window.Qt.Unchecked)
+        self.assertEqual(window.dtc_table.item(row, tables.DTC_NOW).text(), "AF")
+        self.assertIn("warningIndicatorRequested", window.dtc_table.item(row, tables.DTC_NOW).toolTip())
+        window.dtc_table.item(row, tables.DTC_FAULT).setCheckState(Qt.Unchecked)
         window.new_operation_cycle()
         self.assertEqual(window.ecu.dtc_memory.cycle, 1)
-        self.assertEqual(window.dtc_table.item(row, dummy_ecu_window.DTC_NOW).text(), "2C")
+        self.assertEqual(window.dtc_table.item(row, tables.DTC_NOW).text(), "2C")
         window.confirm_cycles.setValue(4)
         self.assertEqual(window.ecu.dtc_memory.confirm_cycles, 4)
         window.snapshot_dids.setText("0101, F186")
         self.assertEqual(window.ecu.config.snapshot_dids, (0x0101, 0xF186))
         did = self.row_of(window.did_table, "0200")
-        self.assertEqual(window.did_table.item(did, dummy_ecu_window.DID_SESSIONS).text(), "extended")
-        self.assertEqual(window.did_table.item(did, dummy_ecu_window.DID_LEVEL).text(), "01")
-        window.did_table.item(did, dummy_ecu_window.DID_SESSIONS).setText("default, extended")
+        self.assertEqual(window.did_table.item(did, tables.DID_SESSIONS).text(), "extended")
+        self.assertEqual(window.did_table.item(did, tables.DID_LEVEL).text(), "01")
+        window.did_table.item(did, tables.DID_SESSIONS).setText("default, extended")
         entry = next(item for item in window.ecu.config.dids if item["did"] == 0x0200)
         self.assertEqual((entry["sessions"], entry["level"]), ([1, 3], 1))
         self.assertEqual(window.ecu.did_access[0x0200], ("", (1, 3), 1))
@@ -254,11 +256,11 @@ class SimulationTabsTest(unittest.TestCase):
         window.ecu.set_fault(0x010100, True)                                   # not through the box
         window._refresh_dtc_status()
         p0101 = self.row_of(window.dtc_table, "010100")
-        self.assertEqual(window.dtc_table.item(p0101, dummy_ecu_window.DTC_FAULT).checkState(),
-                         dummy_ecu_window.Qt.Checked, "the box follows the ECU")
+        self.assertEqual(window.dtc_table.item(p0101, tables.DTC_FAULT).checkState(),
+                         Qt.Checked, "the box follows the ECU")
         window.reset_ecu()
-        self.assertEqual(window.dtc_table.item(p0101, dummy_ecu_window.DTC_FAULT).checkState(),
-                         dummy_ecu_window.Qt.Unchecked)
+        self.assertEqual(window.dtc_table.item(p0101, tables.DTC_FAULT).checkState(),
+                         Qt.Unchecked)
 
     def test_bootloader_settings_and_a_profile_with_everything(self):
         window = self.window
@@ -269,7 +271,7 @@ class SimulationTabsTest(unittest.TestCase):
         window.error_spins["error_stall"].setValue(5)
         window.level_buttons.add_button.click()
         row = self.row_of(window.signal_table, "EcuStatus.Counter")
-        window.signal_table.item(row, dummy_ecu_window.SIG_HIGH).setText("15")
+        window.signal_table.item(row, tables.SIG_HIGH).setText("15")
         config = window.ecu.config
         self.assertEqual((config.image_crc, config.version_address, config.periodic_id), ("option", 0x20000, 0x5E8))
         path = Path(self.temp.name) / "everything.json"

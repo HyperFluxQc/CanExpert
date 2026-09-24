@@ -171,6 +171,7 @@ CanExpert/
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
+│   ├── main_tools.py, main_layouts.py, main_channels.py, main_session.py   # its parts (mixins)
 │   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox
 │   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
@@ -191,7 +192,8 @@ CanExpert/
 │   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
 │   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
 │   └── simulator/              # ecu.py (the simulated ECU), signals.py (its frames), dtc.py (its fault
-│                               #   memory), window.py (its window)
+│                               #   memory), window.py (its window; window_pages.py, window_tables.py,
+│                               #   fields.py, widgets.py)
 ├── Configurations/             # config_<name>.json, one per configuration
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
 ├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files (ODX/dummy_ecu.odx-d: its DTC texts)
