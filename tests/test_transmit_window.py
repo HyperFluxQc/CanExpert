@@ -109,8 +109,8 @@ class TransmitWindowTest(unittest.TestCase):
         self.window.tick()
         self.window.tick()                                  # not due yet: both ticks are in the same instant
         self.assertEqual(len(self.sent), 1)
-        time.sleep(0.03)                                    # past the 20 ms cycle
-        self.window.tick()
+        time.sleep(0.05)                                    # past the 20 ms cycle, even for a clock that
+        self.window.tick()                                  # moves in 15.6 ms steps (monotonic on Windows)
         self.assertGreaterEqual(len(self.sent), 2)
         self.window.stop_all()
         sent = len(self.sent)
