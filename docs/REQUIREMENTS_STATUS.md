@@ -43,6 +43,8 @@ in a file of its own.
   honoured by the requests that follow.
 - **Test modules** (*Tools → Test*): Python test cases against the live bus with setup/teardown, a
   verdict per step, Stop, and an HTML and a JUnit XML report of every run.
+- **TestExpert** (`test_expert.py`, TestExpert.exe): UDS conformance tests generated from a CDD, ODX or PDX
+  description, as Vector DiVa does, run against the ECU with HTML and JUnit reports; the Dummy ECU passes them.
 - **J1939** (*Tools → J1939*): address claims and NAMEs, DM1/DM2 faults with DM11/DM3 clear, any PGN
   requested or sent with the transport protocol (BAM, RTS/CTS); the Trace's J1939 view; J1939 DBC messages
   from any source address; `j1939` and `@on_pgn` in scripts; the Dummy ECU as a J1939 node.

@@ -35,6 +35,11 @@ def _name(element) -> str:
     return _text(element, "QUAL") or _text(element, "NAME/TUV")
 
 
+def _label(element) -> str:
+    """The displayed name, else the qualifier."""
+    return _text(element, "NAME/TUV") or _text(element, "QUAL")
+
+
 def _numbers(value: str | None) -> list[int] | None:
     """"(1,2,4)" -> [1, 2, 4]; None when absent."""
     if value is None:
@@ -67,7 +72,7 @@ class _Document:
                 spec = "session" if "session" in group_name else "security" if "secur" in group_name else ""
             for state in group.findall("STATE"):
                 index = len(order) + 1
-                states[index] = RawState(spec, _name(state) or f"State {index}")
+                states[index] = RawState(spec, _label(state) or f"State {index}")
                 order.append(index)
         return states, order
 
@@ -170,7 +175,7 @@ class _Document:
                 if trans is None and service_template is not None:
                     trans = _numbers(service_template.get("trans"))
                 pairs = list(zip(trans[0::2], trans[1::2])) if trans else []
-                raw.append(RawService(prefix, _name(instance), allowed, pairs,
+                raw.append(RawService(prefix, _label(instance), allowed, pairs,
                                       self.data_length(instance) if prefix[0] in (0x22, 0x2E) else None))
         return raw
 

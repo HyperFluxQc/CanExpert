@@ -20,7 +20,7 @@ BUILT_IN_DIDS = {0xF186: ("ActiveDiagnosticSession", 1), 0x0100: ("Uptime", 4)}
 def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
     config = config or EcuConfig()
     description = EcuDescription("Dummy ECU", "the Dummy ECU's settings")
-    extended_first = {EXTENDED_SESSION, PROGRAMMING_SESSION} if config.programming_needs_extended else set()
+    extended_first = {EXTENDED_SESSION} if config.programming_needs_extended else set()
     description.sessions = {
         DEFAULT_SESSION: Session(DEFAULT_SESSION, "Default session"),
         PROGRAMMING_SESSION: Session(PROGRAMMING_SESSION, "Programming session", extended_first),
@@ -67,4 +67,20 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
 
     for rid, name in ((config.erase_routine, "EraseMemory"), (config.check_routine, "CheckProgrammingDependencies")):
         description.routines[rid] = Routine(rid, name, {0x01: Access({PROGRAMMING_SESSION}, set(levels))})
+
+    # As a CDD describes them: WriteDataByIdentifier where a DID may be written, RoutineControl where a routine
+    # may run.
+    def merged(accesses):
+        accesses = list(accesses)
+        result = accesses[0] if accesses else Access()
+        for access in accesses[1:]:
+            result = result.merged(access)
+        return result
+    writes = [entry.write for entry in description.dids.values() if entry.write is not None]
+    if writes and 0x2E in description.services:
+        description.services[0x2E].access = merged(writes)
+    starts = [routine.sub_functions[0x01] for routine in description.routines.values()]
+    if starts and 0x31 in description.services:
+        description.services[0x31].access = merged(starts)
+        description.services[0x31].sub_functions = {0x01: merged(starts)}
     return description

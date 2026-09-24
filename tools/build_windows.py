@@ -1,9 +1,9 @@
-"""Build the Windows programs: dist/CanExpert (CanExpert.exe, DummyECU.exe) and dist/CanExpert-<version>-windows.zip.
+"""Build the Windows programs: dist/CanExpert (CanExpert.exe, DummyECU.exe, TestExpert.exe) and the zip of them.
 
     python -m pip install -r requirements-build.txt
     python tools/build_windows.py
 
-Runs PyInstaller with CanExpert.spec, checks that both programs start (--smoke-test, without showing a
+Runs PyInstaller with CanExpert.spec, checks that each program starts (--smoke-test, without showing a
 window), and zips the folder. Nothing is installed or signed.
 """
 import os
@@ -37,7 +37,7 @@ def main() -> int:
     PyInstaller.__main__.run([str(ROOT / "CanExpert.spec"), "--noconfirm", "--clean",
                               "--distpath", str(DIST), "--workpath", str(ROOT / "build")])
     folder = DIST / "CanExpert"
-    for name in ("CanExpert.exe", "DummyECU.exe"):
+    for name in ("CanExpert.exe", "DummyECU.exe", "TestExpert.exe"):
         smoke_test(folder / name)
     archive = DIST / f"CanExpert-{__version__}-windows.zip"
     archive.unlink(missing_ok=True)

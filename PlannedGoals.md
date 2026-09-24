@@ -529,6 +529,7 @@ section.
 
 | Item | Effort | Note |
 |---|---|---|
+| **TestExpert** — **DONE** | large | Not on the list at first: DiVa-like UDS conformance tests generated from a CDD, ODX or PDX file, a program of its own (`test_expert.py`), which found the Dummy ECU's NRC order and length deviations (fixed) |
 | **41. J1939** — **DONE** | large | TP.CM/BAM transport, PGN decode, address claim. Now: `canexpert/j1939/` (identifiers, NAME, DM1/DM2, BAM and RTS/CTS), the J1939 window (nodes, faults, requests), the Trace's J1939 view, J1939 DBCs matched by PGN, `j1939` / `@on_pgn` in scripts and test modules, and the Dummy ECU as a J1939 node |
 | **42. XCP / CCP with A2L** | very large | Measurement and calibration of internal ECU variables; what no DBC-based tool can do |
 | **43. Localization** | medium | Qt has the tooling; CANoe ships EN/DE/JP/CN |

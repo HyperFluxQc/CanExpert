@@ -1,4 +1,4 @@
-"""Draw the application icons: canexpert/resources/canexpert.{png,ico} and dummy_ecu.{png,ico}.
+"""Draw the application icons: canexpert/resources/canexpert, dummy_ecu and test_expert (.png, .ico).
 
     python tools/make_icons.py        (needs PyQt5 to draw and Pillow to write the .ico files)
 
@@ -18,6 +18,7 @@ SIZES = (16, 24, 32, 48, 64, 128, 256)
 SCHEMES = {
     "canexpert": ("#2563eb", "#1e3a8a", "#ffffff", "#93c5fd"),     # top, bottom, CAN-H, CAN-L
     "dummy_ecu": ("#f59e0b", "#b45309", "#ffffff", "#fde68a"),
+    "test_expert": ("#16a34a", "#14532d", "#ffffff", "#bbf7d0"),
 }
 
 

@@ -63,7 +63,7 @@ class PackagingTest(unittest.TestCase):
         self.assertRegex(canexpert.__version__, r"^\d+\.\d+\.\d+$")
 
     def test_both_programs_have_their_icon(self):
-        for name in ("canexpert", "dummy_ecu"):
+        for name in ("canexpert", "dummy_ecu", "test_expert"):
             icon = app_icon(name)
             self.assertFalse(icon.isNull(), name)
             self.assertIn(256, [size.width() for size in icon.availableSizes()], name)
@@ -73,11 +73,11 @@ class PackagingTest(unittest.TestCase):
 
     def test_the_spec_and_the_build_script_agree(self):
         spec = (ROOT / "CanExpert.spec").read_text(encoding="utf-8")
-        for name in ("CanExpert", "DummyECU"):
+        for name in ("CanExpert", "DummyECU", "TestExpert"):
             self.assertIn(f'"{name}"', spec)
         self.assertIn('contents_directory="."', spec, "the data folders sit beside the programs")
         build = (ROOT / "tools" / "build_windows.py").read_text(encoding="utf-8")
-        self.assertIn('"CanExpert.exe", "DummyECU.exe"', build)
+        self.assertIn('"CanExpert.exe", "DummyECU.exe", "TestExpert.exe"', build)
 
 
 class AnnotationsTest(unittest.TestCase):
