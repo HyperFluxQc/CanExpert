@@ -42,7 +42,14 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 pip install -r requirements.txt
 ```
 
-*(A standalone installer/executable build may be added in a future release.)*
+### Windows programs
+
+`python tools/build_windows.py` (after `pip install -r requirements-build.txt`) builds **CanExpert.exe** and
+**DummyECU.exe** into `dist/CanExpert`, with their icons and version, beside the `Configurations`,
+`Databases`, `DBC`, `ODX`, `examples` and `docs` folders they use. It checks that both start and zips the
+folder as `dist/CanExpert-<version>-windows.zip`: unzip it anywhere and run `CanExpert.exe`, no Python
+needed. The adapter drivers (Kvaser, Vector, IXXAT) are still installed separately. CI builds the same zip
+for every push to `main` and every `v*` tag (the *Windows programs* job's artifact).
 
 ## Usage
 
@@ -154,7 +161,8 @@ See [Requirements implementation](docs/REQUIREMENTS_STATUS.md#panel-scripts) for
 
 ```
 CanExpert/
-├── main.py                     # Start CAN Expert
+├── main.py                     # Start CAN Expert (--smoke-test: only check that it can start)
+├── CanExpert.spec              # PyInstaller: the Windows programs (tools/build_windows.py runs it)
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
@@ -232,7 +240,9 @@ Console options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--res
 python -B -m unittest discover -s tests -v
 ```
 
-The tests use python-can's virtual interface; no hardware is required.
+The tests use python-can's virtual interface; no hardware is required. CI runs them on Ubuntu (Python 3.10
+and 3.13) and Windows (3.10); a failure or a crash shows as an annotation on the pull request, with the
+test and its traceback.
 
 With the Kvaser driver installed, one more script drives the real main window against `dummy_ecu.py` over the two virtual channels — opening the adapter, node status, a panel, flashing, the CAN Logger, the activity scan, the ECU check and reconnecting. It uses a temporary configuration and temporary settings, so nothing of yours changes:
 

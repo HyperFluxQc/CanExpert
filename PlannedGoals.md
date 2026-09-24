@@ -471,12 +471,15 @@ used.
 Bus state, session, security, last error, TX queue depth. Errors currently land in a debug pane the
 user has to think to look at.
 
-### 37. Packaging: the .exe that is promised but absent
+### 37. Packaging: the .exe that is promised but absent — **DONE**
 *Effort: small*
 
-There is no `.spec`, no build script, no icon, no version resource and no installer in the repo (the
-`requirements-build.txt` that installed PyInstaller and Pillow for it was removed as misleading). For a tool colleagues will actually run, this
-matters more than most features above it.
+**Was:** no `.spec`, no build script, no icon, no version resource and no installer in the repo.
+
+**Now:** `CanExpert.spec` and `tools/build_windows.py` build CanExpert.exe and DummyECU.exe into one
+folder with their icons (`tools/make_icons.py`) and a version resource from `canexpert.__version__`,
+check that both start (`--smoke-test`) and zip it; CI builds the zip for `main` and `v*` tags and also
+runs the tests on Windows. No installer: the zip unpacks and runs as it is.
 
 ### 38. About box with real information
 *Effort: very small*

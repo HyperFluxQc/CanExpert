@@ -110,6 +110,17 @@ def _svg_icon(body, colours, stroke_width=1.8, sizes=(24, 32, 48, 64, 96)):
     return icon
 
 
+def app_icon(name: str = "canexpert") -> QIcon:
+    """The application icon (canexpert, or dummy_ecu), drawn by tools/make_icons.py."""
+    from canexpert.paths import RESOURCES_DIR
+    icon = QIcon()
+    for suffix in (".ico", ".png"):
+        path = RESOURCES_DIR / f"{name}{suffix}"
+        if path.exists():
+            icon.addFile(str(path))
+    return icon
+
+
 def toolbar_icon(name, dark=False):
     return _svg_icon(_PATHS[name], {QIcon.Normal: _COLORS[name][int(dark)],
                                     QIcon.Disabled: "#747b85" if dark else "#a7adb5"})

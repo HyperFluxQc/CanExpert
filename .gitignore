@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+# tools/build_windows.py
+build/
+dist/

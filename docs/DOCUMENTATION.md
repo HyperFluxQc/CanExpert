@@ -153,8 +153,11 @@ flowchart LR
 
 ```
 CanExpert/
-├── main.py                     # Start CAN Expert
-├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
+├── main.py                     # Start CAN Expert (--smoke-test: build the main window, check what it needs)
+├── dummy_ecu.py                # Start the Dummy ECU (window, or --console; --smoke-test)
+├── CanExpert.spec              # PyInstaller: CanExpert.exe and DummyECU.exe in one folder
+├── requirements-build.txt      # The requirements and PyInstaller
+├── tools/                      # build_windows.py, make_icons.py, ci_annotations.py
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
 │   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox
@@ -454,5 +457,13 @@ python -B -m unittest discover -s tests -v
 - `tests/test_ecu_data.py`: the Dummy ECU's DID and DTC tables, snapshot and extended data, forced NRCs, profiles, two ECUs on one channel, and its Data tab.
 - `tests/test_ecu_scan.py`: the sweep over 11-bit and 29-bit addressing, padded probes, session and identification probing, and the scan dialog.
 - `tests/test_flash_sequence.py`: the built-in flashing sequence - the order the services go out in, the block size from `maxNumberOfBlockLength` or the profile, a segment at a time, the steps a profile leaves out, a refused service, a dependency check reporting trouble, cancelling, the report file - the profile dialogs, and the whole thing flashing the simulated ECU over a virtual bus and reading back the version it reports.
+
+- `tests/test_packaging.py`: the version, both icons, the startup check a built program runs, the spec and the build script agreeing, and the CI annotations for failures and crashes.
+
+CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu with Python 3.10 and 3.13 and on Windows with 3.10, `fail-fast` off so one failure does not hide the others, with `PYTHONFAULTHANDLER=1` so a crash prints the Python stack it died in. On failure `tools/ci_annotations.py` turns each FAIL, ERROR and crash into an annotation, which the pull request shows - also to readers who are not signed in, unlike the job's log. Pushes to `main` and `v*` tags then build the Windows programs (the *Windows programs* job) and keep the zip as the run's artifact.
+
+## 12. Building the Windows programs
+
+`python tools/build_windows.py` runs PyInstaller with `CanExpert.spec`: two analyses (`main.py`, `dummy_ecu.py`), two windowed executables with their icons (`canexpert/resources`, drawn by `tools/make_icons.py`) and a version resource built from `canexpert.__version__`, and one `COLLECT` folder with `contents_directory="."`, so the data folders sit beside the programs where `canexpert/paths.py` looks for a frozen application's. python-can's interfaces are imported by name at run time, so they are hidden imports (`collect_submodules("can.interfaces")`). The script then runs both programs with `--smoke-test` offscreen - the main window built, and `startup_problems()` finding the manual, the icon, the example DBC through cantools, a python-can bus and odxtools - and zips the folder.
 
 No hardware is contacted by the suite above. `python tests/kvaser_end_to_end.py` is the hardware check: it starts `dummy_ecu.py` on Kvaser virtual channel 1 and drives the real main window on channel 0 through connecting, node status, a panel database, flashing (comparing the received image), the CAN Logger with live traffic, bit rate detection, the ECU check after Disconnect and reconnecting. It is not collected by `unittest discover` (its name does not start with `test`), and it uses a temporary Configurations folder and QSettings. Bus electrical conditions and real ECU timing still need an acceptance run on a vehicle.

@@ -1474,6 +1474,7 @@ def main(argv=None):
     parser.add_argument("--no-broadcast", action="store_true", help="do not send application frames")
     parser.add_argument("--dump", metavar="FILE", help="write the flashed image as S-records after flashing")
     parser.add_argument("--force", action="store_true", help="start even if another ECU already answers")
+    parser.add_argument("--smoke-test", action="store_true", help="only build the window, then exit")
     args = parser.parse_args(argv)
 
     config, connection = load_profile(args.config) if args.config else (None, {})
@@ -1487,7 +1488,7 @@ def main(argv=None):
                                                      ("bitrate", args.bitrate)) if value is not None})
     if not args.console:
         from canexpert.simulator.window import run_window
-        return run_window(config, overrides, connection)
+        return run_window(config, overrides, connection, smoke_test=args.smoke_test)
 
     config = replace(config or EcuConfig(), **overrides)
     connection = {**DEFAULT_CONNECTION, **connection}

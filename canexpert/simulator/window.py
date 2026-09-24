@@ -63,7 +63,7 @@ from canexpert.simulator.ecu import (
 from canexpert.simulator.signals import DEFAULT_GENERATORS, GENERATORS, SignalSimulation
 from canexpert.uds.client import NRC_NAMES
 from canexpert.uds.isotp import flow_control_frame
-from canexpert.ui_common import app_settings, toolbar_icon
+from canexpert.ui_common import app_icon, app_settings
 
 INTERFACES = ("kvaser", "virtual", "vector", "ixxat", "pcan", "socketcan")
 BITRATES = ("125000", "250000", "500000", "1000000")
@@ -256,7 +256,7 @@ class DummyEcuWindow(QMainWindow):
     def __init__(self, config: EcuConfig | None = None, connection: dict | None = None):
         super().__init__()
         self.setWindowTitle("Dummy ECU")
-        self.setWindowIcon(toolbar_icon("diagnostics"))
+        self.setWindowIcon(app_icon("dummy_ecu"))
         self.resize(1280, 820)
         self._lines = collections.deque()          # log lines from the ECU thread, shown by a timer
         self._bus = self._lock = self._stop = self._thread = None
@@ -1591,13 +1591,19 @@ class DummyEcuWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def run_window(config: EcuConfig | None = None, overrides: dict | None = None, connection: dict | None = None) -> int:
-    """Open the window with the last settings, a profile (config) and command-line overrides on top."""
+def run_window(config: EcuConfig | None = None, overrides: dict | None = None, connection: dict | None = None,
+               smoke_test: bool = False) -> int:
+    """Open the window with the last settings, a profile (config) and command-line overrides on top.
+    smoke_test: only build the window, as a check that everything it needs is there."""
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(app_icon("dummy_ecu"))
     saved_config, saved_connection = saved_profile()
     window = DummyEcuWindow(replace(config or saved_config, **(overrides or {})),
                             {**saved_connection, **(connection or {})})
+    if smoke_test:
+        print("startup ok")
+        return 0
     window.show()
     return app.exec_()
 

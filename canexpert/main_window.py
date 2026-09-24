@@ -70,7 +70,7 @@ from canexpert.trace_window import TraceWindow
 from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
-from canexpert.ui_common import DockTitleBar, app_settings, line_icon, toolbar_icon
+from canexpert.ui_common import DockTitleBar, app_icon, app_settings, line_icon, toolbar_icon
 from canexpert.workspace import (add_pane, create_workspace, drop_empty_floating, fit_on_screen, make_pane,
                                  pane_names, put_back, set_content)
 from canexpert.write_window import WriteWindow
@@ -1682,14 +1682,42 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"Active configuration: {config_name}")
                 break
                 
+def startup_problems() -> list[str]:
+    """What a built CAN Expert would miss at run time (--smoke-test): the manual, the icon, the example DBC
+    read by cantools, a python-can bus, odxtools. An empty list when all is there."""
+    from canexpert.paths import DBC_DIR, DOCS_DIR
+    problems = []
+    if not (DOCS_DIR / "USER_MANUAL.md").exists():
+        problems.append(f"no manual in {DOCS_DIR}")
+    if app_icon().isNull():
+        problems.append("no application icon")
+    try:
+        import cantools
+        if (DBC_DIR / "dummy_ecu.dbc").exists():
+            cantools.database.load_file(str(DBC_DIR / "dummy_ecu.dbc"))
+    except Exception as exc:
+        problems.append(f"cantools: {exc}")
+    try:
+        can.Bus(interface="virtual", channel="smoke-test").shutdown()
+    except Exception as exc:
+        problems.append(f"python-can: {exc}")
+    try:
+        __import__("odxtools")                  # imported only to see that it is there
+    except Exception as exc:
+        problems.append(f"odxtools: {exc}")
+    return problems
+
+
 def main():
-    """Start CAN Expert; with --smoke-test only build the main window."""
+    """Start CAN Expert; with --smoke-test only build the main window and check what it needs (exit 1: missing)."""
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(app_icon())               # every window of the application, dialogs included
     window = MainWindow()
     if "--smoke-test" in sys.argv:
-        print("startup ok")
-        return 0
+        problems = startup_problems()
+        print("\n".join(problems) or "startup ok")
+        return 1 if problems else 0
     window.show()
     return app.exec_()
 
