@@ -17,6 +17,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions each ECU accepts and its VIN, part and serial numbers and versions - beside a running measurement - with a configuration made from any ECU found
 - **One measurement clock**: the Trace, the Logger, the Write window and the UDS Console show each frame's own time, absolute or relative to the start of the measurement; the Trace also filters by direction
 - **Write window** for the script's output and its variables; scripts react to keys, error frames and the bus state
+- **J1939**: the Trace names 29-bit frames by parameter group, source and destination and joins BAM and RTS/CTS messages; a **J1939 window** lists the nodes and their NAMEs, each node's DM1 faults (DM2, DM11/DM3 clear) and requests or sends any PGN; J1939 DBC messages decode from any source address; scripts and test modules use `j1939.request()` / `j1939.send()` and `@on_pgn`; the Dummy ECU can be a J1939 node (address claim, DM1, SOFT/VI/CI, `DBC/j1939_demo.dbc`)
 - **Test modules**: test cases in Python against the live bus (`@testcase`, `setup`/`teardown`, `t.check`, `t.require`, `t.expect_nrc`, `t.wait_for_frame`, `t.wait_for_signal` and the UDS functions), with a verdict per step as it runs, Stop, and an HTML and a JUnit XML report of every run; an example module checks the Dummy ECU
 - **Status bar** with the bus state, the diagnostic session and security state read off the ECU's answers, and the last error; **keyboard shortcuts** (F9 connect, Ctrl+1...7 tool windows, F1 help at the window you are in) and an **About** box listing every library and adapter driver version
 - **Panel pages as windows**: every page of a database is a workspace window of its own that can be tabbed, split and floated, fitted to its window or zoomed
@@ -183,6 +184,7 @@ CanExpert/
 │   ├── simulation_window.py    # Simulated nodes: a database's messages sent as those ECUs would
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service, ODX services, the fault memory
 │   ├── testing/                # Test modules: runner, HTML/JUnit reports, the Test window
+│   ├── j1939/, j1939_window.py # J1939: identifiers, NAME, DM1/DM2, transport protocol; the J1939 window
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
 │   ├── workspace.py            # The workspace: the docking system the windows live in

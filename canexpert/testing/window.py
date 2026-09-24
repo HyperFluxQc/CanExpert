@@ -27,6 +27,8 @@ from canexpert.can_bus import ReceiveMailbox
 from canexpert.clock import absolute_text
 from canexpert.config import uds_transport
 from canexpert.paths import TEST_MODULES_DIR
+from canexpert.j1939.transport import J1939Link
+from canexpert.j1939_window import address_setting
 from canexpert.testing.report import COLOURS, save_reports
 from canexpert.testing.runner import PASSED, FrameMailbox, Runner, load_module, uds_names
 from canexpert.uds.client import make_request
@@ -181,7 +183,8 @@ class TestWindow(QWidget):
         transport = uds_transport(config)
         self.runner = Runner(module, make_request(requests, transport), frames.messages, requests.send, self.decode,
                              transport["timeout"], lambda kind, data: self.run_event.emit(kind, data),
-                             config.get("name", ""), self.marker_requested.emit)
+                             config.get("name", ""), self.marker_requested.emit,
+                             J1939Link(requests, address_setting(self.settings)))
         for name in names:
             item = self._items[name]
             item.takeChildren()

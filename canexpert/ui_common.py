@@ -72,6 +72,8 @@ _PATHS = {
              '<path d="m14 17 1-3 4.5-4.5 2 2L17 16l-3 1z"/>',
     "tests": '<rect x="4" y="3" width="16" height="18" rx="2"/>'
              '<path d="m7.5 8.5 1.5 1.5 3-3M14 9h3M7.5 15.5 9 17l3-3M14 16h3"/>',
+    "j1939": '<rect x="2" y="6" width="12" height="10" rx="1"/><path d="M14 10h4l3 3.5V16h-7z"/>'
+             '<circle cx="6.5" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/><path d="M5 11h6"/>',
     "sysvars": '<path d="M7 5c-2 0-2 2-2 3.5S4 11 3 12c1 1 2 1.5 2 3.5S5 19 7 19"/>'
                '<path d="M17 5c2 0 2 2 2 3.5s1 2.5 2 3.5c-1 1-2 1.5-2 3.5S19 19 17 19"/>'
                '<path d="M9 9l6 6M15 9l-6 6"/>',
@@ -90,6 +92,7 @@ _COLORS = {
     "statistics": ("#0e7490", "#67e8f9"),
     "write": ("#4b5563", "#d1d5db"),
     "tests": ("#047857", "#6ee7b7"),
+    "j1939": ("#9a3412", "#fdba74"),
     "sysvars": ("#9d174d", "#f9a8d4"),
 }
 
@@ -174,6 +177,8 @@ TOOL_ICONS = {
               '<circle cx="14" cy="7" r="1.2" fill="currentColor"/>',
     "transport": '<path d="M4 7h10a3 3 0 0 1 0 6H8a3 3 0 0 0 0 6h12"/><path d="M17 4l3 3-3 3"/>'
                  '<path d="M7 16l-3 3 3 3"/>',
+    "j1939": '<rect x="2" y="6" width="12" height="10" rx="1"/><path d="M14 10h4l3 3.5V16h-7z"/>'
+             '<circle cx="6.5" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/>',
 }
 
 

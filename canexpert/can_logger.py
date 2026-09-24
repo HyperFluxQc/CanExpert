@@ -35,6 +35,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from canexpert.j1939.pgn import dbc_pgn, lookup
 from canexpert.mdf4 import write_mdf4
 from canexpert.paths import DBC_DIR
 from canexpert.ui_common import SplitterPanel, ToolButtonsMixin, enable_maximize, is_dark_theme
@@ -304,6 +305,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         self._units = {}
         self._items = {}            # "Message.Signal" -> QTreeWidgetItem
         self._decoders = {}         # frame id -> (message, [(signal name, display name)])
+        self._pgn_decoders = {}     # J1939 PGN -> the same, for a J1939 message from any source address
         self._plotted = []          # checked signals, in the order they were ticked
         self._colors = {}           # "Message.Signal" -> palette index while plotted
         self._plots = {}            # "Message.Signal" -> (PlotItem, curve)
@@ -535,6 +537,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         self._items.clear()
         self._units.clear()
         self._decoders.clear()
+        self._pgn_decoders.clear()
         self.clear_data()
         self.signal_tree.blockSignals(True)
         self.signal_tree.clear()
@@ -554,6 +557,8 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
                 self._units[display_name] = sig.unit or ""
                 names.append((sig.name, display_name))
             self._decoders.setdefault(msg.frame_id, (msg, names))   # the first database wins
+            if dbc_pgn(msg) is not None:
+                self._pgn_decoders.setdefault(dbc_pgn(msg), (msg, names))
         self.signal_tree.blockSignals(False)
         self._apply_filter()
         self._rebuild_strips()
@@ -813,7 +818,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         timestamp is the adapter's (or the recorded one when a file is replayed); without it the frame is
         timed as it arrives here, which includes the delay through the GUI thread.
         """
-        decoder = self._decoders.get(arb_id)
+        decoder = lookup(self._decoders, self._pgn_decoders, arb_id)
         if decoder is None:
             return
         message, names = decoder

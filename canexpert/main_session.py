@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QInputDialog, QMessageBox
 from canexpert.can_bus import CanWorker, ReceiveMailbox, channel_key
 from canexpert.channel_setup import load_setup, open_configured
 from canexpert.config import uds_transport, validate_config
+from canexpert.j1939_window import address_setting
 from canexpert.panel.database import load_application_database
 from canexpert.panel.runtime import ScriptRuntime
 from canexpert.transport_settings import apply_transport, load_transport
@@ -72,6 +73,7 @@ class Session:
                                     if g == self.session_generation else None)
             runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
             runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
+            runtime.j1939.address = address_setting(self._settings)        # the J1939 window's
             runtime.marker_requested.connect(lambda when, text, g=generation: self.add_marker(when, text)
                                              if g == self.session_generation else None)   # api.marker()
             runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)

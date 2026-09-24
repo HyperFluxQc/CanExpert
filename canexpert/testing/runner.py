@@ -35,6 +35,7 @@ from pathlib import Path
 import can
 
 from canexpert.can_bus import ReceiveMailbox
+from canexpert.j1939.transport import J1939Link
 from canexpert.uds.client import UdsFunctions, UdsResult
 
 PASS, FAIL, INFO = "pass", "fail", "info"
@@ -147,10 +148,21 @@ def load_module(path, extra_names=None) -> TestModule:
 
 
 def uds_names() -> dict:
-    """The UDS function names a module may use, with placeholders, so it can be read without a bus."""
+    """The UDS function names - and j1939 - a module may use, with placeholders, so it can be read without a
+    bus."""
     def offline(*_args, **_kwargs):
         raise RuntimeError("No measurement is running: connect first")
-    return UdsFunctions(offline).namespace()
+    return {**UdsFunctions(offline).namespace(), "j1939": J1939Link(_Offline())}
+
+
+class _Offline:
+    """The bus of a module read without a measurement."""
+
+    def send(self, _message):
+        raise RuntimeError("No measurement is running: connect first")
+
+    def recv(self, timeout=None):
+        raise RuntimeError("No measurement is running: connect first")
 
 
 class FrameMailbox(ReceiveMailbox):
@@ -311,7 +323,7 @@ class Runner:
     """
 
     def __init__(self, module: TestModule, request=None, frames=None, send=None, decode=None, timeout=None,
-                 on_event=None, configuration="", marker=None):
+                 on_event=None, configuration="", marker=None, j1939=None):
         self.module = module
         self.frames, self.configuration = frames, configuration
         self.send = send or _not_connected
@@ -322,6 +334,8 @@ class Runner:
         if request is not None:
             functions = UdsFunctions(request, None, timeout)
             module.namespace.update(functions.namespace())      # the module's calls go to the bus now
+        if j1939 is not None:
+            module.namespace["j1939"] = j1939                   # a J1939Link on the run's mailbox
 
     def stop(self):
         self.stop_event.set()

@@ -173,6 +173,10 @@ CAN Logger's own **Load DBC...** button adds to the same list.
 
 Panels keep their own DBC (set in the Form Designer), so a panel is self-contained.
 
+A message a J1939 DBC defines as a parameter group (`VFrameFormat` J1939PG, as `DBC/j1939_demo.dbc` does)
+matches every frame of its PGN, whichever node sends it — the source address in the DBC's identifier is
+only a placeholder.
+
 ## Trace window
 
 **Tools → Trace...** shows every frame on the bus while you are connected, newest at the bottom.
@@ -201,6 +205,13 @@ single row: the direction, the identifier, the service name (`ReadDataByIdentifi
 the length, and the whole payload. Flow control frames disappear, because they carry nothing. The
 identifiers it follows are the request and response identifiers of the configuration you connected with,
 so a message that spans twenty frames reads as one line, the way CANoe's transport view shows it.
+
+**J1939** (the truck button) reads the 29-bit frames the J1939 way: each is named by its parameter group,
+its source and its destination — `EEC1 (PGN 61444) 00 → Global` — also where no symbol database knows it,
+and the filter takes parameter group names (`CCVS`, `TP.DT`; a name that is also a hexadecimal number, such
+as `EEC1`, is read as an identifier). With **Transport** as well, a message the J1939 transport protocol
+carries in several frames — a BAM to everyone, or an RTS/CTS session with one node — is one row, opening into
+its TP.CM and TP.DT frames.
 
 ## Statistics
 
@@ -364,6 +375,13 @@ def temperature(api, data, identifier):
 @on_response_event(0x22)                   # what ROE set up: 62 F1 90 ... when the DID changed
 def vin_changed(api, response):
     api.ui.set_value("vin", response[3:].decode())
+
+@on_pgn(0xFECA)                            # J1939 DM1 from any node, whole even when it came in a BAM
+def faults(api, message):                  # message.pgn, .source, .destination, .data
+    api.ui.set_value("faults", len(message.data))
+
+software = j1939.request(0xFEDA, 0x00)     # J1939: request SOFT from node 00; None when nothing answers
+j1939.send(0xEF00, [1, 2, 3], 0x00)        # send a PGN; more than 8 bytes go as a BAM or RTS/CTS session
 ```
 
 Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
@@ -581,11 +599,37 @@ scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` of
 | `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
 | `t.send(0x200, [1, 2])` | Send a frame |
 | `t.marker("before the reset")` | A marker in the measurement (Trace, Logger, recording) and a line in the report |
+| `j1939.request(0xFEEC, 0x00)`, `j1939.send(pgn, data, 0x00)` | J1939, as in panel scripts: the answer (`.data`, `.source`, `.acknowledgment`) or `None` |
 | `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
 | `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
 
 A wait takes the frames that arrive after it starts — or after the test's last `t.send()`, so an answer
 that comes back before the wait begins is not missed.
+
+## J1939
+
+**Tools → J1939** (**Ctrl+9**) is for SAE J1939 networks — trucks, buses, agricultural and construction
+machines — where every node has an address it claims with its 64-bit NAME, and data travels in parameter
+groups (PGNs) on 29-bit identifiers. It watches the measurement's frames and takes part itself from **CAN
+Expert's address** (F9, the off-board diagnostic tool, by default; remembered, and used by scripts and test
+modules too). Connect first.
+
+- **Network** lists the nodes that claimed an address: the address, what the NAME says (function —
+  *Engine*, *Transmission*... —, manufacturer, identity, industry group) and when. **Request address
+  claims** asks every node to claim again, so a node that was already there shows up.
+- **Faults (DM1)** lists each node's active faults as it sends them in DM1: the SPN (the parameter, with a
+  name for common ones), the FMI (what is wrong with it), the occurrence count and the lamps on (malfunction
+  indicator, red stop, amber warning, protect). Pick a node to **Read previously active (DM2)**, **Clear
+  active (DM11)** or **Clear previously active (DM3)**; the node's acknowledgment is written in the log.
+- **Request and send** requests any PGN from a node (or from everyone, `FF`) and shows the answer — the
+  software identification, the VIN or the component identification as text, faults as SPN/FMI, anything a
+  symbol database describes as signals — or the node's refusal (NACK). **Send** puts a PGN with your data on
+  the bus.
+
+Messages longer than eight bytes use the transport protocol by themselves: a request answered with a BAM or
+with an RTS/CTS session (CAN Expert answers the RTS with CTS and acknowledges the end), and data you send to
+one node goes in an RTS/CTS session, to everyone in a BAM. The Trace window's **J1939** button shows the same
+traffic by parameter group, and the CAN Logger plots the signals of a J1939 DBC from any source address.
 
 ## Firmware flashing
 
@@ -768,6 +812,17 @@ image — as the check routine's option record, which the built-in flashing sequ
 in the image's last four bytes — and the software version can be read from the image itself (the demo
 image has its name at `00020000`).
 
+### J1939
+
+On **Addressing**, **A J1939 node as well** makes the dummy ECU a J1939 node beside its UDS side: it claims its
+**Source address** (00, engine #1, by default) with its **NAME**, and gives it up to a node claiming it with
+a lower NAME (it then sends Cannot Claim Address and stays quiet). It sends DM1 every second with the active
+faults of its fault memory — P0101 is SPN 132 FMI 2, U0100 SPN 639 FMI 9 —, in a BAM when there are several,
+lighting the amber lamp while a fault is active. It answers requests for Address Claimed, DM1, DM2, SOFT
+(its software version), VI (its VIN), CI and the PGNs it broadcasts, clears its faults on DM11 and DM3, and
+sends a NACK for anything else asked of it alone. Choose `DBC/j1939_demo.dbc` on the Signals tab and it
+sends EEC1, CCVS and ET1 from its address, with an engine speed, a vehicle speed and temperatures that move.
+
 ### Errors on purpose
 
 The **Errors** tab gives each response a chance of going wrong: refused (NRC `0x21` busyRepeatRequest by
@@ -784,7 +839,7 @@ them break security access and flashing.
 | Key | Does |
 |---|---|
 | **F9** / **Shift+F9** | Connect / Disconnect |
-| **Ctrl+1** ... **Ctrl+8** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test — the toolbar's order; pressed again, the window closes |
+| **Ctrl+1** ... **Ctrl+9** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test, J1939 — the toolbar's order; pressed again, the window closes |
 | **Ctrl+E** | Form Designer |
 | **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
 | **Ctrl+O** | Replay a recorded file |
@@ -804,7 +859,7 @@ do not reach the script.
 |---|---|
 | `Configurations/` | `config_<name>.json`, one per configuration |
 | `Databases/` | Panels: `family_YYYY-MM-DD.xml` and `family_YYYY-MM-DD_script.py` |
-| `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings |
+| `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings (`j1939_demo.dbc`: an engine's J1939 parameter groups) |
 | `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts) |
 | `examples/` | A runnable panel and script, and demo firmware images |
 | `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |

@@ -73,16 +73,16 @@ PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> 
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
-                  "write", "tests", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
+                  "write", "tests", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
 SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
              "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
-             "tests": "Ctrl+8", "sysvars": "Ctrl+9", "designer": "Ctrl+E"}
+             "tests": "Ctrl+8", "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
 # The manual's section for each tool window, for F1.
 HELP_SECTIONS = {"trace": "Trace window", "logger": "CAN Logger", "data": "Data window", "statistics": "Statistics",
                  "transmit": "Transmit window", "console": "UDS Console", "write": "Writing panel scripts",
-                 "tests": "Test modules", "sysvars": "Writing panel scripts"}
+                 "tests": "Test modules", "j1939": "J1939", "sysvars": "Writing panel scripts"}
 
 
 def tool_panes() -> tuple:
@@ -214,6 +214,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             ("write", "Write", "What the panel script writes, and its variables as it runs", self.open_write),
             ("tests", "Test", "Run a test module's test cases against the bus, with a verdict per step and an HTML "
              "and JUnit report", self.open_tests),
+            ("j1939", "J1939", "J1939 networks: the nodes and their NAMEs, their faults (DM1, DM2, clear), and any "
+             "PGN requested or sent", self.open_j1939),
             ("sysvars", "System Variables", "Values shared by the script, the windows and you", self.open_sysvars),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
             ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",

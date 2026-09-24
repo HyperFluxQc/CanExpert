@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
 from canexpert.can_logger import CANLoggerWindow
 from canexpert.config import uds_transport
 from canexpert.data_window import DataWindow
+from canexpert.j1939_window import J1939Window
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog
@@ -115,6 +116,16 @@ class ToolWindows:
             time_text=lambda t: self.clock.text(t, self.time_display)))
         if created:
             window.marker_requested.connect(self.add_marker)          # t.marker() in a test module
+        return window
+
+    def open_j1939(self):
+        """J1939 window, with the address claims and faults of the frames already recorded."""
+        window, created = self.open_tool("j1939", "J1939", lambda: J1939Window(
+            self, self.active_session, self.symbols, self._settings,
+            time_text=lambda t: self.clock.text(t, self.time_display)))
+        if created:
+            for frame in list(self.frame_history):
+                window.on_frame(*frame)
         return window
 
     def open_sysvars(self):

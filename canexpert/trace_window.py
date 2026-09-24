@@ -3,7 +3,8 @@ Trace window: every frame of the measurement as a row, decoded with the symbol d
 
 Columns are time, direction, identifier, symbolic message name, length and data; a row that a DBC
 decodes can be expanded to its signals. Markers inserted during the measurement are rows of their own, in
-time order among the frames, whatever the filter. The view is fed from a buffer on a timer, because a busy bus
+time order among the frames, whatever the filter. With J1939 on, a 29-bit frame is named by its parameter
+group, source and destination, and the transport view joins the transport protocol's packets into messages. The view is fed from a buffer on a timer, because a busy bus
 delivers far more frames than a widget can repaint, and keeps at most MAX_ROWS frames.
 """
 from __future__ import annotations
@@ -28,6 +29,8 @@ from PyQt5.QtWidgets import (
 
 from canexpert.clock import absolute_text
 from canexpert.frame_filter import DIRECTIONS, FILTER_MODES, FrameFilter, parse_filter
+from canexpert.j1939.pgn import describe, make_id, pgn_name, parse_id
+from canexpert.j1939.transport import J1939Assembler
 from canexpert.uds.observer import assemble
 from canexpert.ui_common import ToolButtonsMixin, enable_maximize, is_dark_theme
 
@@ -91,6 +94,10 @@ class TraceWindow(ToolButtonsMixin, QDialog):
                                                "frames carry, not the frames themselves", checkable=True,
                                                toggled=lambda _: self.rebuild())
         bar.addWidget(self.transport_btn)
+        self.j1939_btn = self._tool_button("j1939", "J1939: name 29-bit frames by parameter group, source and "
+                                           "destination; the transport view joins BAM and RTS/CTS packets",
+                                           checkable=True, toggled=lambda _: self.rebuild())
+        bar.addWidget(self.j1939_btn)
         bar.addWidget(self._separator())
         bar.addWidget(QLabel("Time:"))
         self.time_combo = QComboBox()
@@ -239,18 +246,40 @@ class TraceWindow(ToolButtonsMixin, QDialog):
         diagnostic = [frame for frame in self.frames if frame[2] in self.diagnostic_ids]
         return assemble(diagnostic, self.address_byte)
 
+    def j1939_messages(self):
+        """The J1939 transport protocol messages (BAM, RTS/CTS) the recorded frames carry."""
+        assembler = J1939Assembler()
+        found = []
+        for timestamp, direction, can_id, data, extended in self.frames:
+            if not extended:
+                continue
+            for message in assembler.push(timestamp, can_id, data):
+                if message.transport:
+                    message.direction = message.direction or direction
+                    found.append(message)
+        return found + assembler.finish()
+
     def _rebuild_transport(self):
-        """A row per diagnostic message, opening into the frames that carried it."""
-        if not self.diagnostic_ids:
+        """A row per diagnostic message - and with J1939 on, per J1939 transport message - opening into the
+        frames that carried it."""
+        j1939 = self.j1939_btn.isChecked()
+        if not self.diagnostic_ids and not j1939:
             item = QTreeWidgetItem(["", "", "", "No diagnostic identifiers yet - connect, or set the "
                                     "request and response IDs in the configuration", "", ""])
             self.tree.addTopLevelItem(item)
             return
+        rows = [(message.start, message) for message in (self.transport_messages() if self.diagnostic_ids else [])]
+        if j1939:
+            rows += [(message.timestamp, message) for message in self.j1939_messages()]
+        rows.sort(key=lambda row: row[0])
         previous = None
         markers = sorted(self.markers)
-        for message in self.transport_messages():
-            while markers and markers[0][0] <= message.start:
+        for start, message in rows:
+            while markers and markers[0][0] <= start:
                 self._append_marker(markers.pop(0), previous)
+            if not hasattr(message, "payload"):                 # a J1939 message
+                previous = self._append_j1939(message, previous) or previous
+                continue
             if not self._passes((message.start, message.direction, message.can_id, message.payload,
                                  message.extended)):
                 continue
@@ -285,7 +314,12 @@ class TraceWindow(ToolButtonsMixin, QDialog):
     def _passes(self, frame) -> bool:
         ranges, names = self._filter
         rule = FrameFilter(ranges, names, self.filter_mode.currentText(), self.direction_combo.currentText())
-        return rule.empty or rule.passes(frame[1], frame[2], self._name(frame[2]))
+        if rule.empty:
+            return True
+        name = self._name(frame[2])
+        if self.j1939_btn.isChecked() and frame[4]:          # a filter by parameter group name: "DM1", "EEC1"
+            name = name or pgn_name(parse_id(frame[2]).pgn)
+        return rule.passes(frame[1], frame[2], name)
 
     # --- rows ---------------------------------------------------------------------------
 
@@ -306,9 +340,14 @@ class TraceWindow(ToolButtonsMixin, QDialog):
     def _append_row(self, frame, previous):
         timestamp, direction, can_id, data, extended = frame
         name = self._name(can_id)
+        label = name
+        if extended and self.j1939_btn.isChecked():
+            # "EEC1 (PGN 61444) 00 → Global"; a DBC's own name for the message goes first when it differs.
+            j1939 = describe(can_id)
+            label = j1939 if not name or j1939.startswith(name + " ") else f"{name}: {j1939}"
         item = QTreeWidgetItem([self._time_text(frame, previous), direction,
                                 f"{can_id:08X}x" if extended else f"{can_id:03X}",
-                                name, str(len(data)), data.hex(" ").upper()])
+                                label, str(len(data)), data.hex(" ").upper()])
         item.setData(COL_TIME, Qt.UserRole, frame)
         for column in (COL_ID, COL_DATA):
             item.setTextAlignment(column, Qt.AlignLeft | Qt.AlignVCenter)
@@ -319,6 +358,23 @@ class TraceWindow(ToolButtonsMixin, QDialog):
             # more than the rows a user ever expands.
             item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
         self.tree.addTopLevelItem(item)
+
+    def _append_j1939(self, message, previous):
+        """A J1939 transport message's row, opening into its TP.CM and TP.DT frames; the frame tuple it stands
+        for, or None when the filter hides it."""
+        can_id = make_id(message.pgn, message.source, message.destination, message.priority)
+        frame = (message.timestamp, message.direction, can_id, message.data, True)
+        if not self._passes(frame):
+            return None
+        item = QTreeWidgetItem([self._time_text(frame, previous), message.direction, f"{can_id:08X}x",
+                                message.summary(), str(len(message.data)), message.data.hex(" ").upper()])
+        if not message.complete:
+            item.setForeground(COL_NAME, QColor("#c0392b"))
+        for timestamp, label, data in message.frames:
+            item.addChild(QTreeWidgetItem([f"{timestamp - message.timestamp:+.6f}", "", "", label,
+                                           str(len(data)), bytes(data).hex(" ").upper()]))
+        self.tree.addTopLevelItem(item)
+        return frame
 
     def _append_marker(self, marker, previous):
         """A marker's row: its time, and its comment where a frame has its name, highlighted."""
@@ -356,7 +412,8 @@ class TraceWindow(ToolButtonsMixin, QDialog):
         markers = f", {len(self.markers)} marker{'s' if len(self.markers) != 1 else ''}" if self.markers else ""
         shown, total = self.tree.topLevelItemCount() - len(self.markers), len(self.frames)
         if self.transport_btn.isChecked():
-            messages = self.transport_messages()
+            messages = (self.transport_messages() if self.diagnostic_ids else []) + \
+                (self.j1939_messages() if self.j1939_btn.isChecked() else [])
             unfinished = sum(1 for message in messages if not message.complete)
             self.status.setText(f"{shown} of {len(messages)} diagnostic message(s) from {total} frame(s)"
                                 + (f", {unfinished} unfinished" if unfinished else "") + markers)

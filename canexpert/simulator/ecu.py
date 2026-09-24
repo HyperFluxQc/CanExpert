@@ -53,7 +53,8 @@ from typing import NamedTuple
 import can
 
 from canexpert.simulator.dtc import DtcMemory
-from canexpert.simulator.signals import DEFAULT_GENERATORS, SignalSimulation, check_generators
+from canexpert.simulator.j1939_node import DEFAULT_NAME, J1939Node
+from canexpert.simulator.signals import DEFAULT_GENERATORS, J1939_DEMO_GENERATORS, SignalSimulation, check_generators
 from canexpert.uds.isotp import (FC_OVERFLOW, FC_WAIT, N_CR_TIMEOUT, IsoTpError, flow_control_frame, isotp_send,
                                  parse_first_frame)
 from canexpert.uds.seed_key import SeedKeyError, generate_key, load_library
@@ -169,6 +170,10 @@ class EcuConfig:
     messages: list = field(default_factory=list)          # [{"message": "EngineData", "on": True, "cycle_ms": 0}]
     generators: list = field(default_factory=lambda: [dict(item) for item in DEFAULT_GENERATORS])
     dump_path: str | None = None       # the flashed image is written here as S-records
+    # J1939 (j1939_node.py): address claim, DM1, answers to requests, its address in 29-bit application frames
+    j1939: bool = False
+    j1939_address: int = 0x00          # the source address it claims (0x00: engine #1)
+    j1939_name: int = DEFAULT_NAME     # the 64-bit NAME it claims it with
     # Data (restored at power-on and on ECUReset of the tables, not of what WriteDataByIdentifier wrote)
     dids: list = field(default_factory=lambda: [dict(item) for item in DEFAULT_DIDS])
     dtcs: list = field(default_factory=lambda: [dict(item) for item in DEFAULT_DTCS])
@@ -294,6 +299,10 @@ def check_config(config: EcuConfig) -> None:
     for name in ERROR_KINDS:
         if not 0 <= int(getattr(config, name)) <= 100:
             raise ValueError(f"{name}: a percentage, 0-100")
+    if not 0 <= int(config.j1939_address) <= 0xFD:
+        raise ValueError("J1939 address: 00-FD (FE is the null address, FF everyone)")
+    if not 0 <= int(config.j1939_name) < 1 << 64:
+        raise ValueError("J1939 NAME: 64 bits")
 
 
 def config_from_dict(values: dict) -> EcuConfig:
@@ -414,6 +423,7 @@ class DummyEcu:
         self._started = time.monotonic()
         self._random = random.Random()
         self._libraries = {}    # seed & key DLLs, loaded once
+        self.j1939 = J1939Node(self)
         self.power_on()
 
     def power_on(self):
@@ -427,6 +437,7 @@ class DummyEcu:
         self.signals = SignalSimulation(self._inputs)
         self.load_signals()
         self.load_data()
+        self.j1939.reset()
 
     def _inputs(self) -> dict:
         return {"running": self.running, "logging": self.logging, "session": self.state.session}
@@ -453,8 +464,11 @@ class DummyEcu:
                 self.log(f"{error}; the application frames stay as they were")
                 if self.signals.source is None:
                     self.signals.load("")
+        # The J1939 demo DBC's signals move unless the settings say otherwise (settings from before it had none).
+        listed = {str(item.get("signal")) for item in self.config.generators}
+        demo = [dict(item) for item in J1939_DEMO_GENERATORS if item["signal"] not in listed]
         try:
-            self.signals.configure(self.config.generators, self.config.messages)
+            self.signals.configure(list(self.config.generators) + demo, self.config.messages)
         except ValueError as exc:
             error = error or str(exc)
             self.log(f"Generators: {exc}")
@@ -533,6 +547,8 @@ class DummyEcu:
             return
         diagnostic = message.arbitration_id in (self.config.request_id, self.config.functional_id)
         if not diagnostic or bool(message.is_extended_id) != self.config.extended_ids:
+            if message.is_extended_id and self.j1939.on_frame(message):
+                return
             self._application_frame(message)
             return
         functional = message.arbitration_id == self.config.functional_id
@@ -1367,9 +1383,12 @@ class DummyEcu:
         """What the ECU does by itself: application frames, periodic data, event responses, the operation
         cycle timer and the S3 timeout."""
         now = time.monotonic() if now is None else now
+        self.j1939.tick(now)                        # its address is claimed before its frames go out
         if self.config.broadcast_interval > 0 and self.application_running(now):
             for frame in self.signals.due_frames(self.config.broadcast_interval, now):
-                self.bus.send(frame)
+                frame = self.j1939.application_frame(frame) if self.config.j1939 else frame
+                if frame is not None:               # None: a J1939 node without an address stays quiet
+                    self.bus.send(frame)
         self._send_periodic(now)
         self._fire_events(now)
         if 0 < self.config.operation_cycle_seconds <= now - self._cycle_started:
@@ -1406,6 +1425,9 @@ def application_ids(config: EcuConfig) -> set[int]:
         signals.configure(config.generators, config.messages)
     except ValueError:
         pass
+    if config.j1939:                   # its 29-bit frames go out from its own address
+        return {(can_id & ~0xFF) | config.j1939_address if can_id > 0x7FF else can_id
+                for can_id in signals.message_ids()}
     return signals.message_ids()
 
 

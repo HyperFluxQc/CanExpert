@@ -69,6 +69,16 @@ DEFAULT_GENERATORS = (
     {"signal": "EcuStatus.Session", "kind": "session", "low": 1.0, "high": 3.0, "period": 0.0},
     {"signal": "EcuStatus.Counter", "kind": "counter", "low": 0.0, "high": 255.0, "period": 0.0},
 )
+# DBC/j1939_demo.dbc's signals, moving on their own: an engine idling up and down, a vehicle speeding up.
+J1939_DEMO_GENERATORS = (
+    {"signal": "EEC1.EngineSpeed", "kind": "sine", "low": 700.0, "high": 1800.0, "period": 12.0},
+    {"signal": "EEC1.ActualEnginePercentTorque", "kind": "sine", "low": 10.0, "high": 45.0, "period": 7.0},
+    {"signal": "EEC1.DriversDemandEngPercentTorque", "kind": "sine", "low": 12.0, "high": 50.0, "period": 7.0},
+    {"signal": "CCVS.WheelBasedVehicleSpeed", "kind": "ramp", "low": 0.0, "high": 90.0, "period": 60.0},
+    {"signal": "ET1.EngineCoolantTemperature", "kind": "sine", "low": 82.0, "high": 94.0, "period": 30.0},
+    {"signal": "ET1.EngineOilTemperature", "kind": "sine", "low": 90.0, "high": 105.0, "period": 40.0},
+)
+KNOWN_GENERATORS = DEFAULT_GENERATORS + J1939_DEMO_GENERATORS   # what a newly chosen DBC starts with
 
 
 def read_database(source: str = ""):
