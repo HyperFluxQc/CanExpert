@@ -1,1 +1,1 @@
-"""CAN Expert: CAN/UDS tool with panel databases, a Form Designer, CAN Logger, Diagnostic Window and a simulated ECU."""
+"""CAN Expert: CAN/UDS tool with panel databases, a Form Designer, Trace, CAN Logger, UDS Console and a simulated ECU."""

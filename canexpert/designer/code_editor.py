@@ -13,18 +13,26 @@ from PyQt5.QtGui import QColor, QFont, QPainter, QPalette, QSyntaxHighlighter, Q
 from PyQt5.QtWidgets import (QCompleter, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter,
                              QTextBrowser, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from canexpert import features
 from canexpert.uds.client import EXCLUDED_SERVICES, FUNCTIONS, GROUPS
 
+# What completion offers. The deprecated calls (api.on, api.on_can, api.every, api.uds.rdbi, ...) still
+# work in scripts but are not suggested: the decorators and the service functions replace them.
 API_WORDS = [
-    "api", "api.on", "api.on_can", "api.every", "api.sleep", "api.running", "api.log", "api.progress",
+    "api", "api.sleep", "api.running", "api.log", "api.write", "api.warn", "api.progress",
     "api.flash_cancelled", "api.signal", "api.set_signal", "api.send_message", "api.can.send",
-    "api.can.get_latest_messages", "api.ui.get_value", "api.ui.set_value", "api.uds.request",
-    "api.uds.tester_present", "api.uds.rdbi", "api.uds.request_download", "api.uds.transfer_data",
-    "api.uds.request_transfer_exit", "api.uds.transfer_data_from_file", "api.dll.load", "api.dll.call",
-    "on_start", "on_stop", "on_timer", "on_message", "on_signal", "on_control", "DatabaseMainFunction",
+    "api.ui.get_value", "api.ui.set_value", "api.sysvar.get", "api.sysvar.set", "api.sysvar.define",
+    "api.dll.load", "api.dll.call",
+    "on_start", "on_stop", "on_timer", "on_message", "on_signal", "on_control", "on_sysvar", "on_key",
+    "on_error_frame", "on_bus_state", "DatabaseMainFunction",
     "Flashing", "frame.id", "frame.data", "frame.signals",
     ".ok", ".data", ".text", ".int", ".nrc", ".nrc_name", ".error", ".raw", ".max_block_length",
 ] + [entry.name for entry in FUNCTIONS]
+
+
+def api_words() -> list[str]:
+    """What completion offers: API_WORDS without the system variables while they are switched off."""
+    return [word for word in API_WORDS if features.SYSTEM_VARIABLES or "sysvar" not in word]
 
 
 def _format(colour, bold=False, italic=False):
@@ -188,7 +196,7 @@ class CodeEditor(QPlainTextEdit):
         self._refresh_completions()
 
     def _refresh_completions(self):
-        words = set(keyword.kwlist) | set(API_WORDS) | set(self._extra_words)
+        words = set(keyword.kwlist) | set(api_words()) | set(self._extra_words)
         words |= set(re.findall(r"\b[A-Za-z_]\w{2,}\b", self.toPlainText()))
         self.completer.setModel(QStringListModel(sorted(words, key=str.lower), self.completer))
 

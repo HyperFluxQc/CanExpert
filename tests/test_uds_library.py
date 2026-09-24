@@ -159,7 +159,8 @@ def DatabaseMainFunction(api):
     results["dtcs"] = ReadDTCs(0xFF)
     results["clear"] = bool(CDTCI())
     results["after_clear"] = ReadDTCs(0xFF)
-    results["unsupported"] = RMBA(0x1000, 4).nrc_name
+    results["unsupported"] = RSDBI(0xF190).nrc_name
+    results["memory"] = RMBA(0x1000, 4).data                           # erased flash
     results["raw"] = UDS("22 F1 8C").data                               # after the SID: DID echo + record
     results["suppressed"] = bool(TP(suppress=True))
     api.ui.set_value("results", results)
@@ -179,6 +180,7 @@ def DatabaseMainFunction(api):
         self.assertEqual(results["dtcs"], [(0x010100, 0x09), (0xC10000, 0x08)])
         self.assertEqual(results["after_clear"], [])
         self.assertEqual(results["unsupported"], "serviceNotSupported")
+        self.assertEqual(results["memory"], bytes([0xFF] * 4))
         self.assertEqual(results["raw"], bytes([0xF1, 0x8C]) + b"SN000123456")
         self.assertTrue(results["suppressed"])
 

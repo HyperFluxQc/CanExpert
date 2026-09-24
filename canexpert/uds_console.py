@@ -1,14 +1,16 @@
 """
-UDS console: every ISO 14229-1 service without an ODX file, and the ECU's fault memory.
+UDS console: every ISO 14229-1 service, the services of an ODX file, and the ECU's fault memory.
 
 The service list, its documentation and its parameters come from canexpert.uds.client, so the console
-offers exactly what a panel script can call. Requests run on a background thread over a private
-mailbox, the same way the ODX Diagnostic Window does, so the panel script keeps its own replies.
+offers exactly what a panel script can call; an ODX, PDX or CDD file adds the services it describes and
+decodes the answers (odx_services.py). Requests run on a background thread over a private mailbox, so
+the panel script keeps its own replies.
 """
 from __future__ import annotations
 
 import inspect
 import threading
+import time
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -35,8 +37,10 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.can_bus import ReceiveMailbox
+from canexpert.clock import absolute_text
 from canexpert.config import uds_transport
-from canexpert.uds.client import FUNCTIONS, GROUPS, UdsFunctions, uds_request
+from canexpert.odx_services import OdxTab, decoded
+from canexpert.uds.client import FUNCTIONS, GROUPS, UdsFunctions, make_request
 from canexpert.uds.seed_key import SeedKeyError, dll_key, xor_key
 from canexpert.ui_common import SplitterPanel, enable_maximize
 
@@ -69,23 +73,11 @@ def parse_int(text: str, default=0) -> int:
     return int(text, 16 if not text.lower().startswith("0x") else 0)
 
 
-def make_request(mailbox, transport):
-    """The (payload, timeout, wait, pending) function UdsFunctions expects, bound to one mailbox."""
-    def request(payload, timeout=None, wait=True, pending=None):
-        options = dict(transport)
-        if timeout is not None:
-            options["timeout"] = timeout
-        if pending is not None:
-            options["pending_timeout"] = pending
-        return uds_request(mailbox, payload, wait=wait, **options)
-    return request
-
-
 class UdsConsoleWindow(QDialog):
     """Send any UDS service and read the fault memory, with no ODX file."""
     finished_request = pyqtSignal(object)
 
-    def __init__(self, parent=None, session=None):
+    def __init__(self, parent=None, session=None, time_text=None):
         super().__init__(parent)
         self.setWindowTitle("UDS Console")
         enable_maximize(self)
@@ -93,6 +85,8 @@ class UdsConsoleWindow(QDialog):
         self.resize(1080, 700)
         # session() -> (bus, worker, config) while a measurement runs, else None.
         self.session = session or (lambda: None)
+        # time_text(timestamp) -> the time a log line carries: the measurement's, as View -> Time display says
+        self.time_text = time_text or absolute_text
         self._widgets = {}
         self._parameters = []
         self._entry = None
@@ -111,6 +105,8 @@ class UdsConsoleWindow(QDialog):
         layout.addWidget(self._session_bar())
         tabs = QTabWidget()
         tabs.addTab(self._services_tab(), "Services")
+        self.odx = OdxTab(self.send_odx)
+        tabs.addTab(self.odx, "ODX")
         tabs.addTab(self._faults_tab(), "Fault memory")
         layout.addWidget(tabs, 1)
         self.log = QPlainTextEdit()
@@ -135,9 +131,6 @@ class UdsConsoleWindow(QDialog):
         set_session.clicked.connect(lambda: self.run(lambda uds: uds.DSC(self.session_combo.currentData()),
                                                      "DiagnosticSessionControl"))
         row.addWidget(set_session)
-        tester = QPushButton("Tester present")
-        tester.clicked.connect(lambda: self.run(lambda uds: uds.TP(), "TesterPresent"))
-        row.addWidget(tester)
         row.addStretch()
         self.state_label = QLabel("")
         row.addWidget(self.state_label)
@@ -383,8 +376,9 @@ class UdsConsoleWindow(QDialog):
 
     # --- running requests ---------------------------------------------------------------------
 
-    def run(self, call, title):
-        """Run call(UdsFunctions) on a background thread and report the result."""
+    def run(self, call, title, service=None):
+        """Run call(UdsFunctions) on a background thread and report the result. service: the ODX service
+        that built the request, to decode the answer with."""
         if self._busy:
             return None
         session = self.session()
@@ -398,13 +392,13 @@ class UdsConsoleWindow(QDialog):
         functions = UdsFunctions(make_request(mailbox, transport), self._log, transport["timeout"])
         functions.p2, functions.p2_star = self.p2, self.p2_star
         self._busy = True
-        thread = threading.Thread(target=self._exchange, args=(call, functions, worker, mailbox, title),
+        thread = threading.Thread(target=self._exchange, args=(call, functions, worker, mailbox, title, service),
                                   daemon=True)
         thread.start()
         return thread
 
-    def _exchange(self, call, functions, worker, mailbox, title):
-        outcome = {"title": title, "text": "", "result": None, "p2": None, "p2_star": None}
+    def _exchange(self, call, functions, worker, mailbox, title, service=None):
+        outcome = {"title": title, "text": "", "result": None, "p2": None, "p2_star": None, "service": service}
         try:
             result = call(functions)
             outcome["result"] = result
@@ -439,9 +433,20 @@ class UdsConsoleWindow(QDialog):
         self._log(f"{title}: {outcome['text']}")
         if getattr(result, "ok", False) and getattr(result, "data", b""):
             self._log(f"    data: {result.hex()}   int: {result.int}   text: {result.text!r}")
+        raw = getattr(result, "raw", None)
+        if raw is not None and (self.odx.layer is not None or outcome.get("service") is not None):
+            text = decoded(self.odx.layer, result.request, raw, outcome.get("service"))
+            if text:
+                self._log(f"    ODX: {text}")
+
+    def send_odx(self, payload: bytes, title: str, service):
+        """A request the ODX tab built from a service of the file."""
+        return self.run(lambda uds: uds.UDS(payload), title, service)
 
     def _log(self, text):
-        self.log.appendPlainText(str(text))
+        text = str(text)
+        # A request's line carries the time; the lines that belong to it (indented) do not repeat it.
+        self.log.appendPlainText(text if text[:1].isspace() else f"{self.time_text(time.time())}  {text}")
 
     def send_service(self):
         if self._entry is None:

@@ -37,9 +37,10 @@ HEADERS = ["Node / message", "ID", "Cycle (ms)", "DLC", "Data (hex)", "Sent"]
 class SimulationWindow(QDialog):
     """Tick the nodes of a symbol database to send their messages, as the real ECUs would."""
 
-    def __init__(self, parent=None, symbols=None, send=None, settings=None):
+    def __init__(self, parent=None, symbols=None, send=None, settings=None, stop_when_hidden=True):
         super().__init__(parent)
         self.setWindowTitle("Simulated nodes")
+        self.stop_when_hidden = stop_when_hidden     # off in the Transmit window's tab, which stops on close
         enable_maximize(self)
         self.setMinimumSize(640, 340)
         self.resize(860, 520)
@@ -287,5 +288,7 @@ class SimulationWindow(QDialog):
 
     def hideEvent(self, event):
         """Closing the window stops the simulation: nothing keeps sending out of sight."""
-        self.start_btn.setChecked(False)
+        # getattr: Qt also hides a window it is destroying, after Python has already cleared its attributes.
+        if getattr(self, "stop_when_hidden", False):
+            self.start_btn.setChecked(False)
         super().hideEvent(event)

@@ -25,12 +25,15 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.paths import CONFIG_DIR
+from canexpert.transport_settings import TransportGroup, load_transport, save_transport
 
 # A node is reported lost after node_timeout_seconds without a reply. TesterPresent is sent several times
 # per timeout window so one missed response does not cause a false loss.
 DEFAULT_TESTER_PRESENT_INTERVAL = 0.5
 DEFAULT_NODE_TIMEOUT = 2.0
 DEFAULT_BITRATE = 500000
+# Offered in the dialog; any other whole number of bits per second can be typed in.
+BITRATE_PRESETS = (33333, 50000, 83333, 100000, 125000, 250000, 500000, 800000, 1000000)
 OBD_FUNCTIONAL_ID = 0x7DF
 DEFAULT_CONFIGURATION = {"name": "Default Configuration", "bitrate": DEFAULT_BITRATE, "identifier_11_bit": True,
                          "request_id": OBD_FUNCTIONAL_ID, "response_id": 0x7E8, "timeout_ms": 5000,
@@ -80,7 +83,7 @@ def validate_config(config):
 
 
 def diagnostic_request_id(config):
-    """Request ID for UDS exchanges (scripts, flashing, Diagnostic Window).
+    """Request ID for UDS exchanges (scripts, flashing, the UDS Console).
 
     The OBD functional ID 0x7DF may not carry multi-frame requests (ISO 15765-2), so when the ECU
     answers on 0x7E8-0x7EF it is addressed physically at response ID - 8 (ISO 15765-4), e.g. 0x7E0.
@@ -93,13 +96,17 @@ def diagnostic_request_id(config):
 
 
 def uds_transport(config) -> dict:
-    """uds_request() keyword arguments for a configuration: IDs, reply timeout, identifier size, address byte."""
+    """uds_request() keyword arguments for a configuration: IDs, reply timeout, identifier size, address
+    byte, and the padding and flow control a session adds (canexpert.transport_settings.apply_transport)."""
     return {
         "request_id": diagnostic_request_id(config),
         "response_id": config.get("response_id", 0x7E8),
         "timeout": config.get("timeout_ms", 2000) / 1000.0,
         "extended": not config.get("identifier_11_bit", True),
         "address_byte": config.get("extended_id_byte") if config.get("extended_id") else None,
+        "padding": config.get("isotp_padding"),
+        "block_size": config.get("isotp_block_size", 0),
+        "st_min": config.get("isotp_st_min", 0),
     }
 
 
@@ -140,13 +147,17 @@ def _hex(text, what, maximum=0x1FFFFFFF):
 class ConfigurationDialog(QDialog):
     """Create or edit a configuration; accepted() once it is saved to directory."""
 
-    def __init__(self, parent=None, config=None, directory=CONFIG_DIR):
+    def __init__(self, parent=None, config=None, directory=CONFIG_DIR, settings=None):
         super().__init__(parent)
         self.setWindowTitle("CAN Connection Configuration")
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.resize(480, 380)
         self.config = config or {}
         self.directory = directory
+        if settings is None:
+            from canexpert.ui_common import app_settings   # the dialog's only use of the application settings
+            settings = app_settings()
+        self.settings = settings
         self._build()
         self._fill()
 
@@ -158,8 +169,11 @@ class ConfigurationDialog(QDialog):
         self.name_edit.setEditable(True)
         form.addRow("Name:", self.name_edit)
         self.bitrate_combo = QComboBox()
-        self.bitrate_combo.addItems(["125000", "250000", "500000", "1000000"])
+        self.bitrate_combo.setEditable(True)
+        self.bitrate_combo.addItems([str(rate) for rate in BITRATE_PRESETS])
         self.bitrate_combo.setCurrentText(str(DEFAULT_BITRATE))
+        self.bitrate_combo.setToolTip("Pick one, or type any bit rate; the sample point is set per channel "
+                                      "(right-click the channel, Channel setup...)")
         form.addRow("Bitrate (bps):", self.bitrate_combo)
         self.id_size_combo = QComboBox()
         self.id_size_combo.addItem("11 bits (Standard)", 11)
@@ -176,7 +190,7 @@ class ConfigurationDialog(QDialog):
         self.timeout_spin.setSingleStep(500)
         self.timeout_spin.setSuffix(" ms")
         self.timeout_spin.setValue(5000)
-        self.timeout_spin.setToolTip("How long script and Diagnostic Window UDS requests wait for a reply")
+        self.timeout_spin.setToolTip("How long script and UDS Console requests wait for a reply")
         form.addRow("UDS response timeout:", self.timeout_spin)
         self.heartbeat_spin = QDoubleSpinBox()
         self.heartbeat_spin.setRange(0.05, 3600)
@@ -200,6 +214,8 @@ class ConfigurationDialog(QDialog):
         self.extended_id_cb.toggled.connect(self.extended_id_byte_edit.setEnabled)
         form.addRow("Extended ID byte (hex):", self.extended_id_byte_edit)
         layout.addWidget(group)
+        self.transport_group = TransportGroup(load_transport(self.settings, self.config.get("name", "")))
+        layout.addWidget(self.transport_group)
         buttons = QHBoxLayout()
         save = QPushButton("Save Configuration")
         save.clicked.connect(self.save_config)
@@ -242,7 +258,7 @@ class ConfigurationDialog(QDialog):
         config.pop("did", None)  # only used by the removed database-ID discovery
         config.update({
             "name": self.name_edit.currentText().strip() or "Unnamed",
-            "bitrate": int(self.bitrate_combo.currentText()),
+            "bitrate": self._bitrate(),
             "identifier_11_bit": self.id_size_combo.currentData() == 11,
             "timeout_ms": self.timeout_spin.value(),
             "extended_id": self.extended_id_cb.isChecked(),
@@ -258,9 +274,20 @@ class ConfigurationDialog(QDialog):
             config["extended_id_byte"] = _hex(self.extended_id_byte_edit.text(), "Extended ID byte", 0xFF)
         return config
 
+    def _bitrate(self) -> int:
+        try:
+            bitrate = int(self.bitrate_combo.currentText().strip())
+        except ValueError:
+            raise ValueError("The bit rate must be a whole number of bits per second, e.g. 500000") from None
+        if not 10_000 <= bitrate <= 1_000_000:
+            raise ValueError("Classic CAN runs between 10000 and 1000000 bit/s")
+        return bitrate
+
     def save_config(self):
         try:
-            save_configuration(self._read(), self.directory)
+            transport = self.transport_group.transport()
+            config = save_configuration(self._read(), self.directory)
+            save_transport(self.settings, config["name"], transport)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid configuration", str(exc))
             return

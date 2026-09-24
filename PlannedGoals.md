@@ -9,9 +9,10 @@ database XML, or the `_script.py` mechanism: where a feature has to remember som
 its own file or in QSettings. Three items would genuinely be better with one new optional configuration
 field, and they say so.
 
-**Status:** tier 1 items 2-6 and 8 and tier 2 items 11-18 are **implemented** (item 7, the test feature
-set, and items 9 and 10, CAN FD and several channels, were left out on purpose; item 1 was built and
-then removed — see it below). Each one is marked; the rest is untouched.
+**Status:** tier 1 items 2-6 and 8, tier 2 items 11-18 and tier 3 items 19-25, 27-29 and 32 are
+**implemented** (item 7, the test feature set, and items 9 and 10, CAN FD and several channels, were left
+out on purpose; item 1 was built and then removed — see it below). Each one is marked; the rest is
+untouched.
 
 ---
 
@@ -265,7 +266,7 @@ detail is the part not done.
 
 ## Tier 3 — Medium
 
-### 19. ISO-TP padding — the interop item to fix first
+### 19. ISO-TP padding — the interop item to fix first — **DONE**
 *Effort: small. Needs one optional configuration field.*
 
 `uds_request` accepts a `padding` argument, but `uds_transport()` never sets it
@@ -274,7 +275,12 @@ TesterPresent is a bare 3 bytes ([can_bus.py:59](canexpert/can_bus.py#L59)). Man
 reject frames that are not padded to 8 bytes (0x00 or 0xAA). The simulator pads; the tester never
 does. This is the most likely reason a real ECU would ignore CAN Expert.
 
-### 20. The tester's own flow control is unreachable
+**Now:** every frame a session sends - requests, the tester's flow control, TesterPresent - is padded
+to 8 bytes, 0xCC by default (a byte that needs no stuff bits), or with another byte, or not at all. It is
+kept per configuration name in the settings (`transport_settings.py`), not in the configuration file,
+and shown in its own group of the configuration dialog.
+
+### 20. The tester's own flow control is unreachable — **DONE**
 *Effort: small*
 
 `isotp_recv` takes `block_size` and `st_min`, but `uds_request` never passes them
@@ -282,7 +288,10 @@ does. This is the most likely reason a real ECU would ignore CAN Expert.
 dummy ECU lets you configure this side; the client does not. Exposing it allows testing how an ECU
 paces to a slow tester.
 
-### 21. Logger accuracy, memory and exports
+**Now:** the block size and STmin the tester asks for sit beside the padding, per configuration, and
+reach `isotp_recv` through `uds_request`; the tests watch the simulated ECU pace its answer to them.
+
+### 21. Logger accuracy, memory and exports — **DONE**
 *Effort: small each*
 
 - `CanWorker` emits `message.timestamp` ([can_bus.py:77](canexpert/can_bus.py#L77)) and nothing reads
@@ -296,14 +305,27 @@ paces to a slow tester.
 Fix: hardware timestamps, a ring buffer or record-to-disk, wide CSV / MDF4, export of the visible
 range, save the plot as PNG, and per-signal min / max / mean / σ between the cursors.
 
-### 22. Channel setup: bit timing, listen-only, autobaud
+**Now:** the time axis comes from the adapter's timestamps and starts with the measurement (item 32);
+each signal keeps at most a set number of samples (1,000,000 by default), dropping its oldest quarter;
+the cursors add min, max, mean and σ of the samples between them; **Export...** writes CSV with a row
+per sample or a column per signal, MDF 4 (a small writer in `mdf4.py`, checked against asammdf) or a
+PNG, of everything, what is on screen, or the cursor range. Record-to-disk is the recording's job.
+
+### 22. Channel setup: bit timing, listen-only, autobaud — **DONE**
 *Effort: small to medium*
 
 Bitrate is a fixed combo of four values ([config.py:161](canexpert/config.py#L161)). There is no custom
 bit timing or sample point (python-can has `BitTiming`), no listen-only, no termination control, and
 the activity scan listens for 0.3 s at one guessed bitrate with no baud detection.
 
-### 23. Script event parity and a Write window
+**Now:** right-click a channel -> **Channel setup...** (`channel_setup.py`), kept per adapter channel:
+sample point and SJW as a python-can `BitTiming` on the driver's clock, listen-only (Kvaser's silent
+mode, Vector's `listen_only`; the session then sends nothing), a receive filter in the adapter, and bit
+rate detection that listens at each common rate without acknowledging anything. The configuration's bit
+rate takes any value. IXXAT gets neither sample point nor listen-only - python-can offers neither - and
+the dialog says so. Termination is not reachable through python-can and is not offered.
+
+### 23. Script event parity and a Write window — **DONE**
 *Effort: medium*
 
 The runtime has `on_start`, `on_stop`, `on_timer`, `on_message`, `on_signal` and `on_control`. CAPL
@@ -312,7 +334,12 @@ the bus-event handlers. Separately, script output and application logs share one
 Write window is its own thing. There are also no breakpoints or watch window; stepping through a panel
 script would be a differentiator.
 
-### 24. System variables
+**Now:** `@on_key`, `@on_error_frame`, `@on_bus_state` and `@on_sysvar` (item 24); a **Write window**
+with the script's `api.log` / `api.write` / `api.warn` and its errors, levels, search and save, apart
+from the Debug log; and a **Script variables** tab watching the script's globals. Breakpoints and
+stepping are not done, nor `on preStart`.
+
+### 24. System variables — **DONE, switched off for now**
 *Effort: medium*
 
 CANoe glues panels, CAPL and tests together with system variables. Here a control binds only to a
@@ -320,29 +347,51 @@ script name or a DBC signal, so two panels cannot share a value and the logger c
 one. Script-side variables cost nothing; making them a *control binding* would touch the panel XML, so
 that part stays optional.
 
-### 25. Filters everywhere
+**Now:** `sysvars.py` - `Namespace::Name` variables with a type, initial value, unit and comment,
+set and read by scripts (`api.sysvar`, `@on_sysvar`), listed and typed into in the System Variables
+window, plotted by the CAN Logger, definitions kept in the settings or a JSON file, values reset at each
+measurement. As planned, controls are not bound to them in the panel XML; a script bridges the two.
+
+**Switched off** (`canexpert/features.py`, `SYSTEM_VARIABLES = False`): without controls bound to them or
+a link to bus signals they did little on their own, so they show nowhere until they can be bound. The
+code stays and its tests switch it on; turning them back on is setting the switch to True.
+
+### 25. Filters everywhere — **DONE**
 *Effort: small to medium*
 
 No filters in any window, and `bus.set_filters` is never called, so filtering cannot even be offloaded
 to the adapter. Pass and stop lists by ID range, symbolic name, direction and channel.
 
+**Now:** `frame_filter.py` gives the Trace and the CAN monitor one filter - identifiers, ranges,
+names, Pass/Stop, and RX only / TX only on top - and the monitor's is rebuilt from the history when it
+changes. Filtering in the adapter is the channel setup's receive filter. The channel column waits for
+item 10.
+
 ### 26. Unsolicited-response services are only half implemented
 *Effort: medium*
 
 `ROE` (0x86) and `RDBPI` (0x2A) can be sent, but there is no receive path for the event or periodic
-responses they cause: they arrive later as unrelated frames and are skipped. `NRC 0x21
+responses they cause: they arrive later as unrelated frames and are skipped (a periodic `6A` frame is no
+longer taken for the answer to 0x2A). The Dummy ECU now answers both, so the receive path has something
+to be tested against. `NRC 0x21
 busyRepeatRequest` is also returned to the caller instead of being retried. Authentication (0x29) and
 SecuredDataTransmission (0x84) are excluded by design
 ([uds/client.py:488](canexpert/uds/client.py#L488)) — worth closing to claim full ISO 14229 coverage.
 
-### 27. Panel runtime
+### 27. Panel runtime — **DONE**
 *Effort: medium*
 
 Controls are placed at fixed pixel coordinates inside a scroll area
 ([panel/view.py:56](canexpert/panel/view.py#L56)): no scaling on window resize, no zoom, one panel at a
 time, no floating or multiple panels. CANoe panels resize, dock and open several at once.
 
-### 28. Dummy ECU: editable DIDs, DTCs and NRCs
+**Now:** every page of the loaded database is a window of the workspace - the first in the Database
+window, the others tabbed beside it - that can be split off, floated and placed by the saved desktops.
+`panel/page_window.py` draws a page at any zoom from its controls' designed geometry and fonts: Fit
+follows the window, 50-200 % scroll, Ctrl + wheel steps; the zoom is remembered per database family and
+page. One database is loaded at a time, as before.
+
+### 28. Dummy ECU: editable DIDs, DTCs and NRCs — **DONE**
 *Effort: medium*
 
 DIDs and DTCs are hardcoded ([simulator/ecu.py:406](canexpert/simulator/ecu.py#L406)), `WDBI` accepts
@@ -350,12 +399,24 @@ only `F190`, and `RDTCI` implements only sub-functions 0x01 and 0x02. Add a DID-
 editable DTC list with snapshot and extended records, per-service forced NRCs (to test the tester's own
 error handling), and several simulated ECUs on one channel.
 
-### 29. ECU discovery scan
+**Now:** the Dummy ECU window's **Data** tab edits the DID table (writable or not), the DTC table
+with a snapshot and an extended data record each, and forced negative responses per service, live and
+in its profile. `WDBI` writes any writable DID; `RDTCI` adds 0x04, 0x06 and 0x0A, so the UDS Console's
+Snapshot and Extended data buttons work against it. Several dummy ECUs share a channel when their
+identifiers differ: the lock goes by request ID.
+
+### 29. ECU discovery scan — **DONE**
 *Effort: small to medium, and very much an "expert tool" feature*
 
 The activity scan only reports traffic or no traffic as a text suffix, and requires disconnecting
 first. Add a real scan: sweep request IDs (0x7E0–0x7E7 and a custom range) with TesterPresent, list
 every responder, probe the supported sessions and a DID sample, and offer bitrate detection.
+
+**Now:** **Connection -> Scan for ECUs...** (`ecu_scan.py`): TesterPresent over an 11-bit range or
+29-bit normal fixed addresses, every responder with its response identifier, the default and extended
+sessions it takes (programming only when asked), its identification DIDs, CSV export, and a new
+configuration from any ECU found. It runs beside a measurement with the session's TesterPresent paused,
+and reaches the channel setup's bit rate detection.
 
 ### 30. OBD-II mode scanner
 *Effort: medium — a quick win on the existing stack*
@@ -369,12 +430,17 @@ option and the UDS stack is already 80% of the way there.
 No way to browse a DBC inside the app — messages, signals, bit layout, value tables, nodes, cycle
 times. Only the designer's symbol list and the logger tree, both task-specific.
 
-### 32. One measurement clock, with absolute / relative / delta display
+### 32. One measurement clock, with absolute / relative / delta display — **DONE**
 *Effort: small, and a correctness fix*
 
 Three clocks today: the CAN monitor uses `datetime.now()`
 ([main_window.py:301](canexpert/main_window.py#L301)), the logger uses monotonic-since-first-frame, and
 the diagnostic monitor uses `datetime` again. Nothing can be correlated across windows.
+
+**Now:** `clock.py` - one `MeasurementClock` started at connect, ECU check or replay. The CAN monitor
+and the Diagnostic Window show each frame's own timestamp, the Trace's Relative and the Logger's time
+axis count from the same start, and **View -> Time display** switches the monitors between Absolute and
+Relative. A timestamp that is not a time of day is shown as seconds.
 
 ---
 
@@ -396,8 +462,8 @@ used.
 ### 35. Export and markers
 *Effort: very small*
 
-The CAN monitor cannot be saved or searched. Add export to every list view, and "insert marker or
-comment" during a measurement (CANoe's trigger and comment).
+~~The CAN monitor cannot be saved or searched~~ — the CAN monitor is gone, the Trace covers it. Add
+"insert marker or comment" during a measurement (CANoe's trigger and comment).
 
 ### 36. A status strip showing the system state
 *Effort: small*
@@ -408,8 +474,8 @@ user has to think to look at.
 ### 37. Packaging: the .exe that is promised but absent
 *Effort: small*
 
-`requirements-build.txt` installs PyInstaller and Pillow, but there is no `.spec`, no build script, no
-icon, no version resource and no installer in the repo. For a tool colleagues will actually run, this
+There is no `.spec`, no build script, no icon, no version resource and no installer in the repo (the
+`requirements-build.txt` that installed PyInstaller and Pillow for it was removed as misleading). For a tool colleagues will actually run, this
 matters more than most features above it.
 
 ### 38. About box with real information
@@ -446,19 +512,16 @@ exist.
 
 ## Half-finished things found while reading
 
-- **Diagnostic Window**: needs ODX, `odxtools` and an active database session; encodes only "free
-  parameters" with an `int(text, 0)` fallback; response decoding failures are swallowed by a bare
-  `except: pass` ([diagnostic_window.py:294](canexpert/diagnostic_window.py#L294)); its monitor shows
-  three IDs and no ISO-TP reassembly.
-- **`workers` is a one-entry dict** — scaffolding from a multi-channel design that was never built.
-- **Dead parameters**: `isotp_recv`'s `block_size` and `st_min`, and `uds_request`'s `padding`, are
-  reachable in code but unreachable from the UI.
-- **`message.timestamp`** is emitted and never consumed.
-- **Activity scan** result is a string suffix on a tree label, not data anything else can use.
-- **`Configurations/config_test.json`** still points at database family `FFFFFFFF…`, which was
-  deleted, so that configuration always reports "No matching database".
-- **`requirements-build.txt`** describes a build that does not exist in the repo.
-- **Dummy ECU**: `RDTCI` only 0x01/0x02, `WDBI` only `F190`, DIDs and DTCs not user-editable.
+- ~~**Diagnostic Window**: needs ODX, `odxtools` and an active database session; encodes only "free
+  parameters"~~ — merged into the UDS Console as its ODX tab; its monitor is replaced by the Trace's
+  transport view (item 18).
+- ~~**`workers` is a one-entry dict**~~ — one `worker` now.
+- ~~Dead parameters: `isotp_recv`'s `block_size` and `st_min`, and `uds_request`'s `padding`~~ — reachable
+  from the configuration dialog since items 19 and 20.
+- ~~`message.timestamp` is emitted and never consumed~~ — every window uses it since tier 1 and item 32.
+- ~~**Activity scan**~~ — removed; Scan for ECUs (item 29) and bit rate detection (item 22) answer it.
+- ~~**`Configurations/config_test.json`**~~ and ~~**`requirements-build.txt`**~~ — deleted.
+- ~~Dummy ECU: `RDTCI` only 0x01/0x02, `WDBI` only `F190`, DIDs and DTCs not user-editable~~ — item 28.
 
 ---
 
@@ -474,9 +537,44 @@ Tier 2 items **11, 12, 13, 14, 15, 16, 17 and 18** are implemented, adding `stat
 `uds/observer.py` and `uds/seed_key.py`, and extending the Trace, the CAN Logger, the UDS Console and the
 flashing path. Items **9** (CAN FD) and **10** (several channels at once) were left out on purpose.
 
-None of it changed the configuration, database or script formats.
+Tier 3 items **19, 20, 21, 22, 23, 24, 25, 27, 28, 29 and 32** are implemented, adding
+`transport_settings.py`, `channel_setup.py`, `frame_filter.py`, `clock.py`, `sysvars.py`,
+`write_window.py`, `ecu_scan.py`, `mdf4.py` and `panel/page_window.py`. Items 26 (unsolicited
+responses), 30 (OBD-II scanner) and 31 (symbol explorer) are left for later, with tier 4.
 
-The next things worth doing, in order: **item 19** (ISO-TP padding — a half-hour fix and the most likely
-reason a real ECU ignores CAN Expert), **item 9** (CAN FD, which most modern ECUs need), **item 10**
-(several channels at once, best done before more windows settle) and **item 7** if the tool is to be
-used for validation.
+None of it changed the configuration, database or script formats: the new settings - ISO-TP per
+configuration, the channel setup, system variables, page zooms - live in CAN Expert's own settings.
+
+Parts of tier 4 came along on the way: the Trace, Statistics, Data window and Logger export (35, except
+markers), and the session, security and bus state are shown in the UDS Console and
+Statistics (36, though not yet in one strip of the main window).
+
+Then the features that had grown to overlap were cut back:
+
+- the **CAN Monitor** tab of the Log is gone — the Trace shows every frame, with the same filter; the Log
+  is the application's debug log;
+- the **Diagnostic Window** is merged into the **UDS Console** as an **ODX** tab, and once an ODX file is
+  loaded every answer in the console is decoded by it;
+- **Scan Activity** is gone (Scan for ECUs and bit rate detection do its job), and so is the console's
+  one-off **Tester present** button (the session sends TesterPresent);
+- the **Transmit list** and the **Simulated nodes** are two tabs of one **Transmit** window, and both keep
+  sending until that window is closed;
+- the current values of signals are the **Data window**'s: the Logger's *Value* column and Statistics'
+  *Last data* column are gone;
+- the Form Designer's **Test panel** flashes through the main window's Flashing dialog, so the built-in
+  sequence works there too;
+- the first script API (`api.on`, `api.on_can`, `api.every`, `api.can.get_latest_messages`,
+  `api.uds.*`) still works but is deprecated and out of the editor's completion;
+- the `EZCan2/KvaserCAN` settings migration, `config_test.json`, `requirements-build.txt` and the one-entry
+  `workers` dict are removed.
+
+The Dummy ECU then became a fuller simulation: the messages of any DBC with a generator per signal
+(`simulator/signals.py`), periodic data and ResponseOnEvent, a fault memory whose statuses follow faults
+through operation cycles (`simulator/dtc.py`), transport errors on purpose, access rules per DID and
+service with several security levels and a seed & key DLL, a bootloader after a failed flash with an
+optional CRC-32 check, and ReadMemoryByAddress, WriteMemoryByAddress and InputOutputControlByIdentifier.
+Its default traffic is what it always sent, so the panels and examples work as before.
+
+The next things worth doing: **item 26** (a receive path for ResponseOnEvent and periodic data, and
+retrying NRC 0x21), the tier 4 polish - **33** keyboard shortcuts and **37** packaging first - and
+**item 7** if the tool is to be used for validation.

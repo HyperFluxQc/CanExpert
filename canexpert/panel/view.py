@@ -1,19 +1,24 @@
 """PanelView: runs a panel database - builds its controls, sends user input to CAN, DBC signals or the
-script, and shows received values."""
+script, and shows received values. Each page is a PanelWindow (page_window.py) that can zoom and fit its
+window; they sit in tabs here, or become windows of their own in the main window's workspace."""
 from pathlib import Path
 
 from PyQt5.QtCore import QSignalBlocker, pyqtSignal
-from PyQt5.QtWidgets import QLabel, QScrollArea, QTabWidget, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QLabel, QTabWidget, QVBoxLayout, QWidget
 
 from canexpert.panel.controls import CONTROLS, WIDGET_GROUPS, build, states_from_choices
 from canexpert.panel.database import decode_value_from_can_data
+from canexpert.panel.page_window import DEFAULT_ZOOM, PanelPage, PanelWindow
 
 
 class PanelView(QWidget):
     """Runs a panel: builds its controls, forwards user input to CAN/DBC/script, shows received values."""
     control_changed = pyqtSignal(str, object)
 
-    def __init__(self, database, send, log, parent=None):
+    def __init__(self, database, send, log, parent=None, tabs=True, zooms=None):
+        """tabs: the pages in tabs inside this widget; with tabs=False they are left in page_windows for
+        the caller to place (the main window makes each one a workspace window). zooms: page name ->
+        the zoom it had last time."""
         super().__init__(parent)
         self.send, self.log = send, log
         self.widgets = {}
@@ -21,6 +26,7 @@ class PanelView(QWidget):
         self.controls = {}
         self.dbc = None
         self.frames = {}
+        self.page_windows = []          # (page name, PanelWindow), in the database's order
         source = database.get("source_path")
         base_dir = Path(source).parent if source else None
         dbc_path = database.get("dbc_path")
@@ -31,13 +37,15 @@ class PanelView(QWidget):
                 path = base_dir / path
             self.dbc = cantools.database.load_file(str(path))
         layout = QVBoxLayout(self)
-        if database.get("description"):
-            layout.addWidget(QLabel(database["description"]))
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.description = database.get("description") or ""
+        if self.description:
+            layout.addWidget(QLabel(self.description))
+        tab_widget = QTabWidget() if tabs else None
+        if tab_widget is not None:
+            layout.addWidget(tab_widget)
         for page_index, page in enumerate(database.get("pages", [])):
-            container = QWidget()
-            right, bottom = 600, 400
+            container = PanelPage()
             definitions = page.get("widgets") or [w for group in WIDGET_GROUPS.values() for w in page.get(group, [])]
             for index, definition in enumerate(definitions):
                 kind = definition.get("kind") or definition.get("type") or "label"
@@ -51,21 +59,18 @@ class PanelView(QWidget):
                     key = f"{page_index}.{kind}.{index}.{key}"
                 self._apply_dbc_metadata(kind, definition)
                 control, widget = build(kind, definition, {"base_dir": base_dir})
-                widget.setParent(container)
                 widget.setMinimumSize(1, 1)
-                widget.setGeometry(definition.get("x", 0), definition.get("y", 0),
-                                   definition.get("width", 100), definition.get("height", 30))
+                container.place(widget, definition.get("x", 0), definition.get("y", 0),
+                                definition.get("width", 100), definition.get("height", 30))
                 self.widgets[key] = widget
                 self.definitions[key] = definition
                 self.controls[key] = control
-                right = max(right, widget.x() + widget.width() + 20)
-                bottom = max(bottom, widget.y() + widget.height() + 20)
                 control.connect(widget, lambda value, k=key: self._changed(k, value))
-            container.setMinimumSize(right, bottom)
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setWidget(container)
-            tabs.addTab(scroll, page.get("name", "Main"))
+            name = page.get("name", "Main")
+            window = PanelWindow(container, name, (zooms or {}).get(name, DEFAULT_ZOOM))
+            self.page_windows.append((name, window))
+            if tab_widget is not None:
+                tab_widget.addTab(window, name)
 
     def _apply_dbc_metadata(self, kind, definition):
         """DBC-bound controls take the signal's unit and value table (text for values, states for indicators)."""

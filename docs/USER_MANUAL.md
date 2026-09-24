@@ -2,9 +2,9 @@
 
 CAN Expert connects to a CAN bus, shows which ECUs answer, and runs a **panel** — a page of controls
 driven by a Python script. It also has a Trace window for every frame on the bus, a CAN Logger to graph
-DBC signals, a Transmit list to send messages, a UDS Console for diagnostic services and fault memory, a
-Form Designer to build panels, an ODX Diagnostic Window, recording and offline replay, firmware flashing
-over UDS, and a simulated ECU so you can try everything without a vehicle.
+DBC signals, a Transmit window to send messages and simulate nodes, a UDS Console for diagnostic
+services, ODX services and fault memory, a Form Designer to build panels, recording and offline replay,
+firmware flashing over UDS, and a simulated ECU so you can try everything without a vehicle.
 
 Press the **?** button at the top right of the main window to open this manual at any time.
 
@@ -19,10 +19,10 @@ The main window has a toolbar and four panels:
 | **Configuration** | Your connection configurations. The one used last is selected again. |
 | **CAN Channels** | The CAN receivers found on this computer, the ECUs that answer on them, and the database each one can load. |
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
-| **Log** | *Debug / Verbose* for application messages, *CAN Monitor* for the frames sent and received. |
+| **Log** | The application's messages, *Debug* or *Verbose*. The frames themselves are in the Trace window. |
 
-The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, Simulation, UDS Console,
-Diagnostics — open in the **workspace** in
+The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — open in
+the **workspace** in
 the middle, together with the Database panel, where they can be tabbed, split and floated (see
 *Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
 window is open, pressing it again closes the window, and closing the window with its own **×** lets the
@@ -47,7 +47,7 @@ A configuration describes how to talk to an ECU. Double-click one to edit it, or
 | Field | Meaning |
 |---|---|
 | **Name** | The name in the list, and the file name in `Configurations/`. |
-| **Bitrate** | Bus speed. It must match the vehicle or bench (500000 is the most common). |
+| **Bitrate** | Bus speed. It must match the vehicle or bench (500000 is the most common). Pick one of the list or type any value, e.g. `83333`. |
 | **Identifier size** | 11-bit (standard) or 29-bit (extended) CAN identifiers. |
 | **SERVER ID** | The identifier requests are sent to, e.g. `7E0` for one ECU, or `7DF` to address every ECU (OBD). |
 | **ECU ID** | The identifier the ECU answers on, e.g. `7E8`. |
@@ -61,13 +61,21 @@ A configuration describes how to talk to an ECU. Double-click one to edit it, or
 With SERVER ID `7DF`, "are you there" requests stay on `7DF`, but real UDS requests go to the ECU's own
 address (ECU ID − 8, so `7E0`), because a request spanning several frames may not be broadcast.
 
+The **ISO-TP** group under the fields is kept by CAN Expert itself, per configuration name — never in the
+configuration file:
+
+| Field | Meaning |
+|---|---|
+| **Padding** | Fill every frame CAN Expert sends to 8 bytes with this byte — requests, flow control and TesterPresent alike. On by default with `CC`: many ECUs ignore diagnostic frames shorter than 8 bytes. |
+| **Block size asked of the ECU** | When an ECU answers with a long message, how many consecutive frames it may send before waiting for the next flow control (*no limit* by default). |
+| **STmin asked of the ECU** | The gap it must leave between them: `00`-`7F` milliseconds, `F1`-`F9` 100-900 µs. The dialog says which. |
+
 **Import** and **Export** copy a configuration file in or out; the files live in `Configurations/`.
 
 ## Connecting
 
 1. Pick a configuration.
-2. Pick a receiver in **CAN Channels** (**Refresh** re-scans the computer, **Scan Activity** listens on each
-   one briefly and marks it *traffic* or *no traffic*).
+2. Pick a receiver in **CAN Channels** (**Refresh** re-scans the computer).
 3. Click **Connect**.
 
 The matching database is loaded and its panel is built *before* the adapter is opened, so a broken panel
@@ -78,6 +86,13 @@ TesterPresent at the configured interval.
 the same as pressing Connect.
 
 **Disconnect** stops the script and the traffic, and closes the adapter.
+
+The frames themselves are in the **Trace** window, each with its own time — the adapter's for received
+frames. **View → Time display** chooses between the time of day (**Absolute**) and seconds since the
+measurement started (**Relative**) for the lines of the Write window and the UDS Console. The measurement
+starts when you connect, start the ECU check or replay a file, and the Trace's *Relative* time and the
+CAN Logger's time axis count from the same moment, so a line in the console, a row in the Trace and a
+point on a graph line up.
 
 ### Checking ECUs
 
@@ -98,6 +113,44 @@ Under a responding ECU, CAN Expert also lists the database that configuration wo
 
 One caution: TesterPresent keeps the ECU's diagnostic session alive. If the ECU was in an extended or
 programming session, it stays there while it is being checked; stop the check to let it time out.
+
+### Channel setup
+
+**Right-click a channel → Channel setup...** sets how that adapter channel is opened. It belongs to the
+channel, not to a configuration, and applies from the next connection.
+
+- **Sample point** and **SJW**: the bit timing is worked out for the adapter's clock as you type —
+  `BRP 2, TSEG1 13, TSEG2 2, SJW 2 - sample point 87.5 % on a 16 MHz clock`. *The adapter's default*
+  leaves it to the driver.
+- **Listen-only**: receive without acknowledging frames or sending anything — for a vehicle bus you must
+  not disturb. No TesterPresent is sent, anything that tries to send says the channel is listen-only, and
+  the channel shows **[listen-only]**.
+- **Receive only**: identifiers and ranges the channel lets through (`7E8, 300-3FF, 18DAF100x`), in the
+  adapter where it can. The configuration's ECU identifiers always get through, so diagnostics keep working.
+- **Find the bit rate**: listens at each common bit rate — listen-only, so a wrong guess never puts an
+  error frame on the bus — until one carries clean traffic.
+
+python-can offers the sample point and listen-only for **Kvaser** and **Vector** adapters; for **IXXAT**
+the dialog says they are not available rather than pretending.
+
+## Scanning for ECUs
+
+**Connection → Scan for ECUs...** (or right-click a channel → *Scan for ECUs on this channel...*) finds
+what is on the bus, without disconnecting:
+
+1. Choose the addressing — **11-bit identifiers** (`7E0` to `7E7` by default, any range) or **29-bit normal
+   fixed addressing** (`18DA<target><tester>`, targets `00` to `FF`, tester `F1`) — and press **Scan**.
+2. CAN Expert sends TesterPresent to each identifier and lists every ECU that answers, with the identifier
+   it answered on.
+3. Each one is then asked which of the **default** and **extended** sessions it accepts, and for its
+   **identification**: VIN, part and serial numbers, software and hardware versions, supplier. The
+   *programming* session is tried only when you tick it — on some ECUs it starts the bootloader. Every
+   ECU is left in the default session.
+
+While connected, the scan shares the session's bus and pauses its TesterPresent meanwhile, so an answer
+is never credited to the wrong identifier. **New configuration from this ECU...** opens the configuration
+dialog with its identifiers filled in, **Export...** saves the list as CSV, and **Find the bit rate** opens
+the channel setup.
 
 ## Symbol databases
 
@@ -127,7 +180,8 @@ The toolbar has **Clear**, **Pause** (freezes the view while recording continues
 newest frame in view) and **Colour** (gives each identifier its own colour).
 
 **Filter** takes identifiers, ranges and names: `7E0, 300-3FF, EngineData`. *Pass* shows only what
-matches, *Stop* hides it. **Find next** searches the rows shown, and **Export...** writes them to CSV.
+matches, *Stop* hides it, and **RX only** / **TX only** keeps one direction on top of either. **Find next**
+searches the rows shown, and **Export...** writes them to CSV.
 
 **Transport** turns the list from CAN frames into the diagnostic messages they carry. The ISO 15765-2
 frames of one request or response — single frame, or a first frame and its consecutive frames — become a
@@ -149,7 +203,8 @@ so a message that spans twenty frames reads as one line, the way CANoe's transpo
 | **Frames/s** | The rate over the last three seconds. |
 | **Cycle (ms)** | The average time between frames, with **Min** and **Max** beside it — an easy way to see a message that is late or jittery. |
 | **Bus load** | What this identifier alone takes of the bit rate, stuffing bits included. |
-| **Last data** | The bytes of the newest frame. |
+
+The bytes themselves are in the Trace window, and the values they carry in the Data window.
 
 The line underneath adds it all up: frames, identifiers, the time they were seen over, the total **bus
 load**, the number of **error frames** and the state of the controller — *error active*, *error passive*
@@ -188,17 +243,36 @@ decoded as well, so a message you transmit shows the values you put in it.
 
 ## Using a panel
 
-The **Database** panel shows the controls of the loaded database. Buttons, switches, sliders and input
-boxes send what their script or DBC binding says; displays, gauges, LEDs and trends show what arrives.
-Everything the panel does is written in its Python script — see *Writing panel scripts*.
+Each page of the loaded database is a window of the workspace, as CANoe's panels are: the first page in
+the **Database** window, the others tabbed beside it. Drag a page's tab to put two pages side by side, or
+float one onto a second screen; the saved desktops keep where they are. Buttons, switches, sliders and
+input boxes send what their script or DBC binding says; displays, gauges, LEDs and trends show what
+arrives. Everything the panel does is written in its Python script — see *Writing panel scripts*.
+
+**Zoom** at the top of every page: **Fit** scales the page to its window and follows it as the window is
+resized; **50 %** to **200 %** keep it at that size and scroll. **Ctrl + mouse wheel** steps the zoom. A page
+keeps its zoom, also in a newer dated version of the database.
 
 ## Form Designer
 
 **Tools → Form Designer** builds and edits panels. A panel is two files in `Databases/`: the layout
 `family_YYYY-MM-DD.xml` and its script `family_YYYY-MM-DD_script.py`.
 
-The window has the **Symbols & controls** panel on the left, the form in the middle and **Properties** on
-the right.
+The window has a menu bar, the **Symbols & controls** panel on the left, the **Form**, **Python script** and
+**Database** tabs in the middle and **Properties** on the right. The title shows the database ID, with a
+**\*** while there are unsaved changes.
+
+| Menu | What it holds |
+|---|---|
+| **File** | **New** (Ctrl+N), **Open...** (Ctrl+O), **Open from the Databases folder** (each family's newest version first), **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S, offering today's version of the family), **Close**. |
+| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. |
+| **Arrange** | Align, make the same size, distribute, bring to front, send to back, and the grid. |
+| **Page** | Add, rename and remove pages. |
+| **Script** | **Check syntax** (F7), **Handler of the selected control** (F4). |
+| **Test** | **Test panel with the simulated ECU** (F5, also the **Test panel...** button at the right of the menu bar), or on an empty bus (Shift+F5). |
+| **Help** | This section of the manual (F1). |
+
+New, Open and closing the window ask whether to save changes first.
 
 **Building a form**
 - Drag a control from the palette onto the page. There are inputs (button, switch, checkbox, radio, combo,
@@ -219,10 +293,22 @@ the script tab opens with the function created for you.
 signals, a syntax check, and the **UDS functions** panel listing every ISO 14229 service with its
 documentation; double-click one to insert a call.
 
-**Save** writes both files; **Load** opens an existing panel; **New** starts an empty one.
+**The Database tab** — what the panel is and where it goes:
+- **Database ID**: the file name, `family_YYYY-MM-DD`. The line under it says where it will be saved and how
+  a configuration finds it — a configuration whose *Database family* is `engine` loads the newest `engine_`
+  version — and warns about a name that cannot be a file, a missing date, or an ID that already exists.
+  **New version (today)** keeps the family and takes today's date, so saving leaves the previous version as
+  it was.
+- **Name** and **Description** — the description is shown at the top of the Database window.
+- **DBC**: the panel's own DBC, with **Browse...** and **Remove**; its signals are the Symbols list.
+- **Contents**: the pages with their controls, and handlers named on controls but missing from the script.
+- **Where it is used**: the configurations with this family, and whether a newer version in the folder is
+  the one they actually load.
 
-**Test panel...** runs the panel against a simulated ECU on a virtual bus, without touching your hardware —
-including **Flashing...** if the script defines `Flashing`.
+**Test panel...** runs the panel against a simulated ECU on a virtual bus, without touching your hardware.
+Its **Flashing...** opens the same dialog as the main window's Flashing button (see *Firmware flashing*):
+the script's `Flashing` when it defines one, or the built-in sequence, with its settings, progress and
+report.
 
 ## Writing panel scripts
 
@@ -242,11 +328,40 @@ def tick(api):
     api.ui.set_value("uptime", RDBI(0x0100).int)
 ```
 
+More events, as CAPL has them:
+
+```python
+@on_key("F5")                              # a key pressed in CAN Expert ("*": any key)
+def hotkey(api, key):
+    api.set_signal("EngineCommand.Start", 1)
+
+@on_error_frame                            # an error frame on the bus
+def trouble(api, timestamp):
+    api.warn("error frame")
+
+@on_bus_state                              # error active, error passive or bus off
+def state(api, state):
+    api.ui.set_value("bus", state)
+```
+
+Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
+
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.
-`api` gives you `api.can`, `api.uds`, `api.ui`, `api.signal/set_signal/send_message`, `api.log`,
-`api.every`, `api.sleep` and `api.dll`. Callbacks run one at a time on a background thread and stop when
-you disconnect.
+`api` gives you `api.can.send`, `api.ui`, `api.signal/set_signal/send_message`, `api.log` /
+`api.write` and `api.warn`, `api.sleep` and `api.dll`. Callbacks run one at a time on a
+background thread and stop when you disconnect.
+
+Older scripts may use `api.on`, `api.on_can`, `api.every`, `api.can.get_latest_messages` and the
+`api.uds` helpers (`request`, `rdbi`, `request_download`, ...). They still work, but they are
+**deprecated** and completion no longer offers them: use `@on_control`, `@on_message` and `@on_timer`,
+and the service functions (`UDS`, `RDBI`, `RD`, `TD`, `RTE`, ...) instead.
+
+**Tools → Write** is the script's own window: what `api.log`, `api.write` and `api.warn` say, and the
+script's errors, each line with its time and a colour for warnings and errors. It can show only warnings
+and errors, find text, and save what it holds. Its **Script variables** tab lists the script's global
+variables and their values while it runs. The Debug log stays the application's; script errors appear in
+both.
 
 The full API is in [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts), and
 `examples/` holds a runnable panel and script.
@@ -258,6 +373,8 @@ The full API is in [Requirements implementation](REQUIREMENTS_STATUS.md#panel-sc
 1. **Load DBC...** — the signals of the file appear in the list.
 2. **Tick a signal** — it gets its own graph. All graphs share one time axis, so signals line up.
 
+The list is for choosing and measuring; the value each signal holds now is in the Data window.
+
 The toolbar uses small symbols:
 
 | Button | Symbol | What it does |
@@ -268,7 +385,7 @@ The toolbar uses small symbols:
 | **Fit** | four corner brackets | Shows everything recorded. |
 | **Lock X** | a padlock over the horizontal axis | Mouse zoom and pan leave the time axis alone. |
 | **Lock Y** | a padlock beside the vertical axis | Mouse zoom and pan leave the value axes alone. |
-| **Cursors** | two cursor markers | Two measurement cursors across all graphs. |
+| **Cursors** | two cursor markers | Two measurement cursors across all graphs, with the statistics between them. |
 | **Combine** | two curves in one frame | Draws every ticked signal in one graph instead of one each. |
 
 Every button keeps its name in the tooltip, so hovering tells you which is which.
@@ -282,7 +399,8 @@ throttle against engine speed, say — is what this is for.
 Hovering a graph shows a dotted crosshair with the time and value under the mouse.
 
 **Cursors** — turn them on and drag the two dashed lines marked **#1** and **#2**. The bar above the graphs
-shows both times and Δt, and the signal list gains *Cursor 1*, *Cursor 2* and *Δ* columns for every signal.
+shows both times and Δt, and the signal list gains *Cursor 1*, *Cursor 2* and *Δ* columns for every signal,
+and *Min*, *Max*, *Mean* and *σ* of its samples between the two cursors.
 
 **Graph options...**
 - *Draw signals as*: **Line** holds each value until the next one (how an ECU signal behaves),
@@ -291,13 +409,31 @@ shows both times and Δt, and the signal list gains *Cursor 1*, *Cursor 2* and *
 - *Fixed time range*: type exact bounds, e.g. from `50.0134 s` to `55.2455 s`. It turns Follow off.
 - *Autoscale* or a *Fixed value range* for every graph. **Fit** clears both fixed ranges.
 
-**Save CSV...** writes everything decoded — time, signal, value — not only what is on screen.
+**Export...** writes the data as
+- **Values in rows (CSV)** — time, signal, value, one row per sample;
+- **One column per signal (CSV)** — a row for every moment any signal changed, each column holding its
+  signal's value until the next sample;
+- **MDF 4 (.mf4)** — the measurement format CANoe, CANape and most analysis tools open, with units and the
+  measurement's start time;
+- **Picture of the graphs (PNG)**.
+
+For the data formats choose **Everything recorded**, **What is on screen** or **Between the cursors**, and
+all signals or only those with a graph.
+
+**Graph options...** also sets how many samples each signal keeps (1,000,000 by default); beyond that the
+oldest go, so a long measurement cannot fill the memory. To keep everything, record to a file.
 
 Frames are timed by the adapter, so the Logger, the Trace window and a recorded file all agree.
 
 ## Transmit window
 
-**Tools → Transmit...** sends messages, once or over and over — CANoe's Interactive Generator.
+**Tools → Transmit** sends messages, once or over and over. It has two tabs, and both keep sending while
+the other is in front — or while another window's tab covers the Transmit window. **Closing the window
+stops everything** it was sending, so nothing keeps going out of sight.
+
+### Messages
+
+The **Messages** tab is CANoe's Interactive Generator.
 
 - **Add** makes a raw row; type its identifier, data bytes and cycle time straight into the table.
 - **Add from database...** picks a message from the symbol databases, with its identifier and length.
@@ -308,11 +444,11 @@ Frames are timed by the adapter, so the Logger, the Trace window and a recorded 
 - **Save list...** and **Load list...** keep sets of rows as JSON files; the current list is remembered.
 
 A row that cannot be sent — because nothing is connected, say — switches itself off and shows why,
-instead of repeating the error. Closing the pane stops every cyclic row.
+instead of repeating the error.
 
-## Simulated nodes
+### Simulated nodes
 
-**Tools → Simulation...** sends the messages of an ECU that is not on the bench, so the one that is
+The **Simulated nodes** tab sends the messages of an ECU that is not on the bench, so the one that is
 believes the rest of the car is there. It is CANoe's rest-bus simulation in small.
 
 The tree comes from the symbol databases: a branch per sending node, with the messages it sends
@@ -321,26 +457,32 @@ underneath, each with the cycle time out of the database (100 ms when it says no
 - **Tick a message** to include it, or select a node and press **Tick node** to take all of its messages
   at once; **Untick node** drops them again.
 - **Edit signals...** (or double-clicking a row) sets what the message carries, signal by signal, the
-  same editor the Transmit window uses. *Cycle (ms)* can be typed over.
+  same editor the Messages tab uses. *Cycle (ms)* can be typed over.
 - **Start sending** puts every ticked message on the bus at its cycle time; the button stays pressed in
   while it runs and *Sent* counts what went out. **Send once** sends the selected message a single time.
 
 What was ticked is remembered for the next time. A message that cannot go out — nothing connected, or the
-adapter refusing — stops the simulation and says why, rather than filling the log, and closing the window
-stops it too: nothing keeps sending out of sight.
+adapter refusing — stops the simulation and says why, rather than filling the log.
 
 ## UDS Console
 
-**Tools → UDS Console...** sends any ISO 14229 service without needing an ODX file, using the session
-the main window has open.
+**Tools → UDS Console** sends diagnostic services using the session the main window has open; connect
+first. It has three tabs over one log.
 
-- The tree lists every service by functional unit, exactly as the panel scripts see them. Pick one and its
-  parameters appear as a form, with the defaults filled in; press **Send**.
-- **or raw:** sends bytes you type, e.g. `22 F1 90`.
-- The log shows the request and the response: a positive answer with its data as hex, as a number and as
-  text; a negative one as `NRC 0x31 requestOutOfRange`.
-- The first bar sets the **session** (DiagnosticSessionControl) and sends a single **Tester present**.
-  Beside them a strip says what is going on: `Session: extended   P2 75 ms / P2* 4000 ms   Security:
+- **Services** lists every ISO 14229 service by functional unit, exactly as the panel scripts see them,
+  without needing an ODX file. Pick one and its parameters appear as a form, with the defaults filled in;
+  press **Send**. **or raw:** sends bytes you type, e.g. `22 F1 90`.
+- **ODX** sends the services an ODX file describes. **Load ODX / CDD...** and pick an `.odx`, `.pdx` or CDD
+  file (the default folder is `ODX/`); choose a service in the tree, fill its free parameters — fixed
+  ones are shown as *(coded/fixed)* — and press **Send**.
+- **Fault memory** reads the DTCs with their status bits spelled out (`confirmedDTC, testFailed`), counts
+  them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all.
+- The log shows every request and its response, each line with its time (see *View → Time display*): a
+  positive answer with its data as hex, as a number and as text; a negative one as
+  `NRC 0x31 requestOutOfRange`. Once an ODX file is loaded, answers are also shown **decoded** by it, from
+  whichever tab the request came. Requests and answers that span several frames are handled for you.
+- The first bar sets the **session** (DiagnosticSessionControl); the connection itself keeps the ECU awake
+  with TesterPresent. Beside it a strip says what is going on: `Session: extended   P2 75 ms / P2* 4000 ms   Security:
   unlocked (level 1)`. P2 and P2* are what the ECU itself asked for in its answer to the session
   request, and every later request waits that long — an ECU that needs three seconds gets three seconds,
   and one that asks for less never makes CAN Expert less patient than the configuration says.
@@ -349,22 +491,9 @@ the main window has open.
   *key = seed XOR mask* is the rule the simulated ECU uses. *seed & key DLL* calls a real ECU's
   `GenerateKeyEx` DLL instead — **Browse...** to it and give the variant if it wants one. Nothing is
   sent when the DLL cannot be loaded; the log says what was wrong with it.
-- **Fault memory** reads the DTCs with their status bits spelled out (`confirmedDTC, testFailed`), counts
-  them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all.
 
-## Diagnostic Window
-
-**Tools → Diagnostic Window...** sends services described by an ODX file.
-
-1. Connect from the main window first; the Diagnostic Window borrows that session.
-2. **Load ODX / CDD...** and pick an `.odx`, `.pdx` or CDD file (the default folder is `ODX/`).
-3. Choose a service in the tree. Its parameters appear as a form; fixed parameters are shown as
-   *(coded/fixed)*.
-4. Fill the free parameters and press **Send UDS request**.
-
-The reply is shown decoded when the ODX file allows it, negative responses are shown as the service and
-NRC, and the monitor below logs the frames to and from the ECU. Requests that span several frames are
-handled for you.
+The frames of an exchange are in the Trace window; its **Transport** view shows each request and answer
+as one row.
 
 ## Firmware flashing
 
@@ -388,7 +517,8 @@ match your ECU: the session numbers, whether DTCs and normal messages are switch
 SecurityAccess level and how the key is worked out (a mask, or a `GenerateKeyEx` DLL), the erase and
 dependency check routine identifiers, the address and length format, the data format, how many bytes go
 in one TransferData (*as much as the ECU allows* uses the maxNumberOfBlockLength it announces), the reset
-type and the DID read afterwards. **0** leaves a step out altogether. **Save profile...** keeps the
+type and the DID read afterwards, and whether the image's CRC-32 goes to the dependency check (for a
+bootloader that checks it). **0** leaves a step out altogether. **Save profile...** keeps the
 settings in a JSON file you can hand round with the firmware, and **Load profile...** reads one back; the
 last settings used are remembered anyway.
 
@@ -412,8 +542,9 @@ you can study a recording made in a vehicle at your desk.
 
 ## Arranging the windows
 
-The middle of the main window is the **workspace**, where the Database panel and the analysis windows —
-Trace, Statistics, Data, CAN Logger, Transmit, Simulation, UDS Console, Diagnostics — live. Configuration, CAN Channels and Log stay
+The middle of the main window is the **workspace**, where the pages of the loaded database and the
+analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — live.
+Configuration, CAN Channels and Log stay
 as fixed panels around it.
 
 Workspace windows behave as they do in CANoe:
@@ -424,7 +555,8 @@ Workspace windows behave as they do in CANoe:
 - **Several windows in one area** share a tab bar. The **▾** button on the right of the area lists its
   tabs, the **⧉** button pulls the area out as a floating window, and **✕** closes it.
 - **Drag a tab out of the window** to float it on its own; a floating window can hold several tabs, and
-  dragging it back over the workspace docks it again.
+  dragging it back over the workspace docks it again. A floating window too small to use, or left on a
+  screen that is no longer there, opens at a usable size on a screen you have.
 - A **✕** on a tab closes that window. Closing keeps it: its toolbar button goes back to idle, and
   reopening it shows everything it recorded meanwhile.
 
@@ -443,14 +575,102 @@ ECU runs on one and CAN Expert on the other.
 2. Choose the interface and channel (**Detect** lists them; `kvaser` channel `1`) and press **Connect**.
 3. In CAN Expert pick the **Dummy ECU** configuration, select `[kvaser] Ch 0` and connect.
 
-The ECU answers sessions, security access, DIDs, DTCs and the whole flashing sequence. Its window sets
-everything it does: addressing, ISO-TP flow control (block size, STmin, WAIT frames), UDS timing and
-security, and the flashing rules (TransferData size, accepted formats, memory ranges, routines). Settings
-apply immediately and can be saved as profiles. **Show CAN frames** logs every frame, flow control
-included.
+The ECU answers sessions, security access, DIDs, DTCs, periodic data, events, memory and I/O control, and
+the whole flashing sequence. Its window sets everything it does; every setting applies at once, even while
+it runs, and the settings can be saved as profiles. The right side shows what the ECU is doing — session,
+security levels unlocked, whether its application is valid, periodic data, events, I/O control, the
+operation cycle — and **Show CAN frames** logs every frame, flow control included.
 
-Only one dummy ECU can run per channel: a second one is refused, because two ECUs answering the same
-requests break security access and flashing.
+| Tab | What it sets |
+|---|---|
+| **Addressing**, **Flow control** | The identifiers, extended addressing and padding; block size, STmin, WAIT frames and receive buffer. |
+| **UDS** | P2/P2*, the response delay, the S3 timeout, the sessions, and the rates of periodic data. |
+| **Access** | Security levels and how each key is worked out; rules that allow a service only in some sessions or after unlocking a level. |
+| **Flashing** | TransferData size and formats, memory ranges, the routines, and the **bootloader**. |
+| **Signals** | The messages the ECU sends, and a generator for each signal. |
+| **Data** | The DIDs, the DTCs with their faults, the fault memory's cycles, and forced negative responses. |
+| **Errors** | Transport errors on purpose. |
+
+### Its application frames
+
+The **Signals** tab chooses the DBC whose messages the ECU sends. **Built-in** is `DBC/dummy_ecu.dbc` —
+`0x300` EngineData and `0x301` EcuStatus, which the example panels use — and **Browse...** takes any other.
+Each message is sent at its own period (the table's, else the DBC's `GenMsgCycleTime`, else the default
+period) and can be switched off. Each signal gets a **generator**:
+
+| Generator | What the signal does |
+|---|---|
+| Constant | Stays at *Low*. |
+| Ramp | Climbs from *Low* to *High* in *Period* seconds, then starts again. |
+| Sine | A wave between *Low* and *High*, one per *Period*. |
+| Square | *High* for half of *Period*, *Low* for the other half. |
+| Random | A new value between *Low* and *High* in every frame. |
+| Counter | One more in every frame, from *Low* to *High* and round again. |
+| Engine running | *High* while the engine runs (`0x200 01`), *Low* once it stops (`0x200 02`), approached with *Period* as time constant. |
+| Logging | *High* while logging is on (`0x201`, bit 0). |
+| Session | The diagnostic session. |
+
+Values are physical, in the signal's unit; **Now** shows what goes out. The built-in database starts with
+the ECU's usual traffic: the temperature warms up to 85 °C while the engine runs, the pressure follows,
+and a counter counts. The frames stop while CommunicationControl switches normal messages off and while
+the bootloader runs.
+
+### Periodic data and events
+
+The **F2xx** DIDs can be sent periodically: `2A 03 01` sends F201 fast, `2A 01 02` F202 slow, `2A 04`
+stops them. The rates are on the **UDS** tab. The frames are `6A` messages on the response ID, or frames
+of an identifier of their own. ResponseOnEvent answers unasked: `86 03 02 01 01 22 01 01` sets up an event
+on DID `0101`, `86 01 02 08 19 02 08` one on DTCs becoming confirmed, `86 05 02` starts them and
+`86 00 02` stops them. Periodic data and events end when the session changes.
+
+### Security and access
+
+The **Access** tab has the main security level and as many more as needed, each with its own seed length
+and key: seed XOR a mask, or what a **seed & key DLL** (`GenerateKeyEx`) computes — give the UDS Console
+the same DLL and it unlocks. Each level unlocks on its own, until the session changes. A DID can be
+readable only in some **Sessions** (elsewhere NRC `0x31`) or after unlocking a **Level** (NRC `0x33`) —
+DID `0200` shows both — and a **service rule** does the same for a whole service, with NRC `0x7F` and
+`0x33`.
+
+### Faults and the fault memory
+
+Tick **Fault** beside a DTC on the **Data** tab and its test fails, as ISO 14229 describes: the DTC is
+pending at once, confirmed once it has failed in the number of operation cycles set under *Fault memory*,
+and it asks for the warning lamp. The snapshot record takes the **Snapshot DIDs** with their values at
+that moment, and the occurrence counter — the extended data's first byte — counts one more. Untick it and
+the DTC heals: no longer pending after a clean cycle, aged out after more. **Now** shows the status as it
+is. An operation cycle ends with an ECUReset, **New operation cycle**, or a timer. ControlDTCSetting off
+freezes every status; ClearDiagnosticInformation starts them again, and a fault still present comes
+straight back.
+
+### Memory and I/O control
+
+A DID with a **Signal** answers that signal's value. InputOutputControlByIdentifier takes the signal
+over in the extended session: `2F 01 01 03 03 E8` holds the temperature at 100.0 °C and the `0x300`
+frames carry it, `2F 01 01 00` hands it back; *freezeCurrentState* and *resetToDefault* work too.
+ReadMemoryByAddress (`23`) and WriteMemoryByAddress (`3D`, extended session and unlocked) read and write
+the ECU's memory — the flashed image included.
+
+### The bootloader
+
+An erase or a download leaves the application invalid until checkProgrammingDependencies passes. An
+ECUReset with an invalid application — a flash that failed or was abandoned — starts the **bootloader**:
+no application frames, `F195` answers `BOOTLOADER`, and only what is needed to flash again is answered.
+A good flash and a reset start the application again. The **Image check** can require the CRC-32 of the
+image — as the check routine's option record, which the built-in flashing sequence sends when asked, or
+in the image's last four bytes — and the software version can be read from the image itself (the demo
+image has its name at `00020000`).
+
+### Errors on purpose
+
+The **Errors** tab gives each response a chance of going wrong: refused (NRC `0x21` busyRepeatRequest by
+default), not answered, answered on another identifier, or — for a long response — a consecutive frame
+dropped, out of sequence or late. TesterPresent is spared unless you tick it, so the ECU stays in CAN
+Expert's node list while the other requests go wrong.
+
+Several dummy ECUs can share a channel when each has its own identifiers (Addressing) and only one sends
+the application frames. A second ECU answering the *same* requests is refused, because two ECUs answering
+them break security access and flashing.
 
 ## Where things are kept
 
@@ -459,14 +679,15 @@ requests break security access and flashing.
 | `Configurations/` | `config_<name>.json`, one per configuration |
 | `Databases/` | Panels: `family_YYYY-MM-DD.xml` and `family_YYYY-MM-DD_script.py` |
 | `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings |
-| `ODX/` | ODX, PDX and CDD files for the Diagnostic Window |
+| `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab |
 | `examples/` | A runnable panel and script, and demo firmware images |
 
 Recordings go wherever you save them; `.blf` is the most compact.
 
 The window arrangement and its saved desktops, the theme, the symbol databases, the transmit list, the
-messages ticked for simulation, the flashing sequence settings and the receiver used last are all
-remembered between runs.
+simulated nodes' ticked messages, the flashing sequence settings, each configuration's ISO-TP settings, each
+channel's setup, the panel zooms, the time display and the receiver used last are all remembered
+between runs.
 
 ## If something does not work
 
@@ -474,7 +695,8 @@ remembered between runs.
 CAN Expert supports Kvaser, Vector and IXXAT through python-can. Press **Refresh** after connecting it.
 
 **The ECU shows Lost connection** — check the bitrate, the SERVER ID and ECU ID, and that the ECU is
-powered. **Scan Activity** tells you whether anything is talking on a channel at all.
+powered. The Trace window tells you whether anything is talking on a channel at all, and **Find the bit
+rate** (*Channel setup*) whether the bit rate is right.
 
 **"No matching database"** — the configuration's *Database family* does not match any file in
 `Databases/`. Clear the field to load the newest panel, or build one in the Form Designer.
@@ -482,7 +704,8 @@ powered. **Scan Activity** tells you whether anything is talking on a channel at
 **The Trace shows identifiers but no names** — no symbol database describes those messages. Add the DBC
 under *Tools → Symbol databases...*.
 
-**The Flashing button stays greyed out** — the panel's script has no `Flashing(api, firmware)` function.
+**The Flashing button stays greyed out** — flashing needs a connection; connect first. A script without
+`Flashing(api, firmware)` only means the built-in sequence is the one offered.
 
 **Graphs stay empty** — the Logger only draws signals from the loaded DBC that are actually received, and
 only while you are connected.

@@ -1,7 +1,6 @@
 """
 CAN access: opening a python-can bus, CanWorker (the only reader of a session's bus, which also sends the
-periodic TesterPresent), ReceiveMailbox (a bus facade for code off the GUI thread) and
-ChannelActivityScanner.
+periodic TesterPresent) and ReceiveMailbox (a bus facade for code off the GUI thread).
 """
 from __future__ import annotations
 
@@ -15,6 +14,11 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 SUPPORTED_INTERFACES = [("kvaser", "Kvaser"), ("vector", "Vector"), ("ixxat", "IXXAT")]
 _ADAPTER_OPTIONS = ("unique_hardware_id", "serial", "app_name")  # IXXAT hardware ID, Vector serial / app name
+_SETUP_OPTIONS = ("timing", "driver_mode", "listen_only")       # from a channel setup (channel_setup.py)
+# How python-can opens each adapter without acknowledging or sending anything. IXXAT has no such option.
+LISTEN_ONLY_OPTIONS = {"kvaser": {"driver_mode": False},           # canlib's silent mode
+                       "vector": {"listen_only": True},
+                       "virtual": {}}
 
 
 def channel_key(channel_config: dict) -> tuple:
@@ -24,14 +28,16 @@ def channel_key(channel_config: dict) -> tuple:
 
 
 def create_can_bus(interface: str, channel, bitrate: int, **options) -> can.BusABC:
-    """Open a python-can bus; adapter options other than _ADAPTER_OPTIONS are ignored."""
+    """Open a python-can bus; options other than the adapter's and a channel setup's are ignored."""
     return can.Bus(interface=interface, channel=channel, bitrate=bitrate,
-                   **{key: value for key, value in options.items() if key in _ADAPTER_OPTIONS})
+                   **{key: value for key, value in options.items() if key in _ADAPTER_OPTIONS + _SETUP_OPTIONS})
 
 
-def open_channel(channel_config: dict, bitrate) -> can.BusABC:
-    """Open a channel as listed by can.detect_available_configs(); its other keys (device name, ...) are dropped."""
+def open_channel(channel_config: dict, bitrate, **setup_options) -> can.BusABC:
+    """Open a channel as listed by can.detect_available_configs(); its other keys (device name, ...) are
+    dropped. setup_options are what a channel setup adds (bit timing, listen-only)."""
     options = {key: channel_config[key] for key in _ADAPTER_OPTIONS if key in channel_config}
+    options.update(setup_options)
     return create_can_bus(channel_config["interface"], channel_config.get("channel", 0), int(bitrate), **options)
 
 
@@ -71,6 +77,8 @@ class CanWorker(QThread):
         heartbeat = bytes([2, 0x3E, 0])
         if cfg.get("extended_id"):
             heartbeat = bytes([cfg["extended_id_byte"]]) + heartbeat
+        if cfg.get("isotp_padding") is not None:              # padded like the session's other requests
+            heartbeat = heartbeat.ljust(8, bytes([cfg["isotp_padding"]]))
         next_heartbeat = 0.0 if self.tester_present else float("inf")
         next_status = 0.0
         while self.running:
@@ -181,34 +189,3 @@ class ReceiveMailbox:
     def close(self):
         with self.lock:
             self.closed = True
-
-
-class ChannelActivityScanner(QThread):
-    """Opens each channel briefly and reports whether any frame arrives (one bool per channel)."""
-    channel_activity = pyqtSignal(list)
-
-    def __init__(self, channels: list, bitrate: int = 500000, listen_time: float = 0.3):
-        super().__init__()
-        self.channels = channels
-        self.bitrate = bitrate
-        self.listen_time = listen_time
-
-    def run(self):
-        result = []
-        for channel_config in self.channels:
-            if self.isInterruptionRequested():
-                break
-            try:
-                bus = open_channel(channel_config, self.bitrate)
-            except Exception:
-                result.append(False)
-                continue
-            try:
-                deadline = time.monotonic() + self.listen_time
-                active = False
-                while not active and time.monotonic() < deadline:
-                    active = bus.recv(timeout=0.05) is not None
-                result.append(active)
-            finally:
-                bus.shutdown()
-        self.channel_activity.emit(result)

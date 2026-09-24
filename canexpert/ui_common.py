@@ -1,9 +1,13 @@
-"""Shared Qt helpers: persistent settings, toolbar icons, Windows 11-style caption buttons, the
-collapsible SplitterPanel and the main window's DockTitleBar."""
-from PyQt5.QtCore import QByteArray, QEvent, QPointF, QRectF, QSettings, Qt
+"""Shared Qt helpers: persistent settings, toolbar icons, the small tool buttons of the analysis windows,
+Windows 11-style caption buttons, the collapsible SplitterPanel, the main window's DockTitleBar, and a
+tree's rows as CSV."""
+import csv
+
+from PyQt5.QtCore import QByteArray, QEvent, QPointF, QRectF, QSettings, QSize, Qt
 from PyQt5.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QSplitter,
@@ -19,21 +23,11 @@ from PyQt5.QtWidgets import (
 
 ORGANIZATION = "CanExpert"
 APPLICATION = "CanExpert"
-# Settings were stored under this name before the project was renamed.
-LEGACY_ORGANIZATION, LEGACY_APPLICATION = "EZCan2", "KvaserCAN"
-_MIGRATED_KEY = "migrated_legacy_settings"
 
 
 def app_settings() -> QSettings:
-    """CAN Expert settings; values saved under the legacy name are copied over once."""
-    settings = QSettings(ORGANIZATION, APPLICATION)
-    if not settings.value(_MIGRATED_KEY, False, type=bool):
-        legacy = QSettings(LEGACY_ORGANIZATION, LEGACY_APPLICATION)
-        for key in legacy.allKeys():
-            if not settings.contains(key):
-                settings.setValue(key, legacy.value(key))
-        settings.setValue(_MIGRATED_KEY, True)
-    return settings
+    """CAN Expert's settings (the registry on Windows)."""
+    return QSettings(ORGANIZATION, APPLICATION)
 
 
 def is_dark_theme(widget) -> bool:
@@ -71,11 +65,14 @@ _PATHS = {
     "transmit": '<path d="M12 3v10"/><path d="M8.5 6.5 12 3l3.5 3.5"/>'
                 '<path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
     "console": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9.5l3 2.5-3 2.5M13 15h4"/>',
-    "simulation": '<rect x="3" y="9" width="6" height="6" rx="1"/><rect x="15" y="4" width="6" height="6" rx="1"/>'
-                  '<rect x="15" y="14" width="6" height="6" rx="1"/><path d="M9 12h3v-5h3M12 12h0v5h3"/>',
     "data": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14.5h18M11 9v11"/>',
     "statistics": '<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/>'
                   '<rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>',
+    "write": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6.5 9h7M6.5 12.5h5M6.5 16h3"/>'
+             '<path d="m14 17 1-3 4.5-4.5 2 2L17 16l-3 1z"/>',
+    "sysvars": '<path d="M7 5c-2 0-2 2-2 3.5S4 11 3 12c1 1 2 1.5 2 3.5S5 19 7 19"/>'
+               '<path d="M17 5c2 0 2 2 2 3.5s1 2.5 2 3.5c-1 1-2 1.5-2 3.5S19 19 17 19"/>'
+               '<path d="M9 9l6 6M15 9l-6 6"/>',
 }
 _COLORS = {
     "connect": ("#15803d", "#6ee7a0"),
@@ -87,9 +84,10 @@ _COLORS = {
     "trace": ("#1f6feb", "#8ab4ff"),
     "transmit": ("#b45309", "#fbbf24"),
     "console": ("#7c3aed", "#c4b5fd"),
-    "simulation": ("#0f766e", "#5eead4"),
     "data": ("#2563eb", "#93c5fd"),
     "statistics": ("#0e7490", "#67e8f9"),
+    "write": ("#4b5563", "#d1d5db"),
+    "sysvars": ("#9d174d", "#f9a8d4"),
 }
 
 
@@ -140,6 +138,75 @@ def style_toggle(button):
     """Give a tool button the pressed-in look. Setting it again re-reads palette(...) after a theme change."""
     button.setStyleSheet(TOGGLE_STYLE)
     return button
+
+
+# Symbols of the small tool buttons of the Trace and the CAN Logger, drawn in a 24 x 24 box (line_icon).
+TOOL_ICONS = {
+    "clear": '<path d="M5 7h14M10 4h4"/><path d="M7 7l1 13h8l1-13"/><path d="M10.5 10.5v6M13.5 10.5v6"/>',
+    "pause": '<path d="M9.5 5v14M14.5 5v14" stroke-width="2.6"/>',
+    "play": '<path d="M8 5l11 7-11 7z"/>',
+    "follow": '<path d="M3 12h12"/><path d="M11 7l5 5-5 5"/><path d="M20 4v16"/>',
+    "fit": '<path d="M4 10V4h6M14 4h6v6M20 14v6h-6M10 20H4v-6"/>',
+    "lock_x": '<path d="M10 7V6a2 2 0 0 1 4 0v1"/><rect x="8.5" y="7" width="7" height="5.5" rx="1.2"/>'
+              '<path d="M3 18h18"/><path d="M6.5 15.5 4 18l2.5 2.5"/><path d="M17.5 15.5 20 18l-2.5 2.5"/>',
+    "lock_y": '<path d="M13 9V8a2 2 0 0 1 4 0v1"/><rect x="11.5" y="9" width="7" height="5.5" rx="1.2"/>'
+              '<path d="M6 3v18"/><path d="M3.5 5.5 6 3l2.5 2.5"/><path d="M3.5 18.5 6 21l2.5-2.5"/>',
+    "cursors": '<path d="M8 7v14M16 7v14"/><path d="M5.5 4h5l-2.5 3z" fill="currentColor"/>'
+               '<path d="M13.5 4h5l-2.5 3z" fill="currentColor"/>',
+    "combine": '<rect x="3" y="4" width="18" height="16" rx="2"/>'
+               '<path d="M4.5 16l4-5 3 3 3-6 3 4 2-3"/><path d="M4.5 19h15"/>',
+    "colour": '<path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-1 2-1.8 0-1.6-1.6-1.8-1.6-3 0-.9.8-1.6 1.8-1.6H16a5 5 0 0 0 5-5"/>'
+              '<circle cx="7.5" cy="12" r="1.2" fill="currentColor"/><circle cx="9.5" cy="8" r="1.2" fill="currentColor"/>'
+              '<circle cx="14" cy="7" r="1.2" fill="currentColor"/>',
+    "transport": '<path d="M4 7h10a3 3 0 0 1 0 6H8a3 3 0 0 0 0 6h12"/><path d="M17 4l3 3-3 3"/>'
+                 '<path d="M7 16l-3 3 3 3"/>',
+}
+
+
+class ToolButtonsMixin:
+    """The small symbol buttons of a window's toolbar (the Trace, the CAN Logger). The window keeps them in
+    self._tool_buttons and calls _refresh_tool_icons() after a theme change; Pause shows Play while checked."""
+
+    def _tool_button(self, name, tip, checkable=False, checked=False, clicked=None, toggled=None):
+        """A small CANoe-style tool button; its symbol follows the theme (see _refresh_tool_icons)."""
+        button = QToolButton()
+        button.setAutoRaise(True)
+        button.setIconSize(QSize(18, 18))
+        button.setToolTip(tip)
+        button.setAccessibleName(tip.split(":")[0])
+        button.setCheckable(checkable)
+        button.setChecked(checked)
+        if clicked is not None:
+            button.clicked.connect(clicked)
+        if toggled is not None:
+            button.toggled.connect(toggled)
+        self._tool_buttons[name] = button
+        return style_toggle(button)
+
+    @staticmethod
+    def _separator():
+        line = QFrame()
+        line.setFrameShape(QFrame.VLine)
+        line.setFrameShadow(QFrame.Sunken)
+        return line
+
+    def _refresh_tool_icons(self):
+        colour = self.palette().color(QPalette.WindowText)
+        for name, button in self._tool_buttons.items():
+            symbol = "play" if name == "pause" and button.isChecked() else name
+            body = TOOL_ICONS[symbol].replace('fill="currentColor"', f'fill="{colour.name()}"')
+            button.setIcon(line_icon(body, colour))
+            style_toggle(button)          # the style sheet's palette(...) is resolved when it is set
+
+
+def write_tree_csv(path, tree, headers):
+    """The rows a tree shows, as CSV with the given header row."""
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            writer.writerow([item.text(column) for column in range(len(headers))])
 
 
 # -----------------------------------------------------------------------------
@@ -225,7 +292,6 @@ class SplitterPanel(QWidget):
     """
     def __init__(self, title: str, content_widget: QWidget, orientation: Qt.Orientation = Qt.Horizontal, parent=None):
         super().__init__(parent)
-        self._title = title
         self._content = content_widget
         self._orientation = orientation  # Splitter's orientation: Horizontal = side-by-side panels → minimize width
         self._is_minimized = False

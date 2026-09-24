@@ -20,6 +20,8 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 from canexpert.config import uds_transport
 from canexpert.flashing import load_firmware, parse_s19_s28_file
+from canexpert import features
+from canexpert.sysvars import SystemVariables
 from canexpert.uds.client import UdsFunctions, uds_request
 
 
@@ -30,14 +32,23 @@ from canexpert.uds.client import UdsFunctions, uds_request
 class DatabaseAPI:
     """
     API passed to the script's DatabaseMainFunction(api), handlers and Flashing(api, firmware).
-    - api.can.send(id, data), api.can.get_latest_messages()
-    - api.uds.request(payload); api.uds.tester_present(), rdbi(did), request_download(format, addr, size),
-      transfer_data(counter, data), request_transfer_exit(), transfer_data_from_file(path, packet_size)
-      (the ISO 14229 functions RDBI, RD, TD, ... are also plain functions in the script)
-    - api.dll.load(path), api.dll.call(path, name, *args)
-    - api.ui.get_value(name), api.ui.set_value(name, value)
     - api.signal(name), api.set_signal(name, value), api.send_message(message, **signals)
-    - api.log(msg), api.progress(done, total, message), api.flash_cancelled, api.sleep(seconds)
+    - api.can.send(id, data)
+    - api.ui.get_value(name), api.ui.set_value(name, value)
+    - api.sysvar.get(name), api.sysvar.set(name, value), api.sysvar[name]: system variables, when they are
+      switched on (features.SYSTEM_VARIABLES)
+    - api.log(msg) / api.write(msg), api.warn(msg): the Write window
+    - api.dll.load(path), api.dll.call(path, name, *args)
+    - api.progress(done, total, message), api.flash_cancelled, api.sleep(seconds)
+    The ISO 14229 services are plain functions in the script (RDBI, RD, TD, UDS("22 F1 90"), ...), and
+    events are decorators (@on_control, @on_message, @on_timer, @on_signal, @on_key, ...; @on_sysvar with
+    the system variables).
+
+    Deprecated, and kept working for the scripts that use them: api.on (use @on_control), api.on_can
+    (@on_message), api.every (@on_timer), api.can.get_latest_messages (@on_message), and api.uds.request,
+    tester_present, rdbi, request_download, transfer_data, request_transfer_exit, transfer_data_from_file
+    and parse_s19_s28 (the service functions UDS, TP, RDBI, RD, TD, RTE, and the firmware Flashing() is
+    given, or the built-in flashing sequence).
     """
 
     def __init__(self, can_bus=None, request_id: int = 0x7DF, response_id: int = 0x7E8, log_cb=None):
@@ -56,19 +67,21 @@ class DatabaseAPI:
         self.uds = _UDSApi(self)
         self.dll = _DLLApi(self)
         self.ui = _UIApi(self)
+        if features.SYSTEM_VARIABLES:
+            self.sysvar = _SysVarApi(self)
 
     def on(self, name, callback):
-        """Register callback(value) for a named button/input event."""
+        """Deprecated: use @on_control(name). Register callback(value) for a named button/input event."""
         if self._runtime is None:
             raise RuntimeError("No script runtime")
         self._runtime.callbacks.setdefault(name, []).append(callback)
 
     def on_can(self, callback):
-        """Register callback(arbitration_id, bytes) for incoming frames."""
+        """Deprecated: use @on_message. Register callback(arbitration_id, bytes) for incoming frames."""
         self._runtime.can_callbacks.append(callback)
 
     def every(self, seconds, callback):
-        """Call callback() periodically while connected."""
+        """Deprecated: use @on_timer(seconds). Call callback() periodically while connected."""
         seconds = float(seconds)
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError("Timer interval must be positive")
@@ -130,6 +143,51 @@ class DatabaseAPI:
     def log(self, msg: str):
         self._log_cb(str(msg))
 
+    def write(self, msg: str):
+        """CAPL's write(): a line in the Write window."""
+        self.log(msg)
+
+    def warn(self, msg: str):
+        """A line in the Write window, marked as a warning."""
+        if self._runtime is not None:
+            self._runtime.say("warning", str(msg))
+        else:
+            self.log(msg)
+
+
+class _SysVarApi:
+    """api.sysvar: the system variables the windows share. Names are Namespace::Name."""
+
+    def __init__(self, parent: DatabaseAPI):
+        self._api = parent
+
+    @property
+    def _variables(self):
+        runtime = self._api._runtime
+        if runtime is None:
+            raise RuntimeError("No script runtime")
+        return runtime.sysvars
+
+    def get(self, name: str, default=None):
+        return self._variables.get(name, default)
+
+    def set(self, name: str, value) -> bool:
+        """Set a variable (defining it if it is new); True when its value changed."""
+        return self._variables.set(name, value)
+
+    def define(self, name: str, kind: str = "float", initial=0.0, unit: str = "", comment: str = ""):
+        from canexpert.sysvars import SysVarDefinition
+        self._variables.define(SysVarDefinition(name, kind, initial, unit, comment))
+
+    def names(self) -> list[str]:
+        return self._variables.names()
+
+    def __getitem__(self, name):
+        return self.get(name)
+
+    def __setitem__(self, name, value):
+        self.set(name, value)
+
 
 class _CANApi:
     def __init__(self, parent: DatabaseAPI):
@@ -147,7 +205,7 @@ class _CANApi:
         self._api._bus.send(msg)
 
     def get_latest_messages(self) -> list[dict]:
-        """Return list of last received CAN messages: [{"id": int, "data": [bytes]}, ...]."""
+        """Deprecated: use @on_message. The last received frames: [{"id": int, "data": [bytes]}, ...]."""
         return list(self._api._latest_messages)
 
 
@@ -161,8 +219,9 @@ class _UDSApi:
 
     def request(self, payload: bytes | list, timeout: float | None = None, wait: bool = True,
                 pending: float | None = None) -> bytes | None:
-        """Send any UDS request. Returns the reply (positive, or 0x7F negative) or None on timeout;
-        wait=False only sends it. pending is how long a "response pending" may extend the wait."""
+        """Deprecated: use UDS(payload). Send any UDS request. Returns the reply (positive, or 0x7F
+        negative) or None on timeout; wait=False only sends it. pending is how long a "response pending"
+        may extend the wait."""
         transport = dict(self._api._transport)
         if timeout is not None:
             transport["timeout"] = timeout
@@ -171,30 +230,31 @@ class _UDSApi:
         return uds_request(self._api._bus, bytes(payload), wait=wait, **transport)
 
     def tester_present(self, timeout: float | None = None) -> bool:
+        """Deprecated: use TP() - and the session already sends TesterPresent."""
         return bool(self.functions.TP(timeout=timeout))
 
     def rdbi(self, did: int, timeout: float | None = None) -> bytes | None:
-        """ReadDataByIdentifier. Returns the data record (without SID/DID echo) or None."""
+        """Deprecated: use RDBI(did).data. The data record (without SID/DID echo) or None."""
         result = self.functions.RDBI(did, timeout=timeout)
         return result.data if result else None
 
     def request_download(self, format: int, address: int, size: int, timeout: float | None = None) -> bool:
-        """RequestDownload (0x34). format is the address/length format, e.g. 0x44."""
+        """Deprecated: use RD(address, size, format). RequestDownload (0x34)."""
         return bool(self.functions.RD(address, size, format, timeout=timeout))
 
     def transfer_data(self, sequence: int, data: bytes, timeout: float | None = None) -> bool:
-        """TransferData (0x36). sequence is the block counter (0-255); data may span several frames."""
+        """Deprecated: use TD(counter, data). TransferData (0x36); the counter runs 0-255."""
         return _acknowledged(self.functions.TD(sequence, data, timeout=timeout), sequence)
 
     def request_transfer_exit(self, timeout: float | None = None) -> bool:
-        """RequestTransferExit (0x37)."""
+        """Deprecated: use RTE(). RequestTransferExit (0x37)."""
         return bool(self.functions.RTE(timeout=timeout))
 
     def transfer_data_from_file(self, s19_or_s28_path: str | Path, packet_size: int,
                                 progress_cb: Callable[[int, int], None] | None = None) -> tuple[bool, str]:
-        """Download an S-record or Intel HEX file: per segment RequestDownload, TransferData blocks of
-        packet_size bytes (at most the ECU's maxNumberOfBlockLength - 2) and RequestTransferExit.
-        Returns (success, error message)."""
+        """Deprecated: Flashing() or the built-in flashing sequence does this. Download an S-record or
+        Intel HEX file: per segment RequestDownload, TransferData blocks of packet_size bytes (at most the
+        ECU's maxNumberOfBlockLength - 2) and RequestTransferExit. Returns (success, error message)."""
         try:
             firmware = load_firmware(s19_or_s28_path)
         except (OSError, ValueError) as exc:
@@ -218,7 +278,7 @@ class _UDSApi:
 
     @staticmethod
     def parse_s19_s28(path: str | Path) -> list[tuple[int, bytes]]:
-        """(address, data) of every record of an S-record file."""
+        """Deprecated: Flashing(api, firmware) gets the parsed image. (address, data) of every S-record."""
         return parse_s19_s28_file(path)
 
 
@@ -292,7 +352,7 @@ UDS services are plain functions: RDBI(0xF190) sends 22 F1 90 and returns a resu
 positive; .data, .text, .int, .error). See the UDS functions panel beside the editor.
 Name a function's first parameter api to receive the script API: api.signal("Msg.Sig"),
 api.set_signal("Msg.Sig", value), api.send_message("Msg", Sig=value), api.can.send(id, data),
-api.ui.set_value(name, value), api.log(text), api.uds..., api.every(seconds, callback).
+api.ui.set_value(name, value), api.log(text) - the Write window.
 Callbacks run one at a time on a background thread and stop on disconnect.
 """
 
@@ -343,12 +403,13 @@ _MISSING = object()
 
 class ScriptRuntime(QObject):
     value_changed = pyqtSignal(str, object)
-    logged = pyqtSignal(str)
+    logged = pyqtSignal(str)                 # every line the script or its errors produce
+    message = pyqtSignal(str, str)           # the same line with its level: info, warning or error
     flashing_available = pyqtSignal(bool)
     flash_progress = pyqtSignal(int, int, str)
     flash_finished = pyqtSignal(bool, str)
 
-    def __init__(self, bus, config, values, parent=None):
+    def __init__(self, bus, config, values, parent=None, sysvars=None):
         super().__init__(parent)
         self.stop_event = threading.Event()
         self.events = queue.Queue(maxsize=2048)
@@ -367,9 +428,21 @@ class ScriptRuntime(QObject):
         self.signal_handlers = {}       # "Message.Signal" -> [(handler, every_update)]
         self.signal_values = {}
         self.last_frames = {}
+        self.sysvar_handlers = {}       # system variable name (or "*") -> [handler]
+        self.key_handlers = {}          # key ("a", "F5", "*") -> [handler]
+        self.error_frame_handlers, self.bus_state_handlers = [], []
+        self.namespace = {}             # the script's globals, for the Write window's watch
+        self.hidden_names = set()       # the names CAN Expert put there
         self._messages = None
         self._stop_done = threading.Event()
-        self.api = DatabaseAPI(bus, log_cb=self.logged.emit)
+        # The system variables the windows share, when they are switched on; a private set when the
+        # runtime runs on its own.
+        self.sysvars = None
+        self._sysvar_slot = lambda name, value, _when: self.post("sysvar", name, value)
+        if features.SYSTEM_VARIABLES:
+            self.sysvars = sysvars if sysvars is not None else SystemVariables()
+            self.sysvars.changed.connect(self._sysvar_slot)
+        self.api = DatabaseAPI(bus, log_cb=lambda text: self.say("info", text))
         self.api._transport = uds_transport(config)
         self.api._runtime = self
         self.api._stop_event = self.stop_event
@@ -383,16 +456,21 @@ class ScriptRuntime(QObject):
         self.thread = threading.Thread(target=self._run, args=(code, path), daemon=True)
         self.thread.start()
 
-    def _trace(self, frame, event, arg):
+    def _trace(self, frame, event, _arg):     # sys.settrace calls it with three arguments
         if self.stop_event.is_set():
             raise ScriptStopped()
         return self._trace
+
+    def say(self, level: str, text: str):
+        """A line for the Write window (and, for an error, the application log)."""
+        self.logged.emit(text)
+        self.message.emit(level, text)
 
     def _call(self, callback, *args):
         try:
             callback(*args)
         except Exception as exc:
-            self.logged.emit(f"Script callback failed: {exc}")
+            self.say("error", f"Script callback failed: {exc}")
 
     def _adapt(self, fn):
         """Call fn with the arguments it declares; a first parameter named api receives the script API."""
@@ -461,10 +539,40 @@ class ScriptRuntime(QObject):
                 return fn
             return register
 
+        def on_sysvar(*names):
+            """@on_sysvar("Engine::TargetSpeed") def f(value): ... - when the variable changes ("*": any)."""
+            def register(fn):
+                for name in names or ("*",):
+                    runtime.sysvar_handlers.setdefault(name, []).append(runtime._adapt(fn))
+                return fn
+            return register
+
+        def on_key(*keys):
+            """@on_key("a", "F5") def f(key): ... - a key pressed in CAN Expert ("*": any key)."""
+            def register(fn):
+                for key in keys or ("*",):
+                    runtime.key_handlers.setdefault(str(key), []).append(runtime._adapt(fn))
+                return fn
+            return register
+
+        def on_error_frame(fn):
+            """@on_error_frame def f(timestamp): ... - an error frame on the bus."""
+            runtime.error_frame_handlers.append(runtime._adapt(fn))
+            return fn
+
+        def on_bus_state(fn):
+            """@on_bus_state def f(state): ... - the controller went error active, error passive or bus off."""
+            runtime.bus_state_handlers.append(runtime._adapt(fn))
+            return fn
+
         # ISO 14229 service functions (RDBI, WDBI, DSC, ...) over the session's UDS transport.
-        return {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start, "on_stop": on_stop,
-                "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal, "on_control": on_control,
-                **self.api.uds.functions.namespace()}
+        namespace = {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start,
+                     "on_stop": on_stop, "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal,
+                     "on_control": on_control, "on_key": on_key, "on_error_frame": on_error_frame,
+                     "on_bus_state": on_bus_state, **self.api.uds.functions.namespace()}
+        if self.sysvars is not None:
+            namespace["on_sysvar"] = on_sysvar
+        return namespace
 
     def _register_handlers(self, namespace):
         for control, name in self.handlers.items():
@@ -472,7 +580,7 @@ class ScriptRuntime(QObject):
             if callable(fn):
                 self.callbacks.setdefault(control, []).append(self._adapt(fn))
             else:
-                self.logged.emit(f"Handler '{name}' for control '{control}' is not defined in the script")
+                self.say("error", f"Handler '{name}' for control '{control}' is not defined in the script")
 
     def message_values(self, message):
         """Current values of a DBC message's signals: last frame seen/sent, else the initial values."""
@@ -526,6 +634,8 @@ class ScriptRuntime(QObject):
         sys.settrace(self._trace)
         try:
             namespace = self._namespace(path)
+            self.hidden_names = set(namespace)
+            self.namespace = namespace
             exec(code, namespace)
             self._register_handlers(namespace)
             flashing = namespace.get("Flashing")
@@ -546,6 +656,19 @@ class ScriptRuntime(QObject):
                         self._on_frame(name, value)
                     elif kind == "flash":
                         self._flash(value)
+                    elif kind == "sysvar":
+                        for handler in list(self.sysvar_handlers.get(name, ())) + \
+                                list(self.sysvar_handlers.get("*", ())):
+                            self._call(handler, value)
+                    elif kind == "key":
+                        for handler in list(self.key_handlers.get(name, ())) + list(self.key_handlers.get("*", ())):
+                            self._call(handler, name)
+                    elif kind == "error_frame":
+                        for handler in list(self.error_frame_handlers):
+                            self._call(handler, value)
+                    elif kind == "bus_state":
+                        for handler in list(self.bus_state_handlers):
+                            self._call(handler, value)
                     elif kind == "stop":
                         for handler in list(self.stop_handlers):
                             self._call(handler)
@@ -560,7 +683,7 @@ class ScriptRuntime(QObject):
         except ScriptStopped:
             pass
         except Exception as exc:
-            self.logged.emit(f"Database script failed: {exc}")
+            self.say("error", f"Database script failed: {exc}")
         finally:
             sys.settrace(None)
 
@@ -593,7 +716,7 @@ class ScriptRuntime(QObject):
         try:
             self.events.put_nowait((kind, name, value))
         except queue.Full:
-            self.logged.emit("Script event queue full; event dropped")
+            self.say("warning", "Script event queue full; event dropped")
 
     def get_value(self, name):
         with self.lock:
@@ -612,6 +735,11 @@ class ScriptRuntime(QObject):
             self.post("stop", None, None)
             self._stop_done.wait(1.0)
         self.stop_event.set()
+        try:
+            if self.sysvars is not None:
+                self.sysvars.changed.disconnect(self._sysvar_slot)
+        except TypeError:                          # already disconnected
+            pass
         self.api.set_bus(None)
         if self.thread:
             self.thread.join(timeout=1.0)

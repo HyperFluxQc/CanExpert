@@ -182,5 +182,59 @@ class SimulationWindowTest(unittest.TestCase):
         self.assertIn("EngineData", window.messages)
 
 
+class TransmitPaneTest(unittest.TestCase):
+    """The transmit list and the simulated nodes, as the two tabs of the Transmit window."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.settings = QSettings(str(Path(self.temp.name) / "settings.ini"), QSettings.IniFormat)
+        from canexpert.transmit_pane import TransmitPane
+        self.pane = TransmitPane(symbols=SymbolDatabases([str(DBC)], settings=self.settings),
+                                 send=lambda *args: None, settings=self.settings)
+        self.addCleanup(self.pane.close)
+        self.pane.show()
+        APP.processEvents()
+
+    def test_switching_tabs_does_not_stop_either(self):
+        from canexpert.transmit_window import default_row
+        self.pane.messages.rows = [default_row("Start", 0x200, b"\x01", 50)]
+        self.pane.messages._fill_table()
+        self.pane.messages.rows[0]["enabled"] = True
+        self.pane.nodes.start_btn.setChecked(True)
+        self.pane.show_nodes()
+        APP.processEvents()
+        self.pane.tabs.setCurrentIndex(0)
+        APP.processEvents()
+        self.assertTrue(self.pane.messages.rows[0]["enabled"])
+        self.assertTrue(self.pane.nodes.start_btn.isChecked())
+        self.pane.stop_sending()
+        self.assertFalse(self.pane.messages.rows[0]["enabled"])
+        self.assertFalse(self.pane.nodes.start_btn.isChecked())
+
+    def test_escape_in_a_tab_closes_the_window_rather_than_emptying_the_tab(self):
+        closed = []
+        self.pane.finished.connect(closed.append)
+        self.pane.messages.reject()                        # what Esc does inside the tab
+        self.assertTrue(self.pane.messages.isVisibleTo(self.pane))
+        self.assertEqual(closed, [QDialog.Rejected])
+
+    def test_a_page_qt_hides_while_destroying_it_does_not_raise(self):
+        # When the garbage collector frees a window, Python clears its attributes before Qt's destructor
+        # hides it; an exception there surfaced as a SystemError in whatever Qt call was running.
+        from PyQt5.QtGui import QHideEvent
+        from canexpert.transmit_window import TransmitWindow
+        symbols = SymbolDatabases([str(DBC)], settings=self.settings)
+        for page in (TransmitWindow(None, symbols, lambda *args: None, self.settings),
+                     SimulationWindow(None, symbols, lambda *args: None, self.settings)):
+            page._timer.stop()                   # in a real teardown nothing ticks between clearing and deleting
+            attributes = dict(page.__dict__)
+            page.__dict__.clear()
+            page.hideEvent(QHideEvent())
+            page.__dict__.update(attributes)     # and back, so the page goes away like any other
+            page.deleteLater()
+        APP.processEvents()
+
+
 if __name__ == "__main__":
     unittest.main()

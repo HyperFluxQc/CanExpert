@@ -11,13 +11,14 @@ from unittest.mock import patch
 
 import can
 from PyQt5.QtCore import QSettings
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QAction, QApplication
 
 from PyQtAds import ads
 
 from canexpert import can_bus
 from canexpert import main_window as main
 from canexpert.recording import Recorder, read_frames
+from canexpert.transmit_window import default_row
 
 APP = QApplication.instance() or QApplication([])
 
@@ -88,7 +89,6 @@ class MeasurementTest(unittest.TestCase):
         frame = next(f for f in self.window.frame_history if f[2] == 0x123)
         self.assertEqual((frame[1], frame[3]), ("RX", b"\xaa\xbb"))
         self.assertAlmostEqual(frame[0], time.time(), delta=30)   # the adapter's clock, not the GUI's
-        self.assertIn("ID: 0x123", self.window.can_log.toPlainText())
 
     def test_a_window_opened_later_still_shows_what_was_received(self):
         self.window.on_connect_clicked()
@@ -151,12 +151,19 @@ class MeasurementTest(unittest.TestCase):
         self.assertIn(0x300, [frame[2] for frame in trace.frames])
         self.assertIsNone(self.window.can_bus, "replaying must not open a bus")
 
+        # The menu item does the same: it asks for the file (Qt's "checked" must not stand in for it).
+        action = next(item for item in self.window.findChildren(QAction) if item.text() == "Replay a recorded file...")
+        with patch.object(main.QFileDialog, "getOpenFileName", return_value=(str(path), "")) as asked:
+            action.trigger()
+        asked.assert_called_once()
+        self.assertIsNot(self.window.replay, dialog)
+        self.addCleanup(self.window.replay.close)
+
     # --- the workspace ----------------------------------------------------------------------------
 
     def test_tool_windows_live_in_the_workspace(self):
         for name, opener in (("trace", self.window.open_trace), ("logger", self.window.open_can_logger),
-                             ("transmit", self.window.open_transmit), ("console", self.window.open_uds_console),
-                             ("diagnostics", self.window.open_diagnostic_window)):
+                             ("transmit", self.window.open_transmit), ("console", self.window.open_uds_console)):
             widget = opener()
             pane = self.window.tool_panes[name]
             self.assertIs(pane.widget(), widget, name)
@@ -190,7 +197,7 @@ class MeasurementTest(unittest.TestCase):
         self.assertEqual(len(trace.frames), 1)
 
     def test_every_pane_button_follows_its_pane(self):
-        for name in main.TOOL_PANES:
+        for name in self.window.tool_names:
             action = self.window._toolbar_actions[name]
             action.trigger()
             self.assertTrue(action.isChecked(), name)
@@ -198,6 +205,33 @@ class MeasurementTest(unittest.TestCase):
             action.trigger()
             self.assertFalse(action.isChecked(), name)
             self.assertTrue(self.window.tool_panes[name].isClosed(), name)
+
+    def test_the_transmit_window_keeps_sending_behind_other_windows_and_stops_when_closed(self):
+        self.window.show()                                 # hiding behind a tab only happens to what is shown
+        APP.processEvents()
+        pane = self.window.open_transmit()
+        self.assertEqual([pane.tabs.tabText(index) for index in range(pane.tabs.count())],
+                         ["Messages", "Simulated nodes"])
+        messages = pane.messages
+        for page in (messages, pane.nodes):
+            page._timer.stop()           # not connected: a send would fail and switch the row off by itself
+        messages.rows = [default_row("Start", 0x200, b"\x01", 50)]
+        messages._fill_table()
+        messages.rows[0]["enabled"] = True
+        pane.nodes.start_btn.setChecked(True)
+        pane.show_nodes()                                  # the other tab in front
+        self.window.open_trace()
+        trace_pane = self.window.tool_panes["trace"]
+        transmit_pane = self.window.tool_panes["transmit"]
+        self.window.workspace.addDockWidget(ads.CenterDockWidgetArea, trace_pane, transmit_pane.dockAreaWidget())
+        trace_pane.setAsCurrentTab()                       # another window's tab in front
+        APP.processEvents()
+        self.assertFalse(pane.isVisible())
+        self.assertTrue(messages.rows[0]["enabled"], "hidden behind a tab is not closed")
+        self.assertTrue(pane.nodes.start_btn.isChecked())
+        transmit_pane.toggleView(False)                    # closed
+        self.assertFalse(messages.rows[0]["enabled"])
+        self.assertFalse(pane.nodes.start_btn.isChecked())
 
     def test_windows_tab_together_and_float(self):
         self.window.open_trace()
@@ -240,6 +274,130 @@ class MeasurementTest(unittest.TestCase):
         restored = main.MainWindow()
         self.assertIsNotNone(restored.open_trace())
         restored.close()          # closed here, not in a cleanup: the settings patch is still in place
+
+    def test_an_empty_database_window_does_not_come_back_with_the_layout(self):
+        self.window.on_connect_clicked()
+        self.assertFalse(self.window.database_pane.isClosed())
+        self.window.close()                                # the arrangement is saved with the database open
+        restored = main.MainWindow()
+        try:
+            self.assertIsNone(restored.app_database)
+            self.assertTrue(restored.database_pane.isClosed(), "no database loaded: nothing to show")
+            restored.open_can_logger()                     # used to apply the saved arrangement again
+            restored.open_trace()
+            self.assertTrue(restored.database_pane.isClosed())
+            self.assertFalse(restored.tool_panes["logger"].isClosed())
+            restored.save_desktop("Measuring")
+            restored.apply_desktop("Measuring")
+            self.assertTrue(restored.database_pane.isClosed())
+        finally:
+            restored.close()
+
+    def test_a_window_opens_where_the_layout_put_it_and_leaves_the_others_alone(self):
+        self.window.show()
+        self.assertNotIn("logger", self.window.tool_panes, "nothing is built before it is opened")
+        self.window.open_can_logger()
+        self.window.tool_panes["logger"].setFloating()
+        self.window.close()
+        restored = main.MainWindow()
+        try:
+            restored.show()
+            restored.open_can_logger()
+            logger = restored.tool_panes["logger"]
+            APP.processEvents()
+            self.assertTrue(logger.isFloating(), "where the saved arrangement put it")
+            restored.workspace.addDockWidget(ads.BottomDockWidgetArea, logger, restored.database_pane.dockAreaWidget())
+            APP.processEvents()
+            self.assertFalse(logger.isFloating())
+            restored.open_trace()                          # the first time this session
+            restored.open_data()
+            APP.processEvents()
+            self.assertFalse(logger.isFloating(), "opening another window does not put this one back")
+            self.assertFalse(logger.isClosed())
+        finally:
+            restored.close()
+
+    def test_a_window_the_layout_did_not_know_reopens_docked(self):
+        # A state only places the windows it knows; the others used to be left out and reopen floating.
+        self.window.show()
+        self.window.open_trace()
+        self.window.reset_layout()
+        self.window.open_trace()
+        APP.processEvents()
+        self.assertFalse(self.window.tool_panes["trace"].isFloating())
+        self.window.save_desktop("Before the logger")
+        self.window.open_can_logger()
+        self.window.apply_desktop("Before the logger")
+        self.assertTrue(self.window.tool_panes["logger"].isClosed(), "it was not open in that desktop")
+        self.window.open_can_logger()
+        APP.processEvents()
+        self.assertFalse(self.window.tool_panes["logger"].isFloating())
+
+    def visible_areas(self):
+        return [name for name, pane in self.window.workspace.dockWidgetsMap().items()
+                if pane.dockAreaWidget() is not None and pane.dockAreaWidget().isVisible()]
+
+    def test_a_window_the_layout_did_not_know_leaves_no_empty_strip(self):
+        # A layout saved before a window existed: PyQtAds marks the window closed, and it used to come back
+        # docked in a visible area with no tab - an empty strip - because closing it again did nothing.
+        self.window.show()
+        workspace, logger = self.window.workspace, self.window._tool_slots["logger"]
+        workspace.removeDockWidget(logger)
+        older = self.window.layout_state()                     # a layout without the logger
+        add_back = workspace.addDockWidget(ads.CenterDockWidgetArea, logger, None)
+        self.assertIsNotNone(add_back)
+        self.window.apply_layout_state(older)
+        APP.processEvents()
+        self.assertEqual(self.visible_areas(), [], "nothing loaded, nothing open: nothing to see")
+        self.assertTrue(logger.isClosed())
+        self.window.open_can_logger()
+        APP.processEvents()
+        self.assertEqual(self.visible_areas(), ["pane_logger"])
+        self.assertFalse(logger.isFloating())
+        self.assertTrue(logger.tabWidget().isVisible() and logger.widget().isVisible())
+
+    def test_floating_windows_left_empty_go_and_a_sliver_is_made_usable(self):
+        self.window.show()
+        self.window.open_trace()
+        trace = self.window.tool_panes["trace"]
+        trace.setFloating()
+        APP.processEvents()
+        self.window.workspace.addDockWidget(ads.BottomDockWidgetArea, trace, self.window.database_pane.dockAreaWidget())
+        APP.processEvents()                                    # back in the workspace: its floating window is empty
+        self.window.apply_layout_state(self.window.layout_state())
+        APP.sendPostedEvents(None, main.QEvent.DeferredDelete)
+        self.assertEqual(self.window.workspace.floatingWidgets(), [], "the empty floating window is gone")
+
+        trace.setFloating()
+        APP.processEvents()
+        floating = trace.dockContainer().floatingWidget()
+        floating.setGeometry(20, 20, 600, 40)                   # a sliver, as a layout had saved it
+        trace.toggleView(False)
+        self.window.open_trace()
+        APP.processEvents()
+        self.assertGreaterEqual(floating.height(), min(300, APP.primaryScreen().availableGeometry().height()))
+        floating.move(20000, 20000)                            # a monitor that is not there any more
+        trace.toggleView(False)
+        self.window.open_trace()
+        APP.processEvents()
+        self.assertTrue(APP.primaryScreen().availableGeometry().intersects(floating.geometry()))
+
+    def test_the_pages_of_a_database_after_reset_layout(self):
+        (self.databases / "panel_2026-09-18.xml").write_text(PANEL.replace(
+            "</page></pages>", '</page><page name="Body"><value id="2" label="Door" binding_value="door" '
+                               'x="10" y="10"/></page></pages>'))
+        self.window.show()
+        self.window.on_connect_clicked()
+        body = self.window.page_panes[0]
+        body.setFloating()
+        self.window.reset_layout()                         # a layout from before the page window existed
+        APP.processEvents()
+        self.assertFalse(body.isClosed())
+        self.assertFalse(body.isFloating(), "back beside the first page")
+        self.assertFalse(self.window.database_pane.isClosed())
+        self.window.on_disconnect_clicked()
+        self.assertTrue(body.isClosed())
+        self.assertTrue(self.window.database_pane.isClosed())
 
 
 if __name__ == "__main__":

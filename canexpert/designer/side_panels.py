@@ -87,7 +87,6 @@ class DraggablePaletteItem(QLabel):
 
 class WidgetPalette(QGroupBox):
     """Palette of control types by category - drag and drop onto the form."""
-    add_clicked = pyqtSignal(str)
 
     def __init__(self):
         super().__init__("Controls")
@@ -161,7 +160,6 @@ class SymbolListPanel(QGroupBox):
         layout.addWidget(self.symbol_tree)
         self.setLayout(layout)
         self._dbc_db = None
-        self._dbc_path = None
 
     def _load_dbc(self):
         path, _ = QFileDialog.getOpenFileName(self, "Load DBC", str(DBC_DIR),
@@ -174,7 +172,6 @@ class SymbolListPanel(QGroupBox):
             return
         try:
             self._dbc_db = cantools.database.load_file(path)
-            self._dbc_path = path
             self.dbc_path_label.setText(Path(path).name)
             self.dbc_path_label.setStyleSheet("font-size: 11px;")
             self._fill_tree()
@@ -184,6 +181,13 @@ class SymbolListPanel(QGroupBox):
             self.dbc_path_label.setStyleSheet("color: red; font-size: 11px;")
             self._dbc_db = None
             self.symbol_tree.clear()
+
+    def clear_dbc(self):
+        """No DBC: the symbol list empties."""
+        self._dbc_db = None
+        self.symbol_tree.clear()
+        self.dbc_path_label.setText("No DBC loaded")
+        self.dbc_path_label.setStyleSheet("color: gray; font-size: 11px;")
 
     def _fill_tree(self):
         self.symbol_tree.clear()

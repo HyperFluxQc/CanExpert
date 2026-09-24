@@ -18,14 +18,14 @@ class UserManualTest(unittest.TestCase):
     def test_the_manual_covers_the_windows_it_promises(self):
         sections = manual_sections(self.text)
         for section in ("Starting up", "Configurations", "Connecting", "Form Designer", "CAN Logger",
-                        "Diagnostic Window", "Firmware flashing", "Symbol databases", "Trace window",
+                        "Firmware flashing", "Symbol databases", "Trace window",
                         "Transmit window", "UDS Console", "Recording and replaying",
                         "Arranging the windows"):
             self.assertIn(section, sections)
 
     def test_it_explains_what_the_user_actually_clicks(self):
-        for phrase in ("Connect", "Disconnect", "Load DBC", "Graph options", "Send UDS request", "Test panel",
-                       "Flashing", "Scan Activity", "Add from database", "Fault memory",
+        for phrase in ("Connect", "Disconnect", "Load DBC", "Graph options", "Load ODX / CDD", "Test panel",
+                       "Flashing", "Scan for ECUs", "Add from database", "Fault memory",
                        "Record to file", "Replay a recorded file", "Save desktop as"):
             self.assertIn(phrase, self.text, f"the manual never mentions {phrase}")
 

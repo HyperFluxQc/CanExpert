@@ -30,7 +30,7 @@ from PyQt5.QtWidgets import QApplication                                    # no
 
 from canexpert import main_window as main                                   # noqa: E402
 from canexpert.can_logger import CANLoggerWindow                            # noqa: E402
-from canexpert.diagnostic_window import DiagnosticWindow                    # noqa: E402
+from canexpert.channel_setup import detect_bitrate                          # noqa: E402
 from canexpert.flash_sequence import FlashProfile                           # noqa: E402
 from canexpert.flashing import load_firmware                                # noqa: E402
 from canexpert.recording import read_frames                                 # noqa: E402
@@ -93,12 +93,11 @@ def main_check():
         check("panel database loaded", window.panel is not None and window.app_database is not None,
               Path(window.app_database["source_path"]).name if window.app_database else None)
         check("ECU answers TesterPresent (node Responding)", spin(lambda: "Responding" in node_text()), node_text())
-        check("periodic frames received", spin(lambda: window.can_log.toPlainText().count("RX") > 5))
+        check("periodic frames received",
+              spin(lambda: sum(1 for frame in list(window.frame_history) if frame[1] == "RX") > 5))
 
         logger = window.open_can_logger()
-        diagnostics = window.open_diagnostic_window()
-        check("CAN Logger and Diagnostic Window open while connected",
-              isinstance(logger, CANLoggerWindow) and isinstance(diagnostics, DiagnosticWindow))
+        check("CAN Logger opens while connected", isinstance(logger, CANLoggerWindow))
         logger.load_dbc_from_path(REPO / "DBC" / "dummy_ecu.dbc")
         logger.set_signal_plotted("EngineData.Temperature")
         samples = lambda: getattr(logger._series.get("EngineData.Temperature"), "n", 0)  # noqa: E731
@@ -135,14 +134,30 @@ def main_check():
         window.stop_ecu_monitor()
         check("nodes show Not checked once stopped", spin(lambda: "Not checked" in node_text(), 3), node_text())
 
-        window.scan_channel_activity()
-        check("activity scan finished", spin(lambda: window.activity_scanner is None, 30))
-        labels = [item.text(0) for item in window.channel_items.values()]
-        check("the scan marks the channel carrying the ECU traffic", any("traffic" in text for text in labels), labels)
+        bitrate, report = detect_bitrate(channel0, candidates=(500000, 250000), listen_time=0.6)
+        check("the channel setup finds the bit rate of the ECU's traffic", bitrate == 500000, report)
 
         window.on_connect_clicked()
         check("reconnect works", window.can_bus is not None, window.status_label.text())
         check("ECU Responding again", spin(lambda: "Responding" in node_text()), node_text())
+
+        # Tier 3 on the adapter: padded frames, and a scan beside the running session
+        sent = [data for _t, direction, can_id, data, _x in list(window.frame_history)
+                if direction == "TX" and can_id == CONFIGURATION["request_id"]]
+        check("TesterPresent goes out padded to 8 bytes", bool(sent) and all(len(data) == 8 for data in sent),
+              [data.hex(" ") for data in sent[-2:]])
+        scan = window.open_ecu_scan()
+        scan.last_edit.setText("7E3")
+        scan.identification_cb.setChecked(True)
+        scanner = scan.start()
+        check("the ECU scan runs beside the session", scanner is not None, scan.status.text())
+        spin(lambda: scanner.isFinished() and scan.start_btn.isEnabled(), 30)
+        found = [(item.request_id, item.response_id) for item in scan.responders]
+        check("the scan finds the dummy ECU, and only it", found == [(0x7E0, 0x7E8)], found)
+        check("the scan reads its VIN", bool(scan.responders) and
+              scan.responders[0].identification.get(0xF190) == "WVWZZZ1KZAW000001",
+              scan.responders[0].identification if scan.responders else None)
+        scan.close()
 
         # The trace, the console and the transmit list on live traffic
         window.symbols.set_paths([str(REPO / "DBC" / "dummy_ecu.dbc")])   # the names every window shares
@@ -160,7 +175,7 @@ def main_check():
         check("UDS console reads the fault memory", spin(lambda: console.dtc_table.rowCount() > 0, 10),
               f"{console.dtc_table.rowCount()} DTC(s)")
 
-        transmit = window.open_transmit()
+        transmit = window.open_transmit().messages
         transmit.rows = [default_row("Start", 0x200, b"\x01", 50)]
         transmit._fill_table()
         transmit.rows[0]["enabled"] = True
@@ -187,7 +202,7 @@ def main_check():
         check("the Data window decodes the live signals",
               spin(lambda: len(data.signals.values) > 0, 8), data.status.text())
 
-        simulation = window.open_simulation()
+        simulation = window.open_transmit(nodes=True).nodes
         simulation._items["EngineData"].setCheckState(0, Qt.Checked)
         simulation.start_btn.setChecked(True)
         check("a simulated node puts its messages on the bus",

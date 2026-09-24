@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import can
 from PyQt5.QtCore import QSettings, Qt
-from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
+from PyQt5.QtWidgets import QAction, QApplication, QDialog, QMessageBox
 
 from canexpert import can_bus
 from canexpert import main_window as main
@@ -54,6 +54,10 @@ def Flashing(api, firmware):
     api.ui.set_value("status", f"{firmware.segments[0][0]:X}:{firmware.size}")
     return True
 '''
+
+
+# What the main window sends by default: TesterPresent filled to 8 bytes with 0xCC.
+PADDED_TESTER_PRESENT = b"\x02\x3e\x00" + b"\xcc" * 5
 
 
 class RequirementsTest(unittest.TestCase):
@@ -115,7 +119,7 @@ class RequirementsTest(unittest.TestCase):
         self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
         # 2.2: repeated correctly addressed TesterPresent.
         heartbeats = [self.ecu.recv(.5), self.ecu.recv(.5)]
-        self.assertTrue(all(m and m.arbitration_id == 0x7E0 and bytes(m.data) == b'\x02\x3e\x00' for m in heartbeats))
+        self.assertTrue(all(m and m.arbitration_id == 0x7E0 and bytes(m.data) == PADDED_TESTER_PRESENT for m in heartbeats))
         # 2.3: response node beneath receiver, loss and recovery.
         self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2,0x7E,0], is_extended_id=False))
         self.assertTrue(spin_until(lambda: bool(self.window.node_items)))
@@ -140,7 +144,7 @@ class RequirementsTest(unittest.TestCase):
         field.editingFinished.emit()
         self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "user text"))
         runtime = self.window.script_runtime
-        worker = self.window.workers["main"]
+        worker = self.window.worker
         self.window.on_disconnect_clicked()
         self.assertFalse(worker.isRunning())
         self.assertFalse(runtime.thread.is_alive())
@@ -251,7 +255,7 @@ class RequirementsTest(unittest.TestCase):
         self.assertFalse(items[("kvaser", 0, "", "")].font(0).bold())
         self.assertIsNotNone(self.window.ecu_monitor, "TesterPresent should start on the remembered channel")
         heartbeat = self.ecu.recv(1.0)
-        self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, b"\x02\x3E\x00"))
+        self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, PADDED_TESTER_PRESENT))
 
     def test_a_responding_ecu_offers_its_database_for_a_double_click(self):
         channel = self.channels({"interface": "kvaser", "channel": 0})[0]
@@ -321,7 +325,7 @@ class RequirementsTest(unittest.TestCase):
         message = self.ecu.recv(.5)
         self.assertTrue(message.is_extended_id)
         self.assertEqual(message.arbitration_id, 0x18DA10F1)
-        self.assertEqual(bytes(message.data), bytes([0x10,2,0x3E,0]))
+        self.assertEqual(bytes(message.data), bytes([0x10,2,0x3E,0]) + b'\xcc' * 4)   # padded to 8 bytes
         self.ecu.send(can.Message(arbitration_id=0x18DAF110, data=[0xf1,2,0x7e,0], is_extended_id=True))
         self.assertTrue(spin_until(lambda: bool(self.window.node_items)))
 
@@ -377,7 +381,7 @@ class RequirementsTest(unittest.TestCase):
             self.ecu.send(can.Message(arbitration_id=can_id, data=[2,0x7e,0], is_extended_id=False))
         self.assertTrue(spin_until(lambda: len(self.window.node_items) == 2))
         runtime = self.window.script_runtime
-        worker = self.window.workers['main']
+        worker = self.window.worker
         self.window.close()
         self.assertFalse(worker.isRunning())
         self.assertFalse(runtime.thread.is_alive())
@@ -433,20 +437,22 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         (self.databases/'panel_2026-09-18_script.py').write_text('def broken(')
         self.window.on_connect_clicked()
         self.assertIsNone(self.window.can_bus)
-        self.assertEqual(self.window.workers, {})
+        self.assertIsNone(self.window.worker)
         self.assertIsNone(self.window.script_runtime)
         self.assertTrue(self.window.connect_btn.isEnabled())
 
-    def test_diagnostic_multi_frame_exchange(self):
+    def test_an_odx_service_goes_out_over_several_frames_and_its_answer_is_decoded(self):
         from types import SimpleNamespace
-        from canexpert.diagnostic_window import DiagnosticWindow
         self.window.on_connect_clicked()
-        dialog = DiagnosticWindow(self.window)
+        console = self.window.open_uds_console()
         request = bytes([0x2E, 0xF1, 0x90]) + b"WVWZZZ1KZAW000001"
         reply = bytes([0x6E, 0xF1, 0x90]) + bytes(range(10))
-        dialog._current_service = SimpleNamespace(encode_request=lambda **k: request,
-                                                  decode_message=lambda r: "decoded reply")
-        dialog._send_request()
+        service = SimpleNamespace(short_name="WriteVIN", request=SimpleNamespace(parameters=[]), free_parameters=[],
+                                  encode_request=lambda **k: request, decode_message=lambda r: "decoded reply")
+        console.odx.set_layer(SimpleNamespace(services=[service]), "bench.odx")
+        console.odx.tree.setCurrentItem(console.odx.tree.topLevelItem(0))
+        self.assertTrue(console.odx.send_btn.isEnabled())
+        console.odx.send_selected()
         state = {"total": None, "data": b"", "replied": False}
         def ecu_step():
             message = self.ecu.recv(0)
@@ -466,12 +472,12 @@ VAL_ 256 Enable 0 "Off" 1 "On";
                     state["replied"] = True
                     self.ecu.send(can.Message(arbitration_id=0x7E8, data=bytes([0x21]) + reply[6:],
                                               is_extended_id=False))
-            return "decoded reply" in dialog.monitor_log.toPlainText()
-        self.assertTrue(spin_until(ecu_step, timeout=5), dialog.monitor_log.toPlainText())
+            return "ODX: decoded reply" in console.log.toPlainText()
+        self.assertTrue(spin_until(ecu_step, timeout=5), console.log.toPlainText())
         self.assertEqual(state["data"][:state["total"]], request)
-        self.assertIn(f"Response (13 bytes): {reply.hex(' ')}", dialog.monitor_log.toPlainText())
-        self.assertTrue(dialog.send_btn.isEnabled())
-        self.assertEqual(self.window.workers["main"].mailboxes[1:], [])
+        self.assertIn(reply.hex(" ").upper(), console.log.toPlainText())
+        self.assertIn("WriteVIN:", console.log.toPlainText())
+        self.assertEqual(self.window.worker.mailboxes[1:], [])
 
     def test_flashing_button_calls_database_flashing(self):
         from canexpert.flashing import Firmware
@@ -517,7 +523,8 @@ VAL_ 256 Enable 0 "Off" 1 "On";
                 time.sleep(0.05)
                 APP.processEvents()
                 self.assertIn("Responding", node().text(0))
-            self.assertIn("TX  ID: 0x7E0  02 3E 00", self.window.can_log.toPlainText())
+            self.assertIn(("TX", 0x7E0, b"\x02\x3e\x00"),
+                          [(frame[1], frame[2], frame[3][:3]) for frame in self.window.frame_history])
             stop.set()                                                  # the ECU goes silent
             thread.join(1)
             self.assertTrue(spin_until(lambda: "Lost connection" in node().text(0)))
@@ -632,19 +639,210 @@ VAL_ 256 Enable 0 "Off" 1 "On";
                 button.setAttribute(Qt.WA_UnderMouse, hovered)
                 self.assertFalse(button.grab().isNull())
 
+    def test_the_iso_tp_settings_of_a_configuration_reach_the_session(self):
+        from canexpert.transport_settings import TransportSettings, save_transport
+        name = self.window.active_config["name"]
+        save_transport(self.settings, name, TransportSettings(padding=False, block_size=4, st_min=0x02))
+        self.window.on_connect_clicked()
+        session = self.window.session_config
+        self.assertEqual((session["isotp_padding"], session["isotp_block_size"], session["isotp_st_min"]),
+                         (None, 4, 2))
+        heartbeat = self.ecu.recv(2)
+        self.assertEqual(bytes(heartbeat.data), b"\x02\x3e\x00", "padding switched off for this configuration")
+        config_file = self.configs / f"config_{name}.json"
+        self.assertNotIn("isotp", config_file.read_text(encoding="utf-8"))
+
+    def test_a_listen_only_channel_sends_nothing_at_all(self):
+        from canexpert.channel_setup import ChannelSetup, save_setup
+        channel = self.window.selected_channel_config
+        save_setup(self.settings, channel, ChannelSetup(listen_only=True))
+        self.window.on_connect_clicked()
+        self.assertIsNotNone(self.window.can_bus)
+        self.assertIsNone(self.ecu.recv(0.4), "no TesterPresent on a listen-only channel")
+        with self.assertRaises(can.CanOperationError):
+            self.window.send_can_message(0x200, b"\x01")
+        self.ecu.send(can.Message(arbitration_id=0x7E8, data=b"\x02\x7e\x00", is_extended_id=False))
+        self.assertTrue(spin_until(lambda: any(frame[1] == "RX" for frame in self.window.frame_history)),
+                        "it still receives")
+        self.window.on_disconnect_clicked()
+        self.window.check_ecus(channel)
+        self.assertIsNone(self.window.ecu_monitor, "the ECU check is TesterPresent, so it is not started")
+        self.assertIn("listen-only", self.window.debug_log.toPlainText())
+
+    def test_the_channel_setup_is_edited_from_the_channel(self):
+        from canexpert.channel_setup import load_setup
+        channel = {"interface": "virtual", "channel": 0}
+        self.window.channel_items = {}
+        def edit(dialog):                                   # the user ticking listen-only and pressing OK
+            dialog.listen_only_cb.setChecked(True)
+            dialog._accept()
+            return dialog.Accepted
+        with patch.object(main.ChannelSetupDialog, "exec_", edit):
+            self.window.edit_channel_setup(channel)
+        self.assertTrue(load_setup(self.settings, channel).listen_only)
+        self.assertIn("[listen-only]", self.window._channel_label(channel))
+
+    def test_every_window_counts_from_the_same_measurement_start(self):
+        window = self.window
+        window.on_connect_clicked()
+        start = window.clock.start
+        self.assertIsNotNone(start, "connecting starts the measurement")
+        window.set_time_display("Relative")
+        self.assertEqual(self.settings.value("time_display"), "Relative")
+        engine = b"\x01\x2c\x00\x64\x00\x00\x00\x00"
+
+        logger = window.open_can_logger()
+        logger.load_dbc_from_path(Path(__file__).resolve().parents[1] / "DBC" / "dummy_ecu.dbc")
+        trace = window.open_trace()
+        trace.time_combo.setCurrentText("Relative")
+        window.dispatch_frame(start + 1.5, "RX", 0x300, engine)
+        window.dispatch_frame(start + 2.25, "RX", 0x7E8, b"\x02\x7e\x00")
+        trace.flush()
+
+        rows = {trace.tree.topLevelItem(row).text(2): trace.tree.topLevelItem(row).text(0)
+                for row in range(trace.tree.topLevelItemCount())}
+        self.assertEqual(rows["300"], "1.500000")
+        series = logger._series["EngineData.Temperature"]
+        self.assertAlmostEqual(float(series.t[0]), 1.5, places=6)      # the same number on the graph
+        write = window.open_write()
+        window.write_message("info", "hello")
+        self.assertRegex(write.lines()[-1], r"^\d+\.\d{3}  hello$", "seconds since the start in Relative")
+        window.set_time_display("Absolute")
+        self.assertRegex(write.lines()[-1], r"^\d\d:\d\d:\d\d\.\d{3}  hello$", "redrawn in the new display")
+
+    def test_the_script_writes_to_its_own_window_hears_keys_and_shares_variables(self):
+        from PyQt5.QtCore import QEvent
+        from PyQt5.QtGui import QKeyEvent
+        (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_start
+def hello(api):
+    api.log("written by the script")
+
+@on_key("k")
+def key(api, key):
+    api.log(f"key {key}")
+""")
+        self.window.on_connect_clicked()
+        self.assertTrue(self.window._keys_watched, "keys reach the script while the measurement runs")
+        write = self.window.open_write()
+        self.assertTrue(spin_until(lambda: any("written by the script" in line for line in write.lines())))
+        self.assertNotIn("written by the script", self.window.debug_log.toPlainText(),
+                         "the Debug log stays the application's")
+        self.window.show()
+        APP.processEvents()
+        QApplication.sendEvent(self.window.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
+        self.assertTrue(spin_until(lambda: any("key k" in line for line in write.lines())), write.lines())
+        self.window.on_disconnect_clicked()
+        self.assertFalse(self.window._keys_watched)
+
+    def test_system_variables_are_nowhere_while_switched_off(self):
+        from canexpert import features
+        self.assertFalse(features.SYSTEM_VARIABLES, "switched off for now (canexpert/features.py)")
+        self.assertIsNone(self.window.sysvars)
+        self.assertNotIn("sysvars", self.window._toolbar_actions)
+        self.assertNotIn("sysvars", self.window._tool_slots)
+        menus = [action.text() for action in self.window.findChildren(QAction)]
+        self.assertNotIn("System Variables", menus)
+        (self.databases / 'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_start
+def names(api):
+    api.log(f"on_sysvar there: {'on_sysvar' in globals()}, api.sysvar there: {hasattr(api, 'sysvar')}")
+""")
+        self.window.on_connect_clicked()
+        write = self.window.open_write()
+        self.assertTrue(spin_until(lambda: any("on_sysvar there: False, api.sysvar there: False" in line
+                                               for line in write.lines())), write.lines())
+
+    def test_system_variables_when_switched_on(self):
+        from canexpert import features
+        switched = patch.object(features, "SYSTEM_VARIABLES", True)
+        switched.start()
+        self.addCleanup(switched.stop)
+        (self.databases / 'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_start
+def ready(api):
+    api.sysvar.set("Bench::Ready", 1)
+""")
+        window = main.MainWindow()
+        self.addCleanup(window.close)
+        window.selected_channel_config = {"interface": "virtual", "channel": 0}
+        self.assertIn("sysvars", window._toolbar_actions)
+        window.on_connect_clicked()
+        self.assertTrue(spin_until(lambda: window.sysvars.get("Bench::Ready") == 1))
+        self.assertTrue(spin_until(lambda: any(entry[1] == "Bench::Ready" for entry in window.sysvar_history)),
+                        "the change reaches the main window, queued from the script thread")
+        logger = window.open_can_logger()                          # opened later: filled from the history
+        self.assertIn("Bench::Ready", logger._items)
+        self.assertIsNotNone(window.open_sysvars())
+        window.on_disconnect_clicked()
+
+    def test_every_page_of_the_database_is_a_window_of_its_own(self):
+        two_pages = PANEL.replace("</page></pages>", '</page><page name="Body">'
+                                  '<checkbox id="9" label="Door" binding_value="door" x="10" y="10"/></page></pages>')
+        (self.databases / "panel_2026-09-18.xml").write_text(two_pages)
+        self.window.on_connect_clicked()
+        self.assertEqual(self.window.database_pane.windowTitle(), "Main")
+        self.assertEqual([pane.windowTitle() for pane in self.window.page_panes], ["Body"])
+        body = self.window.page_panes[0]
+        self.assertIs(body.dockManager(), self.window.workspace)
+        self.assertTrue(body.isTabbed(), "tabbed beside the first page, as the pages used to be")
+        self.window.panel.set_value("door", True)            # one panel behind every page window
+        self.assertTrue(self.window.panel.widgets["door"].isChecked())
+        body.setFloating()
+        self.assertTrue(body.isFloating())
+        self.window.panel.page_windows[1][1].zoom_combo.setCurrentText("150 %")
+        self.assertEqual(self.settings.value("panel_zoom/panel/Body"), "150 %")
+
+        self.window.on_disconnect_clicked()
+        self.assertEqual(self.window.page_panes, [])
+        self.assertEqual(self.window.database_pane.windowTitle(), "Database")
+        self.window.on_connect_clicked()
+        self.assertEqual(self.window.panel.page_windows[1][1].page.zoom, 1.5, "the page keeps its zoom")
+        self.assertTrue(self.window.page_panes[0].isFloating(), "and comes back where it was")
+
+    def test_a_scan_runs_beside_the_measurement(self):
+        import threading
+        from canexpert.simulator.ecu import DummyEcu, EcuConfig
+        ecu_bus = can.Bus(interface="virtual", channel=self.channel)
+        self.addCleanup(ecu_bus.shutdown)
+        ecu = DummyEcu(ecu_bus, EcuConfig(broadcast_interval=0), log=lambda text: None)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
+        self.window.on_connect_clicked()                 # TesterPresent to 7E0 every 60 ms, answered on 7E8
+        dialog = self.window.open_ecu_scan()
+        self.addCleanup(dialog.close)
+        dialog.last_edit.setText("7E2")
+        dialog.sessions_cb.setChecked(False)
+        dialog.identification_cb.setChecked(False)
+        scanner = dialog.start()
+        self.assertIsNotNone(scanner, dialog.status.text())
+        self.assertTrue(spin_until(lambda: scanner.isFinished() and dialog.start_btn.isEnabled(), 10))
+        rows = [[dialog.tree.topLevelItem(row).text(column) for column in range(2)]
+                for row in range(dialog.tree.topLevelItemCount())]
+        # The session's own TesterPresent is paused during the sweep, so its answers are not taken for
+        # answers to 7E1 and 7E2.
+        self.assertEqual(rows, [["7E0", "7E8"]])
+        self.assertEqual(self.window.worker.mailboxes[1:], [], "the scan's mailbox is gone")
+        self.window._configuration_for(dialog.responders[0])        # a configuration for the ECU found
+        configuration = next(widget for widget in APP.topLevelWidgets()
+                             if type(widget).__name__ == "ConfigurationDialog" and widget.isVisible())
+        self.addCleanup(configuration.close)
+        self.assertEqual((configuration.server_id_edit.text(), configuration.ecu_id_edit.text()), ("7E0", "7E8"))
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)
         self.assertEqual(cfg["tester_present_interval_seconds"], 0.5)
-        dialog = main.ConfigurationDialog(self.window, {"name": "Legacy"})
+        dialog = main.ConfigurationDialog(self.window, {"name": "Legacy"}, settings=self.settings)
         self.assertEqual(dialog.node_timeout_spin.value(), 2.0)
         self.assertEqual(dialog.heartbeat_spin.value(), 0.5)
 
     def test_tool_windows_can_be_maximized(self):
         from PyQt5.QtCore import Qt
         from canexpert.can_logger import CANLoggerWindow
-        from canexpert.diagnostic_window import DiagnosticWindow
-        for window in (FormDesigner(self.window), CANLoggerWindow(self.window), DiagnosticWindow(self.window)):
+        from canexpert.uds_console import UdsConsoleWindow
+        for window in (FormDesigner(self.window), CANLoggerWindow(self.window), UdsConsoleWindow(self.window)):
             flags = window.windowFlags()
             self.assertTrue(flags & Qt.WindowMaximizeButtonHint, type(window).__name__)
             self.assertTrue(flags & Qt.WindowCloseButtonHint, type(window).__name__)
@@ -684,7 +882,9 @@ VAL_ 256 Enable 0 "Off" 1 "On";
             canvas.add_widget_at("button", 1500, 900)                  # beyond the initial page
             self.assertGreaterEqual(canvas.scene.sceneRect().right(), 1600)
             self.assertGreaterEqual(canvas.scene.sceneRect().bottom(), 1000)
-            designer.close()
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.Discard) as asked:
+                designer.close()                                       # on screen with changes: it asks first
+            asked.assert_called_once()
 
     def test_all_display_and_input_widget_types(self):
         path = self.databases/'controls.xml'

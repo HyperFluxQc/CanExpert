@@ -4,7 +4,7 @@ This document describes the workflow implemented from `Requirements.docx`. CAN E
 
 | Requirement | Implemented behavior | Acceptance coverage |
 |---|---|---|
-| 1 and 4.1 | Configurations, CAN receiver/node tree, CAN monitor, panel designer and script-controlled panels | End-to-end virtual CAN test and offscreen UI inspection |
+| 1 and 4.1 | Configurations, CAN receiver/node tree, the frames on the bus (Trace window), panel designer and script-controlled panels | End-to-end virtual CAN test and offscreen UI inspection |
 | 2 | Configuration JSON files listed at startup | Configuration inventory test |
 | 2.1 | Last selected configuration persisted in QSettings and restored; first available configuration is the fallback | Restart test |
 | 2.2 | TesterPresent sent immediately on connection and at the configured interval, using the configured request ID, CAN identifier width and optional address byte | Repeated heartbeat and extended-address tests |
@@ -28,22 +28,43 @@ in a file of its own.
 - **Trace window**: symbolic names and decoded signals from the shared symbol databases, absolute,
   relative and delta time, pass/stop filters, find and CSV export, and a transport view that shows the
   diagnostic messages the ISO 15765-2 frames carry, one row each, with their service names.
-- **Statistics**: per identifier the count, rate, average/min/max cycle time, share of the bus and last
-  data, and for the bus the total load, the error frames and the controller state (error active, error
+- **Statistics**: per identifier the count, rate, average/min/max cycle time and share of the bus, and
+  for the bus the total load, the error frames and the controller state (error active, error
   passive, bus off).
 - **Data window**: every signal of the symbol databases with the value it holds now, physical and raw,
   with its unit, age and count.
-- **Transmit list**: raw or database messages, one-shot or cyclic, edited signal by signal.
-- **Simulated nodes**: the messages of a database's sending nodes, put on the bus at their cycle times,
-  so an ECU on the bench sees the traffic it expects.
+- **Transmit window**, two tabs that keep sending until the window is closed: the **message list** (raw or
+  database messages, one-shot or cyclic, edited signal by signal) and the **simulated nodes** (the
+  messages of a database's sending nodes, put on the bus at their cycle times, so an ECU on the bench
+  sees the traffic it expects).
 - **UDS Console**: every ISO 14229 service (the same catalogue the scripts use) with a generated request
-  form, session control, SecurityAccess (mask or `GenerateKeyEx` seed & key DLL) and a fault-memory tab,
-  without an ODX file. The P2/P2* timing an ECU announces is honoured by the requests that follow.
+  form, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess
+  (mask or `GenerateKeyEx` seed & key DLL) and a fault-memory tab. The P2/P2* timing an ECU announces is
+  honoured by the requests that follow.
 - **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
   windows offline and never touches a bus.
-- **Symbol databases**: one DBC list shared by the Trace window, the CAN Logger and the transmit list.
+- **Symbol databases**: one DBC list shared by the Trace, Data and Statistics windows, the CAN Logger and
+  the Transmit window.
 - **Workspace**: the tool windows are panes of the main window; the arrangement is saved and can be kept
-  as named desktops.
+  as named desktops. Every page of a panel database is a window of it, zoomed or fitted to the window.
+- **Channel setup** (per adapter channel): sample point and SJW, listen-only, a receive filter in the
+  adapter, and bit rate detection by listening at each common rate.
+- **ISO-TP** (per configuration, in the settings): padding of every frame and the flow control the tester
+  asks for.
+- **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions
+  each ECU accepts and its identification DIDs, beside a running measurement.
+- **One measurement clock**: every window shows a frame's own timestamp, absolute or relative to the start
+  of the measurement; the Trace also filters by direction.
+- A **Write window** for the script's output and variables; script events for keys, error frames and the
+  bus state.
+- **CAN Logger exports**: CSV with a row per sample or a column per signal, MDF 4, PNG, of everything, the
+  screen or the cursor range; statistics between the cursors; a cap on the samples kept.
+- **Dummy ECU**: editable DIDs (live from a signal, or needing a session or a security level), DTCs whose
+  status follows faults through operation cycles with the snapshot of the moment, forced negative
+  responses; the messages of any DBC with a generator per signal; periodic data (0x2A), ResponseOnEvent
+  (0x86), I/O control (0x2F) and memory by address (0x23/0x3D); several security levels with a mask or a
+  seed & key DLL, and service rules; a bootloader after a failed flash, with an optional CRC-32 check;
+  transport errors on purpose; several simulated ECUs on one channel.
 
 ## Configuration
 
@@ -51,14 +72,14 @@ Configurations live beside `main.py` in `Configurations/`, independent of the wo
 
 - `tester_present_interval_seconds`: positive interval, default 0.5 seconds.
 - `node_timeout_seconds`: greater than the heartbeat interval, default 2 seconds. A node is shown as lost this long after its last frame; keep several heartbeats inside the window so one missed response is tolerated.
-- `request_id` and `response_id`: numeric CAN IDs, entered as hexadecimal in the dialog. With the OBD functional request ID `0x7DF` and an ECU response ID `0x7E8`-`0x7EF`, TesterPresent monitoring stays functional while UDS requests from scripts, flashing and the Diagnostic Window address the ECU physically at the response ID minus 8 (for example `0x7E0`), because multi-frame requests may not use a functional address (ISO 15765-2/-4).
+- `request_id` and `response_id`: numeric CAN IDs, entered as hexadecimal in the dialog. With the OBD functional request ID `0x7DF` and an ECU response ID `0x7E8`-`0x7EF`, TesterPresent monitoring stays functional while UDS requests from scripts, flashing and the UDS Console address the ECU physically at the response ID minus 8 (for example `0x7E0`), because multi-frame requests may not use a functional address (ISO 15765-2/-4).
 - `response_ids`: optional list of monitored ECU IDs. When omitted, use `response_id`; the default OBD request/response pair `0x7DF`/`0x7E8` monitors `0x7E8` through `0x7EF`.
 - `database_family`: optional database stem/family. Empty selects the newest database across the database directory.
 - `identifier_11_bit`: standard or extended CAN frames.
-- `extended_id` and `extended_id_byte`: optional UDS extended-address prefix for TesterPresent and every UDS frame sent by scripts or the Diagnostic Window.
-- `timeout_ms`: UDS response timeout for script and Diagnostic Window requests, default 5000 ms.
+- `extended_id` and `extended_id_byte`: optional UDS extended-address prefix for TesterPresent and every UDS frame sent by scripts or the UDS Console.
+- `timeout_ms`: UDS response timeout for script and UDS Console requests, default 5000 ms.
 
-Each connection uses a snapshot of one configuration and one selected receiver. Configurations can be edited for the next connection without changing an active session. Traffic from configured response IDs establishes node presence; lack of traffic for the configured timeout marks an established node lost. Unknown response IDs are still visible in the CAN monitor but are not added to the node tree. Monitoring continues after timeout to detect recovery.
+Each connection uses a snapshot of one configuration and one selected receiver. Configurations can be edited for the next connection without changing an active session. Traffic from configured response IDs establishes node presence; lack of traffic for the configured timeout marks an established node lost. Unknown response IDs are still visible in the Trace window but are not added to the node tree. Monitoring continues after timeout to detect recovery.
 
 ## Database selection
 
@@ -82,33 +103,56 @@ Set a control's **Binding type** to `script` and its **Binding** to a unique nam
 ```python
 def DatabaseMainFunction(api):
     api.ui.set_value("status", "Ready")
-    api.on("start", lambda value: api.can.send(0x200, [1]))
-    api.on("setpoint", lambda value: api.log(f"Setpoint: {value}"))
-    api.on_can(lambda can_id, data: api.ui.set_value("status", data.hex()))
-    api.every(1.0, lambda: api.log("Panel timer"))
+
+@on_control("start")
+def start(api, value):
+    api.can.send(0x200, [1])
+
+@on_control("setpoint")
+def setpoint(api, value):
+    api.log(f"Setpoint: {value}")
+
+@on_message(0x300)
+def status(api, frame):
+    api.ui.set_value("status", frame.data.hex())
+
+@on_timer(1.0)
+def tick(api):
+    api.log("Panel timer")
 ```
 
 - **Handler property**: a control calls the script function named in its Handler (the Form Designer creates `def on_<name>_<event>(api, value):` when you double-click the control). A function whose first parameter is named `api` receives the script API; other parameters receive the event's values.
-- **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`.
+- **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`, `@on_key("a", "F5")` (a key pressed in CAN Expert while the measurement runs, not while typing into a field; `"*"`: any), `@on_error_frame` (argument: its timestamp) and `@on_bus_state` (argument: `error active`, `error passive` or `bus off`, on a change).
 - **UDS service functions**: every ISO 14229-1 service except Authentication (0x29) and SecuredDataTransmission (0x84) is a script function, e.g. `RDBI(0xFF99)` sends `22 FF 99`, `WDBI(did, data)`, `DSC(session)`, `SA(sub_function, key)`, `RC(sub_function, routine_id, data)`, `RD/TD/RTE`, `RDTCI(sub_function, ...)`, plus `UDS("raw hex")` and helpers (`SecurityUnlock`, `ReadDTCs`, `StartRoutine`...). They use the session's UDS transport and return a result that is true for a positive response, with `data` (after the SID and echoed parameters), `text`, `int`, `raw`, `nrc`, `nrc_name` and `error`. Sub-function services accept `suppress=True` (suppressPosRspMsgIndicationBit; sent without waiting). The Form Designer's script tab lists them by ISO 14229 functional unit and inserts calls.
 - `api.signal("Message.Signal")`: latest received (or sent) physical value. `api.set_signal("Message.Signal", value)` and `api.send_message("Message", Signal=value, ...)`: encode with the panel's DBC and send; signals not given keep their last known values.
-- `api.on(name, callback)`: callback receives the control value. Buttons pass `True`, checkboxes a Boolean, sliders an integer, combo boxes their selected text. Editable fields submit when editing finishes; their selected value type controls conversion.
-- `api.on_can(callback)`: callback receives `(arbitration_id, bytes)`.
-- `api.every(seconds, callback)`: periodic callback with no arguments.
+- Control values: buttons pass `True`, checkboxes a Boolean, sliders an integer, combo boxes their selected text. Editable fields submit when editing finishes; their selected value type controls conversion.
 - `api.can.send(id, data)`: sends up to eight bytes using the active configuration's CAN identifier width; shorter script frames retain the legacy eight-byte padding behavior.
-- `api.can.get_latest_messages()`: recent received messages.
-- `api.uds.request(payload)`: sends any UDS request over ISO-TP (multi-frame requests and replies, flow control, NRC 0x78 response pending) and returns the positive or negative reply, or `None` on timeout. Helpers: `tester_present()`, `rdbi(did)` (data record without the DID echo), `request_download(format, address, size)`, `transfer_data(sequence, data)`, `request_transfer_exit()`, `transfer_data_from_file(path, packet_size)`. They use the configuration's request/response IDs, identifier size, extended-address byte and UDS response timeout. Frames received before a request are discarded, and the connection's TesterPresent is deferred while an exchange is in progress.
+- UDS requests use the configuration's request/response IDs, identifier size, extended-address byte and UDS response timeout, over ISO-TP (multi-frame requests and replies, flow control, NRC 0x78 response pending). Frames received before a request are discarded, and the connection's TesterPresent is deferred while an exchange is in progress.
 - `api.ui.get_value(name)` and `api.ui.set_value(name, value)`: read a cached value or enqueue a GUI update. Displays format numbers with their unit, decimals and DBC value-table text; an LED takes a Boolean; a multi-state indicator a state value; a trend graph appends a point; an output box appends a line (`None` clears it). Scripts must not access Qt widgets directly.
-- `api.log(text)`: application debug log.
+- `api.log(text)` or `api.write(text)` (CAPL's `write`), and `api.warn(text)`: a line in the Write window, a warning in its colour. Script errors go there too, and to the application's Debug log.
 - `api.running` and `api.sleep(seconds)`: cooperative cancellation for older loop-based scripts. Prefer callbacks and return from `DatabaseMainFunction`; a startup loop prevents that script's queued callbacks from being processed.
+
+**Deprecated.** The first script API is still there, so existing scripts keep working, but the Form Designer's completion no longer offers it and its docstrings name the replacement:
+
+| Deprecated | Use instead |
+|---|---|
+| `api.on(name, callback)` - callback(value) for a named control | `@on_control(name)`, or the control's Handler |
+| `api.on_can(callback)` - callback(arbitration_id, bytes) | `@on_message` |
+| `api.every(seconds, callback)` | `@on_timer(seconds)` |
+| `api.can.get_latest_messages()` | `@on_message` |
+| `api.uds.request(payload)` (the reply bytes, or `None`) | `UDS(payload)` |
+| `api.uds.tester_present()` | nothing: the session sends TesterPresent (or `TP()`) |
+| `api.uds.rdbi(did)` (the data record) | `RDBI(did).data` |
+| `api.uds.request_download`, `transfer_data`, `request_transfer_exit` | `RD`, `TD`, `RTE` |
+| `api.uds.transfer_data_from_file(path, packet_size)`, `api.uds.parse_s19_s28(path)` | `Flashing(api, firmware)`, which gets the parsed image, or the built-in sequence |
 
 Callbacks run serially off the GUI thread. Exceptions are logged. Disconnect cancels Python execution, stops timers and reception, revokes the script bus, and closes the CAN adapter. A blocking native/DLL call cannot be forcibly interrupted; it must return on its own. It cannot use the revoked session bus to transmit afterward. Database scripts are ordinary local Python code and have the user's process permissions.
 
-The connection already schedules TesterPresent; database scripts do not need to run their own TesterPresent loop. The UDS/firmware helpers are not the connection scheduler and are outside the requirements acceptance scope. ISO-TP is implemented for classic CAN (payloads up to 4095 bytes) and is tested against a simulated ECU; firmware programming against a real ECU is not certified. The Diagnostic Window sends ODX-encoded requests of any length on a background thread and shows the complete reply.
+The connection already schedules TesterPresent; database scripts do not need to run their own TesterPresent loop. Every frame of a session - requests, flow control, TesterPresent - is padded to 8 bytes (0xCC by default) and the tester asks for the block size and STmin of the configuration's ISO-TP settings; both are kept by CAN Expert per configuration, not in the configuration file. The UDS/firmware helpers are not the connection scheduler and are outside the requirements acceptance scope. ISO-TP is implemented for classic CAN (payloads up to 4095 bytes) and is tested against a simulated ECU; firmware programming against a real ECU is not certified. The UDS Console's ODX tab sends ODX-encoded requests of any length on a background thread and shows the complete reply, decoded by the ODX file.
 
 ## Firmware flashing
 
-While connected, a **Flashing** button appears in the toolbar (the Form Designer's **Test panel...** window has the same **Flashing...** button, against the simulated ECU). There are two ways to flash, and the dialog offers whichever are available: the built-in ISO 14229 sequence, which needs nothing but a connection, and the database script's own function, offered when the script defines:
+While connected, a **Flashing** button appears in the toolbar (the Form Designer's **Test panel...** window has a **Flashing...** button with the same dialog and both ways, against the simulated ECU). There are two ways to flash, and the dialog offers whichever are available: the built-in ISO 14229 sequence, which needs nothing but a connection, and the database script's own function, offered when the script defines:
 
 ```python
 def Flashing(api, firmware):
@@ -116,7 +160,7 @@ def Flashing(api, firmware):
     return True
 ```
 
-Clicking it asks which Motorola S-record (`.s19`, `.s28`, `.s37`, `.srec`, `.mot`) or Intel HEX (`.hex`, `.ihex`) file to use. The file is checked (record checksums, overlapping data) and contiguous records are merged into segments. A confirmation ("Flash demo_app.hex (2112 bytes) to the ECU?", with the address ranges) follows, then `Flashing(api, firmware)` runs on the script thread with a progress dialog (Cancel requests a stop) and a final success or error message:
+Clicking it asks which Motorola S-record (`.s19`, `.s28`, `.s37`, `.srec`, `.mot`) or Intel HEX (`.hex`, `.ihex`) file to use. The file is checked (record checksums, overlapping data) and contiguous records are merged into segments. The Flashing dialog then shows the file, its size and address ranges and asks which way to flash; with the script, `Flashing(api, firmware)` runs on the script thread with a progress dialog (Cancel requests a stop) and a final success or error message:
 
 - `firmware.path`, `firmware.size`, and `firmware.segments`: a list of `(address, bytes)` in ascending address order.
 - `api.progress(done, total, message)` updates the progress dialog.
@@ -141,6 +185,7 @@ Without a script, `flash_sequence.run_flash()` sends what most bootloaders want,
 | `block_size` | 0 | Bytes per TransferData; 0 uses what the ECU announces |
 | `reset_type`, `version_did` | `0x01`, `0xF195` | ECUReset and the DID read once it is back; 0 skips them |
 | `restore_after` | on | DTCs and normal messages switched back on when it is done |
+| `check_crc` | off | The CRC-32 of the image (its segments in address order) sent as the dependency check's option record, for a bootloader that checks it |
 
 Each segment is erased, downloaded (RequestDownload, TransferData blocks, RequestTransferExit) and then the whole image checked, so a two-segment file produces two erases. The block size is `min(maxNumberOfBlockLength, 4095) - 2` (the service identifier and the block counter come off it), narrowed further by `block_size` when it is set. Cancel stops after the block being sent.
 

@@ -1,6 +1,7 @@
 """User manual window: docs/USER_MANUAL.md rendered with a list of its sections beside it."""
 import re
 
+from PyQt5 import sip
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QDesktopServices, QTextCursor
 from PyQt5.QtWidgets import (
@@ -108,7 +109,8 @@ class HelpWindow(QDialog):
 
 def show_manual(parent=None, window=[None]):  # noqa: B006 (one window, reused)
     """Open the manual window, raising the existing one."""
-    if window[0] is None or window[0].parent() is not parent:
+    # The window it was opened from may have been deleted, and the manual with it.
+    if window[0] is None or sip.isdeleted(window[0]) or window[0].parent() is not parent:
         window[0] = HelpWindow(parent)
     window[0].show()
     window[0].raise_()

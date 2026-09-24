@@ -141,19 +141,6 @@ def choose_firmware(parent, start_dir):
         return None
 
 
-def confirm_flash(parent, firmware, target="the ECU"):
-    """'Are you sure?' with the file's address ranges."""
-    ranges = "\n".join(f"0x{address:08X} - 0x{address + len(data) - 1:08X}  ({len(data)} bytes)"
-                       for address, data in firmware.segments[:8])
-    if len(firmware.segments) > 8:
-        ranges += f"\n... {len(firmware.segments) - 8} more segment(s)"
-    answer = QMessageBox.question(
-        parent, "Flashing",
-        f"Flash {Path(firmware.path).name} ({firmware.size} bytes) to {target}?\n\n{ranges}\n\n"
-        "Keep the CAN connection and ECU power stable until flashing finishes.")
-    return answer == QMessageBox.Yes
-
-
 def progress_dialog(parent, firmware, cancel):
     dialog = QProgressDialog(f"Flashing {Path(firmware.path).name}...", "Cancel", 0, max(1, firmware.size), parent)
     dialog.setWindowTitle("Flashing")
@@ -247,6 +234,10 @@ class FlashProfileDialog(QDialog):
         form.addRow("Erase routine (hex, 0 = none):", self.erase_routine)
         self.check_routine = _hex_field(profile.check_routine)
         form.addRow("Dependency check routine (hex, 0 = none):", self.check_routine)
+        self.check_crc = QCheckBox("Send the image's CRC-32 to the dependency check")
+        self.check_crc.setToolTip("31 01 <routine> and the CRC-32 of the image (its segments in address order), "
+                                  "for a bootloader that checks it")
+        form.addRow("", self.check_crc)
         self.address_format = _hex_field(profile.address_format)
         form.addRow("Address and length format (hex):", self.address_format)
         self.data_format = _hex_field(profile.data_format)
@@ -291,7 +282,7 @@ class FlashProfileDialog(QDialog):
                 ("erase_routine", "The erase routine"), ("check_routine", "The dependency check routine"),
                 ("address_format", "The address and length format"), ("data_format", "The data format"),
                 ("reset_type", "The ECUReset type"), ("version_did", "The version DID"))
-    _FLAGS = ("stop_dtc", "stop_communication", "restore_after")
+    _FLAGS = ("stop_dtc", "stop_communication", "restore_after", "check_crc")
 
     def values(self):
         """The profile the fields describe. ValueError, with what to tell the user, when one is not a number."""

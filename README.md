@@ -6,21 +6,26 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 
 - **Multiple interfaces**: Kvaser, Vector, IXXAT (via python-can)
 - **Trace window**: every frame of the session with its symbolic message name, expandable into decoded signals, absolute/relative/delta time, pass and stop filters by identifier, range or name, find, colour per identifier and CSV export, and a **transport view** that turns the ISO 15765-2 frames of a diagnostic request or response into one row with its service name and whole payload
-- **Statistics**: frames, rate, average/min/max cycle time, bus load and last data per identifier, with the totals for the bus - bus load, error frames and the controller state (error active, error passive, bus off) - plus freeze, filter and CSV export
+- **Statistics**: frames, rate, average/min/max cycle time and bus load per identifier, with the totals for the bus - bus load, error frames and the controller state (error active, error passive, bus off) - plus freeze, filter and CSV export
 - **Data window**: every signal of the symbol databases with the value it holds now, physical and raw, with its unit, age and count; signals that never arrived are listed too
-- **Simulated nodes**: the messages of a database's sending nodes, sent at their cycle times as those ECUs would - a rest-bus simulation for the ECU on the bench, edited signal by signal
-- **Transmit list**: raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator)
-- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, with session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits; the P2/P2* timing the ECU announces is picked up and honoured by every later request
+- **Transmit window** with two tabs that keep sending until the window is closed: the **message list** - raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator) - and the **simulated nodes** - the messages of a database's sending nodes, sent at their cycle times as those ECUs would, a rest-bus simulation for the ECU on the bench
+- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits; the P2/P2* timing the ECU announces is picked up and honoured by every later request
 - **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached
-- **Symbol databases**: one list of DBC files shared by the Trace window, the CAN Logger and the Transmit list
+- **Symbol databases**: one list of DBC files shared by the Trace, Data and Statistics windows, the CAN Logger and the Transmit window
+- **ISO-TP settings** per configuration, kept by CAN Expert rather than in the configuration file: every frame padded to 8 bytes (0xCC by default, as most ECUs require), and the block size and STmin the tester asks of the ECU
+- **Channel setup** per adapter channel: sample point and SJW turned into the adapter's bit timing, listen-only (Kvaser and Vector), a receive filter in the adapter, and bit rate detection that listens without disturbing the bus; configurations take any bit rate
+- **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions each ECU accepts and its VIN, part and serial numbers and versions - beside a running measurement - with a configuration made from any ECU found
+- **One measurement clock**: the Trace, the Logger, the Write window and the UDS Console show each frame's own time, absolute or relative to the start of the measurement; the Trace also filters by direction
+- **Write window** for the script's output and its variables; scripts react to keys, error frames and the bus state
+- **Panel pages as windows**: every page of a database is a workspace window of its own that can be tabbed, split and floated, fitted to its window or zoomed
 - **CANoe-style window system**: the Database panel and the analysis windows live in a workspace where they tab together, split, and float as windows of their own, with drop guides while dragging (Qt Advanced Docking System); the arrangement is remembered and can be saved as named desktops
 - **Node monitoring**: Sends configured periodic TesterPresent requests, lists responding nodes, and marks lost nodes with a red cross
-- **Form Designer**: CANoe Panel Designer-style editor with 20 controls (gauges, LEDs, multi-state indicators, switches, knobs, trends...), DBC signal drag-and-drop, align/distribute, grid snap, undo/redo, a Python editor and a Test mode against the simulated ECU
+- **Form Designer**: CANoe Panel Designer-style editor with 20 controls (gauges, LEDs, multi-state indicators, switches, knobs, trends...), DBC signal drag-and-drop, align/distribute, grid snap, undo/redo, a Python editor, a Database tab (ID and versions, name, description, DBC, contents, the configurations that use it), a menu bar with the usual shortcuts, and a Test mode against the simulated ECU
 - **Python in place of CAPL**: per-control handler functions and `@on_message`, `@on_signal`, `@on_timer`, `@on_start`, `@on_stop` event procedures
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
 - **Channel Selection & Bitrate**: Configure CAN channel and speed per interface
-- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, or draw several in one graph with a legend and a shared value axis, with small symbol buttons for clear, pause, follow, fit, combine, the X/Y axis locks and the measurement cursors, a hover crosshair with time/value readout and CSV export. **Graph options** chooses how signals are drawn (step line, line with a dot per sample, or dots only), the follow window, and exact time and value ranges (for example 50.0134 s to 55.2455 s)
+- **CAN Logger**: CANoe-style graphics window; tick DBC signals to add one graph per signal on a shared time axis, or draw several in one graph with a legend and a shared value axis, with small symbol buttons for clear, pause, follow, fit, combine, the X/Y axis locks and the measurement cursors (with min, max, mean and standard deviation between them), a hover crosshair with time/value readout, and export as CSV (a row per sample or a column per signal), MDF 4 or PNG - of everything, what is on screen or the cursor range; a cap on the samples kept per signal keeps long measurements in bounded memory. **Graph options** chooses how signals are drawn (step line, line with a dot per sample, or dots only), the follow window, and exact time and value ranges (for example 50.0134 s to 55.2455 s)
 - **Firmware flashing**: While connected, the **Flashing** toolbar button asks for an S-record or Intel HEX file and how to flash it: the database script's `Flashing(api, firmware)`, or the **built-in ISO 14229 sequence** (sessions, DTCs and normal messages off, security access, erase, RequestDownload / TransferData / RequestTransferExit per segment, dependency check, reset and version read) whose every step is editable in a dialog and can be saved as a profile file. Both report progress with a Cancel button and leave a `<firmware>.flash-report.txt` beside the image. Test images (`examples/firmware/demo_app.s19` / `.hex`) and a sample script sequence are in `examples/`, and the Form Designer's Test panel can flash the simulated ECU
 
 ## Requirements
@@ -51,7 +56,7 @@ pip install -r requirements.txt
 
 Use **Form Designer** to create pages, drag controls into place, assign unique script bindings, and write `DatabaseMainFunction(api)`. Name versioned databases `family_YYYY-MM-DD.xml`; place their scripts beside them as `family_YYYY-MM-DD_script.py`.
 
-The [user manual](docs/USER_MANUAL.md) walks through the main window, the symbol databases, the Trace window, Statistics, the Data window, the Form Designer, the CAN Logger, the Transmit list, the simulated nodes, the UDS Console, the Diagnostic Window, firmware flashing, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
+The [user manual](docs/USER_MANUAL.md) walks through the main window, the channel setup, the ECU scan, the symbol databases, the Trace window, Statistics, the Data window, the panels, the Form Designer, the scripts and their Write window, the CAN Logger, the Transmit window and its simulated nodes, the UDS Console and its ODX services, firmware flashing, recording and replay, and arranging the windows; the **?** button at the top right of the main window opens it in the application. See [Requirements implementation](docs/REQUIREMENTS_STATUS.md) for the complete configuration schema, script API, database selection rules and acceptance tests. A runnable panel/script pair is in `examples/`. Existing user databases are preserved.
 
 ## Application Database (XML)
 
@@ -101,8 +106,8 @@ Form Designer to create the function), and decorators work like CAPL `on` proced
 
 ```python
 def on_start_clicked(api, value):                 # Handler of the "start" button
-    vin = api.uds.rdbi(0xF190)                    # UDS over ISO-TP, multi-frame replies supported
-    api.ui.set_value("status", vin.decode(errors="replace") if vin else "No VIN")
+    vin = RDBI(0xF190)                            # UDS over ISO-TP, multi-frame replies supported
+    api.ui.set_value("status", vin.text if vin else "No VIN")
 
 
 @on_signal("EngineData.Temperature")              # DBC signal changed
@@ -153,23 +158,26 @@ CanExpert/
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
-│   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox, activity scan
+│   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox
 │   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
 │   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
 │   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
 │   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable
+│   ├── transmit_pane.py        # The Transmit window: the message list and the simulated nodes
 │   ├── transmit_window.py      # Transmit list: one-shot and cyclic messages
-│   ├── uds_console.py          # UDS Console: every ISO 14229 service and the fault memory
+│   ├── simulation_window.py    # Simulated nodes: a database's messages sent as those ECUs would
+│   ├── uds_console.py          # UDS Console: every ISO 14229 service, ODX services, the fault memory
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
 │   ├── workspace.py            # The workspace: the docking system the windows live in
-│   ├── diagnostic_window.py    # ODX Diagnostic Window
+│   ├── odx_services.py         # ODX files and the UDS Console's ODX tab
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
 │   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
 │   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
-│   └── simulator/              # ecu.py (the simulated ECU), window.py (its window)
+│   └── simulator/              # ecu.py (the simulated ECU), signals.py (its frames), dtc.py (its fault
+│                               #   memory), window.py (its window)
 ├── Configurations/             # config_<name>.json, one per configuration
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
 ├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
@@ -195,15 +203,18 @@ Every setting applies at once, even while connected, and is remembered for the n
 |---|---|
 | Addressing | Physical request ID (tester → ECU), functional request ID, response ID (ECU → tester), 29-bit identifiers, extended addressing byte, padding byte |
 | Flow control | Block size (BS), STmin (ms or 100-900 µs), WAIT frames before each ContinueToSend and their interval, receive buffer (longer requests get flow control overflow) |
-| UDS | P2 and P2* announced by DiagnosticSessionControl, response delay (NRC 0x78 beyond P2) and pending interval, S3 timeout, programming session only from extended, SecurityAccess level, seed length, key XOR mask, wrong keys allowed and lockout delay |
-| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, RequestUpload, file for the flashed image |
-| Periodic frames | `0x300`/`0x301` on or off, and their period |
+| UDS | P2 and P2* announced by DiagnosticSessionControl, response delay (NRC 0x78 beyond P2) and pending interval, S3 timeout, programming session only from extended, the slow/medium/fast rates of periodic data (0x2A) and whether it goes out as `6A` frames or on an ID of its own |
+| Access | SecurityAccess levels - the main one and more - each with its seed length and key (seed XOR a mask, or a `GenerateKeyEx` seed & key DLL), wrong keys allowed and lockout delay; rules allowing a service only in some sessions or after unlocking a level |
+| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, RequestUpload, file for the flashed image; the bootloader's image check (none, CRC-32 as the check routine's option record, or in the image's last four bytes) and where the software version is read from the image |
+| Signals | The DBC whose messages are sent (built-in: `DBC/dummy_ecu.dbc`), each message on or off with its period, and a generator per signal: constant, ramp, sine, square, random, counter, the engine running, logging, the session |
+| Data | DIDs (writable or not, following a signal, readable in some sessions or after unlocking a level), DTCs with their status, faults, snapshot and extended data, the fault memory's confirmation and aging cycles and snapshot DIDs, forced negative responses |
+| Errors | The chance of each transport error on purpose: refused, not answered, answered on another ID, a consecutive frame dropped, out of sequence or late |
 
 **How big are the TransferData blocks?** The ECU decides: it announces maxNumberOfBlockLength (data + the `0x36` SID + the block counter) in its RequestDownload response, and the tester sends blocks of that size minus 2. Set **Data per TransferData** to 256 or 512 to get `74 20 01 02` or `74 20 02 02`; CAN Expert's `Flashing()` follows it.
 
 In CAN Expert, choose the **Dummy ECU** configuration (SERVER ID `7E0`, ECU ID `7E8`, database family `showcase`, the showcase panel with every control and `Flashing()`), select the receiver `[kvaser] Ch 0` and click **Connect**. ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
 
-The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime), WriteDataByIdentifier for `F190`, SecurityAccess (by default level 1, key = seed XOR `A5`, the same as the example `compute_key()`), ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: connect, click **Flashing** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`; **Save memory as S-record...** (or **Save image to** on the Flashing tab) writes the received image to a file, and RequestUpload (`0x35`) reads it back over UDS.
+The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime, `0101`/`0102` the live temperature and pressure, `F201`/`F202` the same for periodic data, `0200` readable only in the extended session after unlocking), WriteDataByIdentifier for `F190`, SecurityAccess (by default level 1, key = seed XOR `A5`, the same as the example `compute_key()`), ReadDataByPeriodicIdentifier, ResponseOnEvent (on a DID change or a DTC status change), InputOutputControlByIdentifier (on the DIDs that follow a signal: the application frames carry what the tester set), ReadMemoryByAddress, WriteMemoryByAddress, ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. A DTC's **Fault** box makes its status follow ISO 14229's life cycle - pending, confirmed after operation cycles, aged out - with the snapshot taken at the moment of the fault. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: connect, click **Flashing** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`, or the version found in the image; **Save memory as S-record...** (or **Save image to** on the Flashing tab) writes the received image to a file, and RequestUpload (`0x35`) reads it back over UDS. A flash that fails leaves the application invalid, and the next ECUReset starts the bootloader until a good flash.
 
 To see live graphs, open **CAN Logger**, load `DBC/dummy_ecu.dbc` and tick `EngineData.Temperature`, `EngineData.Pressure` or the `EcuStatus` signals.
 
@@ -213,7 +224,7 @@ Without a window, add `--console`, optionally with a profile saved from the wind
 python dummy_ecu.py --console --channel 1 --config my_ecu.json
 ```
 
-Console options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--block-size`, `--stmin`, `--fc-wait`, `--erase-seconds`, `--no-broadcast`, `--dump FILE`, `--force`. Given without `--console`, they preset the window. Run `python dummy_ecu.py --help` for details.
+Console options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--response-id`, `--functional-id`, `--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--block-size`, `--stmin`, `--fc-wait`, `--erase-seconds`, `--dbc FILE`, `--no-broadcast`, `--dump FILE`, `--force`. Given without `--console`, they preset the window. Run `python dummy_ecu.py --help` for details.
 
 ## Tests
 
