@@ -89,8 +89,8 @@ def drop_empty_floating(workspace):
     """Remove the floating windows a restored state brought back with nothing in them (PyQtAds keeps
     one for every window ever floated, and saves them all)."""
     for floating in workspace.floatingWidgets():
-        container = floating.dockContainer()
-        if container is not None and not container.dockWidgets():
+        # The floating window's own dockWidgets(): its container's is protected in the Linux build of PyQtAds.
+        if not floating.dockWidgets():
             floating.deleteLater()
 
 
