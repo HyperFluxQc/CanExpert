@@ -498,7 +498,11 @@ first. It has four tabs over one log.
   file (the default folder is `ODX/`); choose a service in the tree, fill its free parameters — fixed
   ones are shown as *(coded/fixed)* — and press **Send**.
 - **Fault memory** reads the DTCs with their status bits spelled out (`confirmedDTC, testFailed`), counts
-  them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all.
+  them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all. Each
+  DTC shows its code as it is written on a scan tool (`P0101-00`: the system letter, four characters and
+  the failure type). With the ECU's ODX, PDX or CDD file loaded in the ODX tab — before or after reading —
+  the **Description** column says what each DTC means, from the file's DTC texts. `ODX/dummy_ecu.odx-d`
+  describes the Dummy ECU's two DTCs.
 - **Periodic & events** asks the ECU to send data by itself and lists what it sends. **Start** sends the
   periodic identifiers you name (`F201 F202`) at the chosen rate (ReadDataByPeriodicIdentifier, 0x2A);
   **Stop** ends them (all of them, with the field empty). **Set up** arranges a ResponseOnEvent (0x86):
@@ -784,7 +788,7 @@ do not reach the script.
 | `Configurations/` | `config_<name>.json`, one per configuration |
 | `Databases/` | Panels: `family_YYYY-MM-DD.xml` and `family_YYYY-MM-DD_script.py` |
 | `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings |
-| `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab |
+| `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts) |
 | `examples/` | A runnable panel and script, and demo firmware images |
 | `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |
 

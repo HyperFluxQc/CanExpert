@@ -14,7 +14,11 @@ from canexpert.can_bus import CanWorker
 from canexpert.config import validate_config
 from canexpert.simulator.ecu import DummyEcu, EcuConfig
 from canexpert.uds.client import FUNCTIONS
+from canexpert.odx_services import dtc_display, dtc_text, dtc_texts, load_database, first_layer
+from canexpert.paths import ODX_DIR
 from canexpert.uds_console import UdsConsoleWindow, parse_bytes, parse_int, status_text
+
+DUMMY_ODX = ODX_DIR / "dummy_ecu.odx-d"
 
 APP = QApplication.instance() or QApplication([])
 
@@ -42,6 +46,25 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(parse_int("F190"), 0xF190)
         self.assertEqual(parse_int("0x22"), 0x22)
         self.assertEqual(parse_int("", 7), 7)
+
+
+class DtcTextTest(unittest.TestCase):
+    def test_the_sae_form_of_a_dtc(self):
+        self.assertEqual(dtc_display(0x010100), "P0101-00")
+        self.assertEqual(dtc_display(0xC10000), "U0100-00")
+        self.assertEqual(dtc_display(0x9A2B7F), "B1A2B-7F")
+        self.assertEqual(dtc_display(0x4ABC11), "C0ABC-11")
+
+    def test_the_texts_of_the_dummy_ecus_odx_file(self):
+        texts = dtc_texts(first_layer(load_database(DUMMY_ODX)))
+        self.assertEqual(texts[0x010100], ("P0101", "Mass or volume air flow sensor A circuit range/performance"))
+        self.assertEqual(texts[0xC10000], ("U0100", "Lost communication with ECM/PCM A"))
+        self.assertEqual(dtc_texts(None), {})
+
+    def test_a_file_listing_two_byte_codes(self):
+        texts = {0x0101: ("P0101", "air flow")}
+        self.assertEqual(dtc_text(texts, 0x010113), ("P0101", "air flow"), "found without the failure type byte")
+        self.assertIsNone(dtc_text(texts, 0x020100))
 
 
 class ServiceFormTest(unittest.TestCase):
@@ -192,7 +215,7 @@ class ConsoleAgainstTheEcuTest(unittest.TestCase):
     def test_the_fault_memory_is_read_and_cleared(self):
         self.console.read_dtcs()
         self.assertTrue(spin_until(lambda: self.console.dtc_table.rowCount() == 2))
-        rows = {self.console.dtc_table.item(row, 0).text(): self.console.dtc_table.item(row, 2).text()
+        rows = {self.console.dtc_table.item(row, 0).text(): self.console.dtc_table.item(row, 3).text()
                 for row in range(self.console.dtc_table.rowCount())}
         self.assertEqual(set(rows), {"010100", "C10000"})
         self.assertIn("confirmedDTC", rows["010100"])
@@ -201,6 +224,26 @@ class ConsoleAgainstTheEcuTest(unittest.TestCase):
         self.assertTrue(spin_until(lambda: not self.console._busy))
         self.console.read_dtcs()
         self.assertTrue(spin_until(lambda: self.console.dtc_table.rowCount() == 0))
+
+    def test_the_fault_memory_takes_its_texts_from_the_odx_file(self):
+        self.ecu.config.dtcs = [*self.ecu.config.dtcs, {"dtc": 0x9A2B7F, "status": 0x09}]
+        self.ecu.load_data()
+        self.assertIn("Load the ECU's ODX", self.console.dtc_hint.text())
+        self.console.read_dtcs()
+        self.assertTrue(spin_until(lambda: self.console.dtc_table.rowCount() == 3))
+
+        def rows():
+            table = self.console.dtc_table
+            return {table.item(row, 0).text(): (table.item(row, 1).text(), table.item(row, 4).text())
+                    for row in range(table.rowCount())}
+        self.assertEqual(rows()["010100"], ("P0101-00", ""), "no file yet: the SAE code only")
+        self.assertTrue(self.console.odx.load(DUMMY_ODX))              # loaded after reading: the table follows
+        self.assertEqual(rows()["010100"], ("P0101-00", "Mass or volume air flow sensor A circuit range/performance"))
+        self.assertEqual(rows()["C10000"], ("U0100-00", "Lost communication with ECM/PCM A"))
+        self.assertEqual(rows()["9A2B7F"], ("B1A2B-7F", "not in the ODX file"))
+        self.assertIn("dummy_ecu.odx-d: 2 DTCs described", self.console.dtc_hint.text())
+        self.console.dtc_table.selectRow(0)
+        self.assertEqual(self.console._selected_dtc(), int(self.console.dtc_table.item(0, 0).text(), 16))
 
     def test_a_raw_request_is_sent_as_typed(self):
         self.console.raw_edit.setText("22 F1 95")

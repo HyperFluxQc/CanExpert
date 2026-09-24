@@ -40,7 +40,7 @@ from PyQt5.QtWidgets import (
 from canexpert.can_bus import ReceiveMailbox
 from canexpert.clock import absolute_text
 from canexpert.config import uds_transport
-from canexpert.odx_services import OdxTab, decoded
+from canexpert.odx_services import OdxTab, decoded, dtc_display, dtc_text, dtc_texts
 from canexpert.uds.client import FUNCTIONS, GROUPS, NRC_NAMES, UdsFunctions, make_request, unsolicited_kind
 from canexpert.uds.observer import service_name
 from canexpert.uds.seed_key import SeedKeyError, dll_key, xor_key
@@ -99,6 +99,7 @@ class UdsConsoleWindow(QDialog):
         self.session_state = "unknown"
         self.security_state = "locked"
         self._library = None                # the seed & key DLL, loaded once
+        self._dtcs = []                     # the fault memory as last read: [(dtc, status)]
         self._build_ui()
         self.finished_request.connect(self._on_result)
 
@@ -110,6 +111,7 @@ class UdsConsoleWindow(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._services_tab(), "Services")
         self.odx = OdxTab(self.send_odx)
+        self.odx.layer_changed.connect(lambda: self._fill_dtcs(self._dtcs))    # the texts of a new file
         tabs.addTab(self.odx, "ODX")
         tabs.addTab(self._faults_tab(), "Fault memory")
         tabs.addTab(self._unsolicited_tab(), "Periodic && events")
@@ -120,6 +122,7 @@ class UdsConsoleWindow(QDialog):
         self.log.setMaximumBlockCount(2000)
         self.log.setPlaceholderText("Requests and responses appear here.")
         layout.addWidget(self.log, 1)
+        self._fill_dtcs([])                 # the fault memory's hint
 
     def _session_bar(self):
         box = QGroupBox("Session and security")
@@ -276,13 +279,16 @@ class UdsConsoleWindow(QDialog):
             row.addWidget(button)
         row.addStretch()
         layout.addLayout(row)
-        self.dtc_table = QTableWidget(0, 3)
-        self.dtc_table.setHorizontalHeaderLabels(["DTC", "Status", "Meaning"])
+        self.dtc_table = QTableWidget(0, 5)
+        self.dtc_table.setHorizontalHeaderLabels(["DTC", "Code", "Status", "Status bits", "Description"])
         self.dtc_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.dtc_table.setColumnWidth(0, 110)
-        self.dtc_table.setColumnWidth(1, 70)
+        for column, width in enumerate((80, 90, 55, 330)):
+            self.dtc_table.setColumnWidth(column, width)
         self.dtc_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.dtc_table, 1)
+        self.dtc_hint = QLabel("")
+        self.dtc_hint.setStyleSheet("color: gray;")
+        layout.addWidget(self.dtc_hint)
         return page
 
     def _unsolicited_tab(self):
@@ -666,9 +672,22 @@ class UdsConsoleWindow(QDialog):
         return self.run(lambda uds: uds.CDTCI(0xFFFFFF), "ClearDiagnosticInformation")
 
     def _fill_dtcs(self, dtcs):
+        """The DTCs read, each with its SAE code, its status bits and - from the ODX tab's file - its text."""
+        self._dtcs = list(dtcs)
+        texts = dtc_texts(self.odx.layer) if self.odx.layer is not None else {}
         self.dtc_table.setRowCount(len(dtcs))
         for row, (dtc, status) in enumerate(dtcs):
-            for column, text in enumerate((f"{dtc:06X}", f"{status:02X}", status_text(status))):
+            known = dtc_text(texts, dtc)
+            code = f"{known[0]}-{dtc & 0xFF:02X}" if known and known[0] else dtc_display(dtc)
+            description = known[1] if known else ("not in the ODX file" if texts else "")
+            for column, text in enumerate((f"{dtc:06X}", code, f"{status:02X}", status_text(status), description)):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if column == 4 and not known:
+                    item.setForeground(Qt.gray)
                 self.dtc_table.setItem(row, column, item)
+        if self.odx.layer is None:
+            self.dtc_hint.setText("Load the ECU's ODX, PDX or CDD file in the ODX tab to see what each DTC means.")
+        else:
+            self.dtc_hint.setText(f"Descriptions from {self.odx.path_label.text()}: "
+                                  f"{len(texts)} DTC{'s' if len(texts) != 1 else ''} described.")

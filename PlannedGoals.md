@@ -111,7 +111,8 @@ when it is available.
 **Now:** `canexpert/uds_console.py` builds each request form from the function's own signature, sends
 on a background thread over a private mailbox, and logs the response with its NRC name. It also has a
 session and SecurityAccess bar and a fault-memory tab (read, count, snapshot, extended data, clear) that
-spells out the DTC status bits. ODX text for DTCs is still to do.
+spells out the DTC status bits, writes each code as a scan tool does (P0101-00) and shows its text from the
+ODX, PDX or CDD file loaded in the ODX tab (`ODX/dummy_ecu.odx-d` describes the Dummy ECU's DTCs).
 
 ### 7. Test feature set with reports — **DONE**
 *Effort: large*
