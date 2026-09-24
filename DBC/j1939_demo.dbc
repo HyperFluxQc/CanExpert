@@ -1,0 +1,43 @@
+VERSION ""
+
+
+NS_ :
+
+BS_:
+
+BU_: Engine Vehicle
+
+
+BO_ 2364540158 EEC1: 8 Engine
+ SG_ EngineTorqueMode : 0|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ DriversDemandEngPercentTorque : 8|8@1+ (1,-125) [-125|125] "%" Vector__XXX
+ SG_ ActualEnginePercentTorque : 16|8@1+ (1,-125) [-125|125] "%" Vector__XXX
+ SG_ EngineSpeed : 24|16@1+ (0.125,0) [0|8031.875] "rpm" Vector__XXX
+ SG_ SourceAddressOfController : 40|8@1+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 2566844926 CCVS: 8 Vehicle
+ SG_ ParkingBrakeSwitch : 2|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ WheelBasedVehicleSpeed : 8|16@1+ (0.00390625,0) [0|250.996] "km/h" Vector__XXX
+ SG_ CruiseControlActive : 24|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BrakeSwitch : 28|2@1+ (1,0) [0|3] "" Vector__XXX
+
+BO_ 2566844158 ET1: 8 Engine
+ SG_ EngineCoolantTemperature : 0|8@1+ (1,-40) [-40|210] "degC" Vector__XXX
+ SG_ EngineFuelTemperature : 8|8@1+ (1,-40) [-40|210] "degC" Vector__XXX
+ SG_ EngineOilTemperature : 16|16@1+ (0.03125,-273) [-273|1734.96875] "degC" Vector__XXX
+
+
+CM_ "J1939 demo: three parameter groups of an engine and a vehicle, sent by the Dummy ECU in J1939 mode.";
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN","reserved","J1939PG";
+BA_DEF_ "ProtocolType" STRING ;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "VFrameFormat" "J1939PG";
+BA_DEF_DEF_ "ProtocolType" "J1939";
+BA_ "ProtocolType" "J1939";
+BA_ "GenMsgCycleTime" BO_ 2364540158 100;
+BA_ "VFrameFormat" BO_ 2364540158 3;
+BA_ "GenMsgCycleTime" BO_ 2566844926 100;
+BA_ "VFrameFormat" BO_ 2566844926 3;
+BA_ "GenMsgCycleTime" BO_ 2566844158 1000;
+BA_ "VFrameFormat" BO_ 2566844158 3;

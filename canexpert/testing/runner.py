@@ -35,6 +35,7 @@ from pathlib import Path
 import can
 
 from canexpert.can_bus import ReceiveMailbox
+from canexpert.j1939.transport import J1939Link
 from canexpert.uds.client import UdsFunctions, UdsResult
 
 PASS, FAIL, INFO = "pass", "fail", "info"
@@ -147,10 +148,21 @@ def load_module(path, extra_names=None) -> TestModule:
 
 
 def uds_names() -> dict:
-    """The UDS function names a module may use, with placeholders, so it can be read without a bus."""
+    """The UDS function names - and j1939 - a module may use, with placeholders, so it can be read without a
+    bus."""
     def offline(*_args, **_kwargs):
         raise RuntimeError("No measurement is running: connect first")
-    return UdsFunctions(offline).namespace()
+    return {**UdsFunctions(offline).namespace(), "j1939": J1939Link(_Offline())}
+
+
+class _Offline:
+    """The bus of a module read without a measurement."""
+
+    def send(self, _message):
+        raise RuntimeError("No measurement is running: connect first")
+
+    def recv(self, timeout=None):
+        raise RuntimeError("No measurement is running: connect first")
 
 
 class FrameMailbox(ReceiveMailbox):
@@ -165,13 +177,14 @@ class TestContext:
     """What a test case gets as t: steps with verdicts, waits, frames and signals."""
 
     def __init__(self, result: CaseResult, frames: queue.Queue | None, send, decode, stop: threading.Event,
-                 report_step=None):
+                 report_step=None, marker=None):
         self.result = result
         self._frames = frames           # (arrival time, frame) for every received frame: FrameMailbox.messages
         self._send = send               # send(can.Message)
         self._decode = decode           # decode(can_id, data) -> (message name, {signal name: value})
         self._stop = stop
         self._report_step = report_step or (lambda step: None)
+        self._marker = marker or (lambda when, text: None)   # marker(when, comment): into the measurement
         self._start = time.monotonic()
         self._since = None              # when the last send() went out: a wait after it takes the answer too
 
@@ -218,6 +231,12 @@ class TestContext:
     def log(self, text):
         """A line in the report, without a verdict."""
         self._step(text, INFO)
+
+    def marker(self, comment):
+        """A marker in the measurement - the Trace, the Logger's graphs, the recording - and a line in the
+        report, so the two can be read side by side."""
+        self._marker(time.time(), str(comment))
+        self._step(f"Marker: {comment}", INFO)
 
     # --- time and the bus -----------------------------------------------------------------------
 
@@ -304,23 +323,26 @@ class Runner:
     """
 
     def __init__(self, module: TestModule, request=None, frames=None, send=None, decode=None, timeout=None,
-                 on_event=None, configuration=""):
+                 on_event=None, configuration="", marker=None, j1939=None):
         self.module = module
         self.frames, self.configuration = frames, configuration
         self.send = send or _not_connected
         self.decode = decode or (lambda can_id, data: ("", {}))
         self.on_event = on_event or (lambda kind, data: None)
+        self.marker = marker                     # marker(when, comment), for t.marker()
         self.stop_event = threading.Event()
         if request is not None:
             functions = UdsFunctions(request, None, timeout)
             module.namespace.update(functions.namespace())      # the module's calls go to the bus now
+        if j1939 is not None:
+            module.namespace["j1939"] = j1939                   # a J1939Link on the run's mailbox
 
     def stop(self):
         self.stop_event.set()
 
     def _context(self, result):
         return TestContext(result, self.frames, self.send, self.decode, self.stop_event,
-                           lambda step: self.on_event("step", step))
+                           lambda step: self.on_event("step", step), self.marker)
 
     def _call(self, function, result) -> None:
         """Run one function as (part of) result's body and set its verdict."""

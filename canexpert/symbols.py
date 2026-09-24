@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from canexpert.j1939.pgn import dbc_pgn, lookup
 from canexpert.paths import DBC_DIR
 from canexpert.ui_common import app_settings
 
@@ -58,13 +59,14 @@ class SymbolDatabases(QObject):
         self.databases: list[tuple[str, object]] = []
         self.errors: list[str] = []
         self._by_frame: dict[int, object] = {}
+        self._by_pgn: dict[int, object] = {}     # J1939 parameter groups, whatever their source address
         self.set_paths(paths if paths is not None else read_paths(self.settings))
 
     # --- the list ---------------------------------------------------------------------
 
     def set_paths(self, paths, remember=False):
         """Load these DBC files, replacing the current ones."""
-        self.paths, self.databases, self.errors, self._by_frame = [], [], [], {}
+        self.paths, self.databases, self.errors, self._by_frame, self._by_pgn = [], [], [], {}, {}
         for path in [str(p) for p in paths]:
             if path in self.paths:
                 continue
@@ -80,6 +82,9 @@ class SymbolDatabases(QObject):
             self.databases.append((path, database))
             for message in database.messages:
                 self._by_frame.setdefault(message.frame_id, message)
+                pgn = dbc_pgn(message)
+                if pgn is not None:
+                    self._by_pgn.setdefault(pgn, message)
         if remember:
             write_paths(self.paths, self.settings)
         self.changed.emit()
@@ -96,11 +101,11 @@ class SymbolDatabases(QObject):
     # --- symbols ----------------------------------------------------------------------
 
     def message(self, frame_id: int):
-        """The DBC message for a frame identifier, or None."""
-        return self._by_frame.get(frame_id)
+        """The DBC message for a frame identifier, or None. A J1939 message matches every frame of its PGN."""
+        return lookup(self._by_frame, self._by_pgn, frame_id)
 
     def name(self, frame_id: int) -> str:
-        message = self._by_frame.get(frame_id)
+        message = self.message(frame_id)
         return message.name if message is not None else ""
 
     def messages(self) -> list:
@@ -109,7 +114,7 @@ class SymbolDatabases(QObject):
 
     def decode(self, frame_id: int, data) -> dict:
         """{signal name: physical value} for a received frame; {} when nothing decodes it."""
-        message = self._by_frame.get(frame_id)
+        message = self.message(frame_id)
         if message is None:
             return {}
         try:

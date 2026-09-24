@@ -11,11 +11,11 @@ from unittest.mock import patch
 
 import can
 from PyQt5.QtCore import QEvent, QSettings
-from PyQt5.QtWidgets import QAction, QApplication
+from PyQt5.QtWidgets import QAction, QApplication, QMainWindow
 
 from PyQtAds import ads
 
-from canexpert import can_bus
+from canexpert import can_bus, workspace
 from canexpert import main_window as main
 from canexpert.main_layouts import LAYOUT_STATE
 from canexpert.recording import Recorder, read_frames
@@ -399,6 +399,34 @@ class MeasurementTest(unittest.TestCase):
         self.window.on_disconnect_clicked()
         self.assertTrue(body.isClosed())
         self.assertTrue(self.window.database_pane.isClosed())
+
+
+class LinuxWithoutX11Test(unittest.TestCase):
+    """PyQtAds 3.8 keeps floating windows above the main window with X11 messages sent from a filter on it,
+    without checking that X11 is there: under Wayland or headless (CI) the filter goes, or closing the window
+    with a pane floating crashes."""
+
+    def removed_filters(self, platform, qpa):
+        removed = []
+
+        class Window(QMainWindow):
+            def removeEventFilter(self, watcher):
+                removed.append(watcher)
+                super().removeEventFilter(watcher)
+        window = Window()
+        self.addCleanup(window.deleteLater)
+        with patch.object(workspace.sys, "platform", platform),                 patch.object(workspace.QGuiApplication, "platformName", return_value=qpa):
+            manager = workspace.create_workspace(window)
+        return removed, manager
+
+    def test_the_filter_goes_where_there_is_no_x11(self):
+        for qpa in ("offscreen", "wayland"):
+            removed, manager = self.removed_filters("linux", qpa)
+            self.assertEqual(removed, [manager], qpa)
+
+    def test_it_stays_under_x11_and_elsewhere(self):
+        self.assertEqual(self.removed_filters("linux", "xcb")[0], [])
+        self.assertEqual(self.removed_filters("win32", "windows")[0], [])
 
 
 if __name__ == "__main__":

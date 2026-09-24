@@ -8,16 +8,19 @@ from pathlib import Path
 
 import can
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QInputDialog, QMessageBox
 
 from canexpert.can_bus import CanWorker, ReceiveMailbox, channel_key
 from canexpert.channel_setup import load_setup, open_configured
 from canexpert.config import uds_transport, validate_config
+from canexpert.j1939_window import address_setting
 from canexpert.panel.database import load_application_database
 from canexpert.panel.runtime import ScriptRuntime
 from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.status_strip import DiagnosticState
 from canexpert.workspace import fit_on_screen
+
+MARKER_HISTORY = 1000              # markers kept for a window opened later
 
 
 class Session:
@@ -70,6 +73,9 @@ class Session:
                                     if g == self.session_generation else None)
             runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
             runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
+            runtime.j1939.address = address_setting(self._settings)        # the J1939 window's
+            runtime.marker_requested.connect(lambda when, text, g=generation: self.add_marker(when, text)
+                                             if g == self.session_generation else None)   # api.marker()
             runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
             self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
             self.script_runtime = runtime
@@ -245,6 +251,40 @@ class Session:
         if self._bus_state is not None and state != self._bus_state and self.script_runtime is not None:
             self.script_runtime.post("bus_state", None, state)      # @on_bus_state
         self._bus_state = state
+
+    def insert_marker(self, text=None):
+        """Ctrl+M: a marker at this moment of the measurement, with a comment asked for (None: cancelled)."""
+        when = time.time()                          # the moment the key was pressed, not the dialog's end
+        if text is None:
+            text, ok = QInputDialog.getText(self, "Insert marker", "Comment:",
+                                            text=f"Marker {self._marker_count + 1}")
+            if not ok:
+                return None
+        return self.add_marker(when, text)
+
+    def quick_marker(self):
+        """Ctrl+Shift+M: a numbered marker at once."""
+        return self.add_marker(time.time(), "")
+
+    def add_marker(self, timestamp, text):
+        """A marker - from the keys, the panel script's api.marker() or a test module's t.marker() - in the
+        Trace and on the Logger's graphs (also those opened later), in the recording where its format holds
+        one, and in the Log."""
+        self._marker_count += 1
+        text = " ".join(str(text).split()) or f"Marker {self._marker_count}"
+        marker = (float(timestamp), text)
+        self.marker_history.append(marker)
+        if self.recorder is not None:
+            try:
+                self.recorder.write_marker(*marker)
+            except Exception as exc:                  # a full disk must not take the measurement down
+                self.log_verbose(f"The marker was not recorded: {exc}")
+        for name in list(self.tool_panes):
+            handler = getattr(self.tool_widget(name), "on_marker", None)
+            if handler is not None:
+                handler(*marker)
+        self.log_verbose(f"Marker at {self.clock.text(timestamp, self.time_display)}: {text}")
+        return marker
 
     def replay_frames(self, frames):
         """Frames read back from a recorded file (offline mode): they reach the windows, not the bus."""

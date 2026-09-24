@@ -63,7 +63,7 @@ from canexpert.main_layouts import TOOL_AREAS
 from canexpert.main_tools import ToolWindows
 from canexpert.main_layouts import Layouts
 from canexpert.main_channels import Channels
-from canexpert.main_session import Session
+from canexpert.main_session import MARKER_HISTORY, Session
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
@@ -73,16 +73,16 @@ PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> 
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
-                  "write", "tests", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
+                  "write", "tests", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
 SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
              "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
-             "tests": "Ctrl+8", "sysvars": "Ctrl+9", "designer": "Ctrl+E"}
+             "tests": "Ctrl+8", "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
 # The manual's section for each tool window, for F1.
 HELP_SECTIONS = {"trace": "Trace window", "logger": "CAN Logger", "data": "Data window", "statistics": "Statistics",
                  "transmit": "Transmit window", "console": "UDS Console", "write": "Writing panel scripts",
-                 "tests": "Test modules", "sysvars": "Writing panel scripts"}
+                 "tests": "Test modules", "j1939": "J1939", "sysvars": "Writing panel scripts"}
 
 
 def tool_panes() -> tuple:
@@ -136,6 +136,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             self.sysvars.changed.connect(self._on_sysvar_changed)
         self.sysvar_history = deque(maxlen=FRAME_HISTORY)      # (when, name, value) for a Logger opened later
         self.write_history = deque(maxlen=WRITE_HISTORY)       # (when, level, text) for a Write window opened later
+        self.marker_history = deque(maxlen=MARKER_HISTORY)     # (when, comment) for a Trace or Logger opened later
+        self._marker_count = 0
         self._bus_state = None
         self._keys_watched = False
         self.time_display = self._settings.value(TIME_DISPLAY, TIME_DISPLAYS[0], type=str)
@@ -212,6 +214,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             ("write", "Write", "What the panel script writes, and its variables as it runs", self.open_write),
             ("tests", "Test", "Run a test module's test cases against the bus, with a verdict per step and an HTML "
              "and JUnit report", self.open_tests),
+            ("j1939", "J1939", "J1939 networks: the nodes and their NAMEs, their faults (DM1, DM2, clear), and any "
+             "PGN requested or sent", self.open_j1939),
             ("sysvars", "System Variables", "Values shared by the script, the windows and you", self.open_sysvars),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
             ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",
@@ -445,6 +449,17 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         replay_action.setShortcut(QKeySequence("Ctrl+O"))
         replay_action.triggered.connect(lambda: self.replay_log())
         self._shortcut_actions += [self._record_action, self._stop_record_action, replay_action]
+        measurement_menu.addSeparator()
+        marker_action = measurement_menu.addAction('Insert marker...')
+        marker_action.setShortcut(QKeySequence("Ctrl+M"))
+        marker_action.setToolTip("A marker with a comment at this moment: in the Trace, on the Logger's graphs "
+                                 "and in the recording")
+        marker_action.triggered.connect(lambda: self.insert_marker())
+        quick_marker_action = measurement_menu.addAction('Quick marker')
+        quick_marker_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        quick_marker_action.setToolTip("A numbered marker at once, without asking for a comment")
+        quick_marker_action.triggered.connect(lambda: self.quick_marker())
+        self._shortcut_actions += [marker_action, quick_marker_action]
         measurement_menu.addSeparator()
         measurement_menu.addAction('Scan for ECUs...').triggered.connect(lambda: self.open_ecu_scan())
 

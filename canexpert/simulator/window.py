@@ -33,6 +33,7 @@ from canexpert.paths import DBC_DIR
 from canexpert.simulator.fields import (
     parse_byte_list,
     parse_did_list,
+    parse_name,
     parse_address_format,
     parse_ranges,
     format_ranges,
@@ -52,7 +53,7 @@ from canexpert.simulator.ecu import (
     parse_channel,
     save_profile,
 )
-from canexpert.simulator.signals import DEFAULT_GENERATORS, SignalSimulation
+from canexpert.simulator.signals import KNOWN_GENERATORS, SignalSimulation
 from canexpert.uds.client import NRC_NAMES
 from canexpert.uds.isotp import flow_control_frame
 from canexpert.ui_common import app_icon, app_settings
@@ -175,6 +176,9 @@ class DummyEcuWindow(Pages, Tables, QMainWindow):
             self.address_byte.setValue(config.address_byte or 0)
             self.use_padding.setChecked(config.padding is not None)
             self.padding.setValue(0xAA if config.padding is None else config.padding)
+            self.j1939.setChecked(config.j1939)
+            self.j1939_address.setValue(config.j1939_address)
+            self.j1939_name.setText(f"{config.j1939_name:016X}")
             self.block_size.setValue(config.block_size)
             microseconds = 0xF1 <= config.st_min <= 0xF9
             self.st_min_unit.setCurrentIndex(1 if microseconds else 0)
@@ -252,6 +256,7 @@ class DummyEcuWindow(Pages, Tables, QMainWindow):
         address_format = parsed(self.address_format, parse_address_format)
         memory_ranges = parsed(self.memory_ranges, parse_ranges)
         snapshot_dids = parsed(self.snapshot_dids, parse_did_list)
+        j1939_name = parsed(self.j1939_name, parse_name)
         try:
             dids, dtcs, forced_nrcs, levels, rules, messages, generators = self._read_tables()
         except ValueError as exc:
@@ -291,6 +296,7 @@ class DummyEcuWindow(Pages, Tables, QMainWindow):
             operation_cycle_seconds=self.operation_cycle.value(), snapshot_dids=snapshot_dids,
             error_refuse_nrc=self.error_refuse_nrc.value(),
             errors_on_tester_present=self.errors_on_tester_present.isChecked(),
+            j1939=self.j1939.isChecked(), j1939_address=self.j1939_address.value(), j1939_name=j1939_name,
             **{name: spin.value() for name, spin in self.error_spins.items()},
         )
 
@@ -364,7 +370,7 @@ class DummyEcuWindow(Pages, Tables, QMainWindow):
         engine = SignalSimulation()
         try:
             engine.load(path)
-            engine.configure(DEFAULT_GENERATORS if not path else ())
+            engine.configure(KNOWN_GENERATORS)       # the built-in and the J1939 demo DBC's; others: none
         except ValueError as exc:
             QMessageBox.warning(self, "Dummy ECU", str(exc))
             return False

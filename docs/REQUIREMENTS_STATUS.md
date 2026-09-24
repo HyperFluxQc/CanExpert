@@ -43,6 +43,11 @@ in a file of its own.
   honoured by the requests that follow.
 - **Test modules** (*Tools → Test*): Python test cases against the live bus with setup/teardown, a
   verdict per step, Stop, and an HTML and a JUnit XML report of every run.
+- **J1939** (*Tools → J1939*): address claims and NAMEs, DM1/DM2 faults with DM11/DM3 clear, any PGN
+  requested or sent with the transport protocol (BAM, RTS/CTS); the Trace's J1939 view; J1939 DBC messages
+  from any source address; `j1939` and `@on_pgn` in scripts; the Dummy ECU as a J1939 node.
+- **Markers** (Ctrl+M): a comment at a moment of the measurement, in the Trace, on the Logger's graphs and
+  in BLF/ASC/TRC recordings; scripts use `api.marker()`, test modules `t.marker()`.
 - **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
   windows offline and never touches a bus.
 - **Symbol databases**: one DBC list shared by the Trace, Data and Statistics windows, the CAN Logger and

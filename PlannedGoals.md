@@ -9,8 +9,8 @@ database XML, or the `_script.py` mechanism: where a feature has to remember som
 its own file or in QSettings. Three items would genuinely be better with one new optional configuration
 field, and they say so.
 
-**Status:** tier 1 items 2-8, tier 2 items 11-18, tier 3 items 19-29 and 32, and tier 4 items 33, 36-38
-and 40 are **implemented** (items 9 and 10, CAN FD and several channels, were left out on purpose; item 1
+**Status:** tier 1 items 2-8, tier 2 items 11-18, tier 3 items 19-29 and 32, tier 4 items 33, 35-38
+and 40, and tier 5 item 41 (J1939) are **implemented** (items 9 and 10, CAN FD and several channels, were left out on purpose; item 1
 was built and then removed — see it below). Each one is marked; the rest is untouched.
 
 ---
@@ -470,11 +470,16 @@ Fixed `02 3E 00`. Offer `3E 80` (suppressed positive response) for a quiet bus �
 the node-status tree depends on the reply, so it must stay optional and disable node detection when
 used.
 
-### 35. Export and markers
+### 35. Export and markers — **DONE**
 *Effort: very small*
 
-~~The CAN monitor cannot be saved or searched~~ — the CAN monitor is gone, the Trace covers it. Add
-"insert marker or comment" during a measurement (CANoe's trigger and comment).
+~~The CAN monitor cannot be saved or searched~~ — the CAN monitor is gone, the Trace covers it (find,
+CSV export).
+
+**Now:** **Connection → Insert marker...** (Ctrl+M, or Ctrl+Shift+M without a comment) marks a moment of
+the measurement: a highlighted row in the Trace, a line across the Logger's graphs, a global marker in a BLF
+recording (a comment line in ASC and TRC). Panel scripts call `api.marker()`, test modules `t.marker()`.
+A replay in CAN Expert does not read the markers back.
 
 ### 36. A status strip showing the system state — **DONE**
 *Effort: small*
@@ -524,7 +529,7 @@ section.
 
 | Item | Effort | Note |
 |---|---|---|
-| **41. J1939** | large | TP.CM/BAM transport, PGN decode, address claim |
+| **41. J1939** — **DONE** | large | TP.CM/BAM transport, PGN decode, address claim. Now: `canexpert/j1939/` (identifiers, NAME, DM1/DM2, BAM and RTS/CTS), the J1939 window (nodes, faults, requests), the Trace's J1939 view, J1939 DBCs matched by PGN, `j1939` / `@on_pgn` in scripts and test modules, and the Dummy ECU as a J1939 node |
 | **42. XCP / CCP with A2L** | very large | Measurement and calibration of internal ECU variables; what no DBC-based tool can do |
 | **43. Localization** | medium | Qt has the tooling; CANoe ships EN/DE/JP/CN |
 | **44. LIN, FlexRay, automotive Ethernet** | very large | Realistically out of scope. If ever: LIN on a Kvaser/Vector adapter, and only after CAN FD |

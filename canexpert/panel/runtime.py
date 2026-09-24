@@ -22,6 +22,8 @@ from canexpert.config import uds_transport
 from canexpert.flashing import load_firmware, parse_s19_s28_file
 from canexpert import features
 from canexpert.sysvars import SystemVariables
+from canexpert.j1939.pgn import TOOL_ADDRESS
+from canexpert.j1939.transport import J1939Assembler, J1939Link
 from canexpert.uds.client import UdsFunctions, uds_request, unsolicited_kind
 
 
@@ -153,6 +155,12 @@ class DatabaseAPI:
             self._runtime.say("warning", str(msg))
         else:
             self.log(msg)
+
+    def marker(self, comment: str = ""):
+        """A marker at this moment of the measurement, as Ctrl+M inserts: in the Trace, on the Logger's graphs
+        and in the recording."""
+        if self._runtime is not None:
+            self._runtime.marker_requested.emit(time.time(), str(comment))
 
 
 class _SysVarApi:
@@ -408,6 +416,7 @@ class ScriptRuntime(QObject):
     flashing_available = pyqtSignal(bool)
     flash_progress = pyqtSignal(int, int, str)
     flash_finished = pyqtSignal(bool, str)
+    marker_requested = pyqtSignal(float, str)   # api.marker(): (when, comment)
 
     def __init__(self, bus, config, values, parent=None, sysvars=None):
         super().__init__(parent)
@@ -432,6 +441,8 @@ class ScriptRuntime(QObject):
         self.key_handlers = {}          # key ("a", "F5", "*") -> [handler]
         self.error_frame_handlers, self.bus_state_handlers = [], []
         self.periodic_handlers = {}     # periodic identifier 0xF2xx (or "*") -> [handler]
+        self.pgn_handlers = {}          # J1939 PGN (or "*") -> [handler]
+        self._j1939 = J1939Assembler()  # 29-bit frames back into J1939 messages, for @on_pgn
         self.event_handlers = {}        # service answered by the event (or "*") -> [handler]
         self.namespace = {}             # the script's globals, for the Write window's watch
         self.hidden_names = set()       # the names CAN Expert put there
@@ -446,6 +457,7 @@ class ScriptRuntime(QObject):
             self.sysvars.changed.connect(self._sysvar_slot)
         self.api = DatabaseAPI(bus, log_cb=lambda text: self.say("info", text))
         self.api._transport = uds_transport(config)
+        self.j1939 = J1939Link(bus, TOOL_ADDRESS)      # j1939.request(), j1939.send() in scripts
         self.api._runtime = self
         self.api._stop_event = self.stop_event
 
@@ -580,6 +592,18 @@ class ScriptRuntime(QObject):
                 return fn
             return register
 
+        def on_pgn(*pgns):
+            """@on_pgn(0xFECA) def f(message): ... - a J1939 message of that PGN, from any node, put together
+            when it spans several frames (BAM, RTS/CTS): message.pgn, .source, .destination, .data. None: all."""
+            if len(pgns) == 1 and callable(pgns[0]):
+                return on_pgn()(pgns[0])
+
+            def register(fn):
+                for pgn in pgns or ("*",):
+                    runtime.pgn_handlers.setdefault(pgn, []).append(runtime._adapt(fn))
+                return fn
+            return register
+
         def on_response_event(*services):
             """@on_response_event(0x22) def f(response): ... - a response ResponseOnEvent (ROE, 0x86) sent when
             its event happened, as bytes (62 F1 90 ...); services: the requests it answers; none: every one."""
@@ -597,7 +621,8 @@ class ScriptRuntime(QObject):
                      "on_stop": on_stop, "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal,
                      "on_control": on_control, "on_key": on_key, "on_error_frame": on_error_frame,
                      "on_bus_state": on_bus_state, "on_periodic_data": on_periodic_data,
-                     "on_response_event": on_response_event, **self.api.uds.functions.namespace()}
+                     "on_response_event": on_response_event, "on_pgn": on_pgn, "j1939": self.j1939,
+                     **self.api.uds.functions.namespace()}
         if self.sysvars is not None:
             namespace["on_sysvar"] = on_sysvar
         return namespace
@@ -630,6 +655,10 @@ class ScriptRuntime(QObject):
 
     def _on_frame(self, can_id, data):
         self.api.push_received_message(can_id, data)
+        if self.pgn_handlers and can_id > 0x7FF:            # a 29-bit frame: J1939, maybe
+            for message in self._j1939.push(time.time(), can_id, data):
+                for handler in list(self.pgn_handlers.get(message.pgn, ())) + list(self.pgn_handlers.get("*", ())):
+                    self._call(handler, message)
         message, signals = None, {}
         if self.dbc is not None:
             if self._messages is None:

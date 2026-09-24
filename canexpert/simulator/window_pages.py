@@ -172,7 +172,18 @@ class Pages:
         form.addRow(hint("ISO-TP extended addressing: every frame starts with this byte."))
         form.addRow(self.use_padding, self.padding)
         form.addRow(hint("Without padding, frames are only as long as their content (e.g. 3 bytes for 02 7E 00)."))
-        return self._page(ids, frames)
+        j1939, form = self._group("J1939")
+        self.j1939 = self._check("A J1939 node as well")
+        self.j1939_address = self._hex(0xFD)
+        self.j1939_name = self._line("the 64-bit NAME, in hex")
+        form.addRow("", self.j1939)
+        form.addRow("Source address", self.j1939_address)
+        form.addRow("NAME", self.j1939_name)
+        form.addRow(hint("It claims the address with this NAME - a node claiming it with a lower NAME wins -, sends "
+                         "DM1 every second with its active faults, answers requests (Address Claimed, DM1, DM2, "
+                         "DM11 and DM3 clear, SOFT, VI, CI and the PGNs it broadcasts) and sends its DBC's 29-bit "
+                         "frames from its address. DBC/j1939_demo.dbc (Signals tab) is an engine's."))
+        return self._page(ids, frames, j1939)
 
     def _flow_page(self):
         group, form = self._group("Flow control the ECU sends for segmented requests")

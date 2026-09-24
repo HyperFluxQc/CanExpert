@@ -67,6 +67,19 @@ class Recorder:
         self.writer.on_message_received(make_message(timestamp, direction, can_id, data, extended))
         self.count += 1
 
+    def write_marker(self, timestamp, text) -> bool:
+        """A marker and its comment, where the format holds one: BLF as a global marker (CANoe shows it on
+        its time axis), ASC as a comment line with its time, TRC as a comment. CSV and LOG have no place
+        for it: False."""
+        log_event = getattr(self.writer, "log_event", None)
+        if log_event is None:
+            return False
+        if isinstance(self.writer, can.TRCWriter):
+            log_event(f";   Marker: {text}", timestamp)        # a TRC line starting with ; is a comment
+        else:
+            log_event(text if isinstance(self.writer, can.BLFWriter) else f"Marker: {text}", timestamp)
+        return True
+
     def stop(self):
         self.writer.stop()
 

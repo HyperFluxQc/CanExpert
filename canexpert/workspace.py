@@ -9,6 +9,7 @@ fixed panels of CANoe do.
 from __future__ import annotations
 
 import re
+import sys
 
 from PyQt5.QtCore import QByteArray, qUncompress
 from PyQt5.QtGui import QGuiApplication
@@ -46,6 +47,12 @@ def create_workspace(main_window) -> ads.CDockManager:
         ads.CDockManager.setConfigFlag(flag, enabled)
     workspace = ads.CDockManager(main_window)
     workspace.setObjectName("workspace")
+    if sys.platform.startswith("linux") and QGuiApplication.platformName() != "xcb":
+        # On Linux PyQtAds watches the main window being activated to keep floating windows above it, with X11
+        # messages it sends without checking that X11 is there (xcb_update_prop, PyQtAds 3.8). Under Wayland,
+        # or headless ("offscreen", as in CI), that is a null connection: closing the window with a pane
+        # floating crashed. Without X11 the watch has nothing to do.
+        main_window.removeEventFilter(workspace)
     return workspace
 
 
@@ -82,8 +89,8 @@ def drop_empty_floating(workspace):
     """Remove the floating windows a restored state brought back with nothing in them (PyQtAds keeps
     one for every window ever floated, and saves them all)."""
     for floating in workspace.floatingWidgets():
-        container = floating.dockContainer()
-        if container is not None and not container.dockWidgets():
+        # The floating window's own dockWidgets(): its container's is protected in the Linux build of PyQtAds.
+        if not floating.dockWidgets():
             floating.deleteLater()
 
 

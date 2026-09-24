@@ -97,5 +97,16 @@ def stmin_text(value: int) -> str:
     return "127 ms (reserved value)"
 
 
+def parse_name(text: str) -> int:
+    """A J1939 NAME: 64 bits in hex."""
+    try:
+        value = int(str(text).strip() or "0", 16)
+    except ValueError:
+        raise ValueError("NAME: 64 bits in hexadecimal, e.g. 80000000FFE0CE01") from None
+    if not 0 <= value < 1 << 64:
+        raise ValueError("NAME: 64 bits at most")
+    return value
+
+
 def number_text(value) -> str:
     return "" if value is None else f"{value:.6g}"
