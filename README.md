@@ -145,7 +145,7 @@ else:
 
 | Functional unit (ISO 14229-1) | Functions |
 |---|---|
-| Diagnostic and communication management | `DSC` 0x10, `ER` 0x11, `SA` 0x27, `CC` 0x28, `TP` 0x3E, `ATP` 0x83, `CDTCS` 0x85, `ROE` 0x86, `LC` 0x87 |
+| Diagnostic and communication management | `DSC` 0x10, `ER` 0x11, `SA` 0x27, `CC` 0x28, `AUTH` 0x29, `TP` 0x3E, `ATP` 0x83, `SDT` 0x84, `CDTCS` 0x85, `ROE` 0x86, `LC` 0x87 |
 | Data transmission | `RDBI` 0x22, `RMBA` 0x23, `RSDBI` 0x24, `RDBPI` 0x2A, `DDDI_DefineById` / `DDDI_DefineByAddress` / `DDDI_Clear` 0x2C, `WDBI` 0x2E, `WMBA` 0x3D |
 | Stored data transmission | `CDTCI` 0x14, `RDTCI` 0x19 |
 | Input/output control | `IOCBI` 0x2F |
@@ -153,7 +153,10 @@ else:
 | Upload/download | `RD` 0x34, `RU` 0x35, `TD` 0x36, `RTE` 0x37, `RFT` 0x38 |
 | Helpers | `UDS("22 F1 90")` (any request), `SecurityUnlock(level, compute_key)`, `ReadDTCs(mask)`, `StartRoutine` / `StopRoutine` / `RoutineResults`, `UdsLog(True)` |
 
-Authentication (0x29) and SecuredDataTransmission (0x84) are not included.
+Authentication (0x29) and SecuredDataTransmission (0x84) take their records as bytes: the certificates and
+the cryptography are yours. An ECU answering *busyRepeatRequest* (NRC 0x21) is asked again, three times at
+most. What the ECU sends by itself after `RDBPI` and `ROE` reaches `@on_periodic_data(0xF201)` and
+`@on_response_event(0x22)`, and the UDS Console's *Periodic & events* tab.
 
 See [Requirements implementation](docs/REQUIREMENTS_STATUS.md#panel-scripts) for the full API and [Firmware flashing](docs/REQUIREMENTS_STATUS.md#firmware-flashing) for `Flashing(api, firmware)`.
 

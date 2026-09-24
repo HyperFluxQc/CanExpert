@@ -367,16 +367,19 @@ names, Pass/Stop, and RX only / TX only on top - and the monitor's is rebuilt fr
 changes. Filtering in the adapter is the channel setup's receive filter. The channel column waits for
 item 10.
 
-### 26. Unsolicited-response services are only half implemented
+### 26. Unsolicited-response services are only half implemented — **DONE**
 *Effort: medium*
 
-`ROE` (0x86) and `RDBPI` (0x2A) can be sent, but there is no receive path for the event or periodic
-responses they cause: they arrive later as unrelated frames and are skipped (a periodic `6A` frame is no
-longer taken for the answer to 0x2A). The Dummy ECU now answers both, so the receive path has something
-to be tested against. `NRC 0x21
-busyRepeatRequest` is also returned to the caller instead of being retried. Authentication (0x29) and
-SecuredDataTransmission (0x84) are excluded by design
-([uds/client.py:488](canexpert/uds/client.py#L488)) — worth closing to claim full ISO 14229 coverage.
+**Was:** `ROE` (0x86) and `RDBPI` (0x2A) could be sent, but the event and periodic responses they cause
+were skipped as unrelated frames; `NRC 0x21 busyRepeatRequest` went back to the caller; Authentication
+(0x29) and SecuredDataTransmission (0x84) were excluded.
+
+**Now:** the session's CAN worker reassembles what the ECU sends by itself - with flow control for a
+multi-frame event response - and a request hands over the replies that are not its answer, so nothing is
+lost between or during exchanges. The UDS Console's *Periodic & events* tab starts and stops periodic data,
+sets up and controls ResponseOnEvent and lists what arrives; scripts get `@on_periodic_data` and
+`@on_response_event`. NRC 0x21 repeats the request (three times at most). `AUTH` (0x29) and `SDT` (0x84)
+send their records as bytes, which completes the ISO 14229-1 service list.
 
 ### 27. Panel runtime — **DONE**
 *Effort: medium*

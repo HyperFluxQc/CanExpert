@@ -80,7 +80,7 @@ GENERATOR_TEXT = {"constant": "Constant", "ramp": "Ramp", "sine": "Sine", "squar
 ERROR_ROWS = (
     ("error_refuse", "Refuse",
      "A negative response instead of the answer: 7F <service> <NRC>. 21 busyRepeatRequest asks the tester to "
-     "send the request again."),
+     "send the request again, which CAN Expert does three times at most."),
     ("error_no_answer", "No answer",
      "The request is carried out but not answered: the tester runs into its P2 timeout."),
     ("error_wrong_id", "Answer on another ID",

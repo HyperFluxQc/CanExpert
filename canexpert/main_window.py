@@ -1181,7 +1181,8 @@ class MainWindow(QMainWindow):
             self.session_generation += 1
             generation = self.session_generation
             self.clock.begin(time.time())            # a new measurement: relative times count from here
-            worker = CanWorker(self.can_bus, config, tester_present=not setup.listen_only)
+            worker = CanWorker(self.can_bus, config, tester_present=not setup.listen_only,
+                               unsolicited=not setup.listen_only)
             mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
             worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
@@ -1189,6 +1190,7 @@ class MainWindow(QMainWindow):
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
             worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
             worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
+            worker.unsolicited.connect(lambda ts, payload, g=generation: self._on_unsolicited(ts, payload) if g == self.session_generation else None)
             self.worker = worker
             if self.sysvars is not None:
                 self.sysvars.reset()               # every variable back to its initial value
@@ -1629,6 +1631,14 @@ class MainWindow(QMainWindow):
         statistics = self.tool_widget("statistics")
         if statistics is not None:
             statistics.on_error_frame(timestamp)
+
+    def _on_unsolicited(self, timestamp, payload):
+        """A diagnostic response the ECU sent by itself: periodic data (0x2A) or an event's (0x86)."""
+        if self.script_runtime is not None:
+            self.script_runtime.post("unsolicited", None, bytes(payload))   # @on_periodic_data, @on_response_event
+        console = self.tool_widget("console")
+        if console is not None:
+            console.on_unsolicited(timestamp, bytes(payload))
 
     def _on_bus_status(self, status):
         """The adapter's error state, read while the session runs."""

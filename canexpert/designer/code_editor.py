@@ -24,7 +24,7 @@ API_WORDS = [
     "api.ui.get_value", "api.ui.set_value", "api.sysvar.get", "api.sysvar.set", "api.sysvar.define",
     "api.dll.load", "api.dll.call",
     "on_start", "on_stop", "on_timer", "on_message", "on_signal", "on_control", "on_sysvar", "on_key",
-    "on_error_frame", "on_bus_state", "DatabaseMainFunction",
+    "on_error_frame", "on_bus_state", "on_periodic_data", "on_response_event", "DatabaseMainFunction",
     "Flashing", "frame.id", "frame.data", "frame.signals",
     ".ok", ".data", ".text", ".int", ".nrc", ".nrc_name", ".error", ".raw", ".max_block_length",
 ] + [entry.name for entry in FUNCTIONS]
@@ -338,7 +338,7 @@ class UdsFunctionPanel(QWidget):
         self.insert_button.setEnabled(False)
         row.addWidget(self.insert_button)
         excluded = ", ".join(f"0x{sid:02X} {name}" for sid, name in EXCLUDED_SERVICES.items())
-        note = QLabel(f"Not included: {excluded}")
+        note = QLabel(f"Not included: {excluded}" if excluded else "Every ISO 14229-1 service is included.")
         note.setWordWrap(True)
         note.setStyleSheet("color: gray; font-size: 11px;")
         row.addWidget(note, 1)

@@ -344,6 +344,14 @@ def trouble(api, timestamp):
 @on_bus_state                              # error active, error passive or bus off
 def state(api, state):
     api.ui.set_value("bus", state)
+
+@on_periodic_data(0xF201)                  # periodic data, after RDBPI(0x03, 0xF201); none named: all
+def temperature(api, data, identifier):
+    api.ui.set_value("temperature", int.from_bytes(data, "big") / 10)
+
+@on_response_event(0x22)                   # what ROE set up: 62 F1 90 ... when the DID changed
+def vin_changed(api, response):
+    api.ui.set_value("vin", response[3:].decode())
 ```
 
 Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
@@ -469,7 +477,7 @@ adapter refusing — stops the simulation and says why, rather than filling the 
 ## UDS Console
 
 **Tools → UDS Console** sends diagnostic services using the session the main window has open; connect
-first. It has three tabs over one log.
+first. It has four tabs over one log.
 
 - **Services** lists every ISO 14229 service by functional unit, exactly as the panel scripts see them,
   without needing an ODX file. Pick one and its parameters appear as a form, with the defaults filled in;
@@ -479,10 +487,19 @@ first. It has three tabs over one log.
   ones are shown as *(coded/fixed)* — and press **Send**.
 - **Fault memory** reads the DTCs with their status bits spelled out (`confirmedDTC, testFailed`), counts
   them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all.
+- **Periodic & events** asks the ECU to send data by itself and lists what it sends. **Start** sends the
+  periodic identifiers you name (`F201 F202`) at the chosen rate (ReadDataByPeriodicIdentifier, 0x2A);
+  **Stop** ends them (all of them, with the field empty). **Set up** arranges a ResponseOnEvent (0x86):
+  the ECU answers `22 <DID>` when that DID changes, or `19 02 <mask>` when a DTC's status bits in the mask
+  go on; **Start**, **Stop**, **Report** and **Clear** act on the events set up. The table counts each
+  periodic identifier and each event's service, with the last data and when it came; event responses are
+  also written to the log. CAN Expert answers a long event response with flow control as a tester must, so
+  a 17-byte VIN arrives whole. Nothing is listed on a listen-only channel, where CAN Expert cannot answer.
 - The log shows every request and its response, each line with its time (see *View → Time display*): a
   positive answer with its data as hex, as a number and as text; a negative one as
   `NRC 0x31 requestOutOfRange`. Once an ODX file is loaded, answers are also shown **decoded** by it, from
-  whichever tab the request came. Requests and answers that span several frames are handled for you.
+  whichever tab the request came. Requests and answers that span several frames are handled for you, and an
+  ECU answering *busyRepeatRequest* (NRC 0x21) is asked again, up to three times, before you see the NRC.
 - The first bar sets the **session** (DiagnosticSessionControl); the connection itself keeps the ECU awake
   with TesterPresent. Beside it a strip says what is going on: `Session: extended   P2 75 ms / P2* 4000 ms   Security:
   unlocked (level 1)`. P2 and P2* are what the ECU itself asked for in its answer to the session

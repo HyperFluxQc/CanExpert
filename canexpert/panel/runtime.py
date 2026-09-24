@@ -22,7 +22,7 @@ from canexpert.config import uds_transport
 from canexpert.flashing import load_firmware, parse_s19_s28_file
 from canexpert import features
 from canexpert.sysvars import SystemVariables
-from canexpert.uds.client import UdsFunctions, uds_request
+from canexpert.uds.client import UdsFunctions, uds_request, unsolicited_kind
 
 
 # -----------------------------------------------------------------------------
@@ -431,6 +431,8 @@ class ScriptRuntime(QObject):
         self.sysvar_handlers = {}       # system variable name (or "*") -> [handler]
         self.key_handlers = {}          # key ("a", "F5", "*") -> [handler]
         self.error_frame_handlers, self.bus_state_handlers = [], []
+        self.periodic_handlers = {}     # periodic identifier 0xF2xx (or "*") -> [handler]
+        self.event_handlers = {}        # service answered by the event (or "*") -> [handler]
         self.namespace = {}             # the script's globals, for the Write window's watch
         self.hidden_names = set()       # the names CAN Expert put there
         self._messages = None
@@ -565,11 +567,37 @@ class ScriptRuntime(QObject):
             runtime.bus_state_handlers.append(runtime._adapt(fn))
             return fn
 
+        def on_periodic_data(*identifiers):
+            """@on_periodic_data(0xF201) def f(data, identifier): ... - periodic data the ECU sends after
+            RDBPI (0x2A); with no identifier, all of them."""
+            if len(identifiers) == 1 and callable(identifiers[0]):
+                return on_periodic_data()(identifiers[0])
+
+            def register(fn):
+                for identifier in identifiers or ("*",):
+                    key = identifier if identifier == "*" else 0xF200 | (int(identifier) & 0xFF)
+                    runtime.periodic_handlers.setdefault(key, []).append(runtime._adapt(fn))
+                return fn
+            return register
+
+        def on_response_event(*services):
+            """@on_response_event(0x22) def f(response): ... - a response ResponseOnEvent (ROE, 0x86) sent when
+            its event happened, as bytes (62 F1 90 ...); services: the requests it answers; none: every one."""
+            if len(services) == 1 and callable(services[0]):
+                return on_response_event()(services[0])
+
+            def register(fn):
+                for service in services or ("*",):
+                    runtime.event_handlers.setdefault(service, []).append(runtime._adapt(fn))
+                return fn
+            return register
+
         # ISO 14229 service functions (RDBI, WDBI, DSC, ...) over the session's UDS transport.
         namespace = {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start,
                      "on_stop": on_stop, "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal,
                      "on_control": on_control, "on_key": on_key, "on_error_frame": on_error_frame,
-                     "on_bus_state": on_bus_state, **self.api.uds.functions.namespace()}
+                     "on_bus_state": on_bus_state, "on_periodic_data": on_periodic_data,
+                     "on_response_event": on_response_event, **self.api.uds.functions.namespace()}
         if self.sysvars is not None:
             namespace["on_sysvar"] = on_sysvar
         return namespace
@@ -628,6 +656,16 @@ class ScriptRuntime(QObject):
                 if every_update or previous != value:
                     self._call(handler, value)
 
+    def _on_unsolicited(self, payload):
+        """Periodic data or an event's response, from the CAN worker."""
+        kind, key, data = unsolicited_kind(payload)
+        if kind == "periodic":
+            for handler in list(self.periodic_handlers.get(key, ())) + list(self.periodic_handlers.get("*", ())):
+                self._call(handler, data, key)
+        else:
+            for handler in list(self.event_handlers.get(key, ())) + list(self.event_handlers.get("*", ())):
+                self._call(handler, bytes(payload))
+
     def _run(self, code, path):
         # A Python loop can be interrupted on disconnect. Blocking native calls
         # cannot be forcibly killed; the bus facade is revoked independently.
@@ -669,6 +707,8 @@ class ScriptRuntime(QObject):
                     elif kind == "bus_state":
                         for handler in list(self.bus_state_handlers):
                             self._call(handler, value)
+                    elif kind == "unsolicited":
+                        self._on_unsolicited(value)
                     elif kind == "stop":
                         for handler in list(self.stop_handlers):
                             self._call(handler)

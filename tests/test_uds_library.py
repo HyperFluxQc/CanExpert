@@ -32,10 +32,10 @@ class RecordingTransport:
 
 
 class RequestBytesTest(unittest.TestCase):
-    def test_every_iso_14229_service_except_authentication_and_secured_data(self):
+    def test_every_iso_14229_service(self):
         covered = {entry.sid for entry in FUNCTIONS if entry.sid is not None}
-        self.assertEqual(covered, ISO_14229_SERVICES - set(EXCLUDED_SERVICES))
-        self.assertEqual(set(EXCLUDED_SERVICES), {0x29, 0x84})
+        self.assertEqual(covered, ISO_14229_SERVICES)
+        self.assertEqual(EXCLUDED_SERVICES, {})
 
     def test_request_bytes(self):
         transport = RecordingTransport()
@@ -48,6 +48,9 @@ class RequestBytesTest(unittest.TestCase):
             (lambda: uds.SA(0x02, [0xAA, 0xBB]), "27 02 aa bb"),
             (lambda: uds.CC(0x03, 0x01), "28 03 01"),
             (lambda: uds.CC(0x04, 0x01, node_id=0x1234), "28 04 01 12 34"),
+            (lambda: uds.AUTH(0x08), "29 08"),
+            (lambda: uds.AUTH(0x05, [0x00, 0x01, 0x02]), "29 05 00 01 02"),
+            (lambda: uds.SDT([0x00, 0x01, 0x22, 0xF1, 0x90]), "84 00 01 22 f1 90"),
             (lambda: uds.TP(), "3e 00"),
             (lambda: uds.ATP(0x03), "83 03"),
             (lambda: uds.CDTCS(0x02), "85 02"),
