@@ -13,7 +13,7 @@ ROOT = Path(SPECPATH)
 sys.path.insert(0, str(ROOT))
 from canexpert import __version__  # noqa: E402
 
-DATA = [(str(ROOT / folder), folder) for folder in ("Configurations", "Databases", "DBC", "ODX", "examples")
+DATA = [(str(ROOT / folder), folder) for folder in ("Configurations", "Databases", "DBC", "ODX", "examples", "TestModules")
         if (ROOT / folder).exists()]
 DATA += [(str(ROOT / "docs" / "USER_MANUAL.md"), "docs"), (str(ROOT / "canexpert" / "resources"), "canexpert/resources")]
 DATA += collect_data_files("odxtools") + collect_data_files("cantools")

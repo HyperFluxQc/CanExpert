@@ -41,6 +41,8 @@ in a file of its own.
   form, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess
   (mask or `GenerateKeyEx` seed & key DLL) and a fault-memory tab. The P2/P2* timing an ECU announces is
   honoured by the requests that follow.
+- **Test modules** (*Tools → Test*): Python test cases against the live bus with setup/teardown, a
+  verdict per step, Stop, and an HTML and a JUnit XML report of every run.
 - **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
   windows offline and never touches a bus.
 - **Symbol databases**: one DBC list shared by the Trace, Data and Statistics windows, the CAN Logger and

@@ -9,10 +9,9 @@ database XML, or the `_script.py` mechanism: where a feature has to remember som
 its own file or in QSettings. Three items would genuinely be better with one new optional configuration
 field, and they say so.
 
-**Status:** tier 1 items 2-6 and 8, tier 2 items 11-18 and tier 3 items 19-25, 27-29 and 32 are
-**implemented** (item 7, the test feature set, and items 9 and 10, CAN FD and several channels, were left
-out on purpose; item 1 was built and then removed — see it below). Each one is marked; the rest is
-untouched.
+**Status:** tier 1 items 2-8, tier 2 items 11-18, tier 3 items 19-29 and 32, and tier 4 items 33, 36-38
+and 40 are **implemented** (items 9 and 10, CAN FD and several channels, were left out on purpose; item 1
+was built and then removed — see it below). Each one is marked; the rest is untouched.
 
 ---
 
@@ -114,13 +113,17 @@ on a background thread over a private mailbox, and logs the response with its NR
 session and SecurityAccess bar and a fault-memory tab (read, count, snapshot, extended data, clear) that
 spells out the DTC status bits. ODX text for DTCs is still to do.
 
-### 7. Test feature set with reports — *not started (left out on purpose)*
+### 7. Test feature set with reports — **DONE**
 *Effort: large*
 
-**Today:** absent. This is what separates a viewer from a validation tool.
+**Was:** absent. This is what separates a viewer from a validation tool.
 
-**Add:** a test tree that runs Python test cases against the live bus (reusing `ScriptRuntime` and the
-UDS functions), with pass/fail per step, setup and teardown, and an HTML or JUnit report.
+**Now:** *Tools → Test* (`canexpert/testing/`) runs a test module - a Python file of `@testcase`
+functions with `setup`, `teardown`, `before_each` and `after_each` - against the live bus with the UDS
+functions the scripts use and `t.check / check_equal / check_range / expect_nrc / require / fail / skip /
+log / wait / send / wait_for_frame / wait_for_signal`. The tree shows each case's verdict and every step as
+it runs; Stop skips the rest and still tears down. Each run leaves an HTML report and a JUnit XML file
+beside the module. `TestModules/dummy_ecu_checks.py` is an example against the Dummy ECU.
 
 ### 8. One docked workspace instead of separate dialogs, with saved desktops — **DONE**
 *Effort: medium — the single biggest "looks like CANoe" item*

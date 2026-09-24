@@ -72,6 +72,7 @@ from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.about import AboutDialog
 from canexpert.status_strip import DiagnosticState, StatusStrip
+from canexpert.testing.window import TestWindow
 from canexpert.ui_common import DockTitleBar, app_icon, app_settings, line_icon, toolbar_icon
 from canexpert.workspace import (add_pane, create_workspace, drop_empty_floating, fit_on_screen, make_pane,
                                  pane_names, put_back, set_content)
@@ -91,18 +92,18 @@ LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
-                  "write", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
+                  "write", "tests", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 TOOL_AREAS = {"trace": "bottom", "transmit": "bottom", "write": "bottom"}   # the others: an area of their own
 PAGE_PANE = re.compile(r"pane_page_(\d+)$")
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
 SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
              "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
-             "sysvars": "Ctrl+8", "designer": "Ctrl+E"}
+             "tests": "Ctrl+8", "sysvars": "Ctrl+9", "designer": "Ctrl+E"}
 # The manual's section for each tool window, for F1.
 HELP_SECTIONS = {"trace": "Trace window", "logger": "CAN Logger", "data": "Data window", "statistics": "Statistics",
                  "transmit": "Transmit window", "console": "UDS Console", "write": "Writing panel scripts",
-                 "sysvars": "Writing panel scripts"}
+                 "tests": "Test modules", "sysvars": "Writing panel scripts"}
 
 
 def tool_panes() -> tuple:
@@ -225,6 +226,8 @@ class MainWindow(QMainWindow):
              "memory",
              self.open_uds_console),
             ("write", "Write", "What the panel script writes, and its variables as it runs", self.open_write),
+            ("tests", "Test", "Run a test module's test cases against the bus, with a verdict per step and an HTML "
+             "and JUnit report", self.open_tests),
             ("sysvars", "System Variables", "Values shared by the script, the windows and you", self.open_sysvars),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
             ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",
@@ -866,6 +869,13 @@ class MainWindow(QMainWindow):
                 window.add(*entry)
         return window
 
+    def open_tests(self):
+        """Test window: a test module's test cases, run against the measurement's bus."""
+        window, _ = self.open_tool("tests", "Test", lambda: TestWindow(
+            self, self.active_session, lambda can_id, data: (self.symbols.name(can_id), self.symbols.decode(can_id, data)),
+            self._settings, time_text=lambda t: self.clock.text(t, self.time_display)))
+        return window
+
     def open_sysvars(self):
         """System variables: the values the script, the windows and the user share."""
         window, _ = self.open_tool("sysvars", "System Variables", lambda: SystemVariablesWindow(self.sysvars, self))
@@ -1308,6 +1318,9 @@ class MainWindow(QMainWindow):
         self._watch_keys(False)
         if self.flash_runner is not None:
             self.flash_runner.cancel()      # the bus is about to go away under it
+        tests = self.tool_widget("tests")
+        if tests is not None:
+            tests.stop()                    # the running test case ends; its mailboxes close with the worker
         self._close_flash_dialog()
         self.flashing_toolbar_item.setVisible(False)
         if self.script_runtime:

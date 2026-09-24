@@ -3,3 +3,5 @@ __pycache__/
 # tools/build_windows.py
 build/
 dist/
+# the Test window's reports
+TestModules/reports/

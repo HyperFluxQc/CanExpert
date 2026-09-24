@@ -21,7 +21,7 @@ The main window has a toolbar and four panels:
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
 | **Log** | The application's messages, *Debug* or *Verbose*. The frames themselves are in the Trace window. |
 
-The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — open in
+The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — open in
 the **workspace** in
 the middle, together with the Database panel, where they can be tabbed, split and floated (see
 *Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
@@ -526,6 +526,62 @@ first. It has four tabs over one log.
 The frames of an exchange are in the Trace window; its **Transport** view shows each request and answer
 as one row.
 
+## Test modules
+
+**Tools → Test** runs test cases written in Python against the ECU, as CANoe's test modules do, and
+writes a report of every run. It opens `TestModules/dummy_ecu_checks.py`, the example, until you open
+another module with **Open...**; the one used last is opened again.
+
+Connect first. Tick the test cases to run and press **Run**: each one appears with its verdict — *passed*,
+*failed*, *error* (the test itself broke) or *skipped* — and under it every step with its own verdict, as
+it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
+still runs. The module is read again before every run, so you can edit it in any editor and run it again
+straight away (**Reload** shows the new list without running).
+
+Every run writes two reports into `reports/` beside the module, named after it and the time:
+an **HTML** page (**Open report**) with the verdict, the counts, and each test case's steps — the ones that
+did not pass are opened — and a **JUnit XML** file that CI servers such as Jenkins or GitLab read.
+
+A test module is a Python file:
+
+```python
+"""Dummy ECU checks"""                          # the first line is the module's title
+
+def setup(t):                                    # before the test cases; if it fails, they are skipped
+    t.require(DSC(0x01), "the ECU answers")
+
+def teardown(t):                                 # after them, also when one failed or you pressed Stop
+    DSC(0x01)
+
+@testcase("The VIN has 17 characters")           # a test case, in the order the file lists them
+def vin(t):
+    vin = RDBI(0xF190)
+    t.require(vin, "VIN read")                   # a failed require ends the test case
+    t.check_equal(len(vin.data), 17, "length")   # a failed check fails it, and the next step still runs
+
+@testcase("An unknown DID is refused")
+def unknown(t):
+    t.expect_nrc(RDBI(0x1234), 0x31)
+```
+
+`before_each(t)` and `after_each(t)` run around every test case. The UDS functions are the ones panel
+scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` offers:
+
+| | |
+|---|---|
+| `t.check(condition, "step", detail)` | A step that passes when the condition is true — a positive UDS answer is; its detail shows the request and the answer |
+| `t.check_equal(actual, expected, "step")`, `t.check_range(value, low, high, "step")` | The step's detail says what was expected and what came |
+| `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
+| `t.require(condition, "step")` | A check that ends the test case when it fails |
+| `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
+| `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
+| `t.send(0x200, [1, 2])` | Send a frame |
+| `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
+| `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
+
+A wait takes the frames that arrive after it starts — or after the test's last `t.send()`, so an answer
+that comes back before the wait begins is not missed.
+
 ## Firmware flashing
 
 While connected, the **Flashing** toolbar button appears. There are two ways to flash, and the button
@@ -574,7 +630,7 @@ you can study a recording made in a vehicle at your desk.
 ## Arranging the windows
 
 The middle of the main window is the **workspace**, where the pages of the loaded database and the
-analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — live.
+analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — live.
 Configuration, CAN Channels and Log stay
 as fixed panels around it.
 
@@ -708,7 +764,7 @@ them break security access and flashing.
 | Key | Does |
 |---|---|
 | **F9** / **Shift+F9** | Connect / Disconnect |
-| **Ctrl+1** ... **Ctrl+7** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write — the toolbar's order; pressed again, the window closes |
+| **Ctrl+1** ... **Ctrl+8** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test — the toolbar's order; pressed again, the window closes |
 | **Ctrl+E** | Form Designer |
 | **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
 | **Ctrl+O** | Replay a recorded file |
@@ -730,6 +786,7 @@ do not reach the script.
 | `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings |
 | `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab |
 | `examples/` | A runnable panel and script, and demo firmware images |
+| `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |
 
 Recordings go wherever you save them; `.blf` is the most compact.
 
