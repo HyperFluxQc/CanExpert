@@ -71,6 +71,16 @@ SERVICE_NAMES = {
     0x34: "RequestDownload", 0x35: "RequestUpload", 0x36: "TransferData", 0x37: "RequestTransferExit",
     0x3D: "WriteMemoryByAddress", 0x3E: "TesterPresent", 0x85: "ControlDTCSetting", 0x86: "ResponseOnEvent",
 }
+# The sessions each service may be used in (NRC 0x7F in the others); a service not listed: in every session.
+SERVICE_SESSIONS = {0x27: (EXTENDED_SESSION, PROGRAMMING_SESSION), 0x28: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x2A: (DEFAULT_SESSION, EXTENDED_SESSION), 0x2E: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x2F: (EXTENDED_SESSION,), 0x34: (PROGRAMMING_SESSION,),
+                    0x35: (PROGRAMMING_SESSION, EXTENDED_SESSION), 0x3D: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x85: (EXTENDED_SESSION, PROGRAMMING_SESSION), 0x86: (DEFAULT_SESSION, EXTENDED_SESSION)}
+# Sub-functions each service has (NRC 0x12 for the others).
+SUB_FUNCTIONS = {0x10: (0x01, 0x02, 0x03), 0x11: (0x01, 0x03), 0x19: (0x01, 0x02, 0x04, 0x06, 0x0A),
+                 0x28: (0x00, 0x01, 0x02, 0x03), 0x31: (0x01,), 0x3E: (0x00,), 0x85: (0x01, 0x02),
+                 0x86: (0x00, 0x01, 0x03, 0x04, 0x05, 0x06)}
 # What a bootloader answers; the application's services get NRC 0x11 while it runs.
 BOOT_SERVICES = {0x10, 0x11, 0x22, 0x23, 0x27, 0x28, 0x2E, 0x31, 0x34, 0x35, 0x36, 0x37, 0x3D, 0x3E, 0x85}
 BOOT_VERSION = b"BOOTLOADER"
@@ -610,10 +620,13 @@ class DummyEcu:
         forced = next((int(item["nrc"]) for item in self.config.forced_nrcs if int(item["sid"]) == sid), None)
         if forced is not None:                       # the user asked for this service to be refused
             raise NegativeResponse(forced)
-        if getattr(self, f"_service_{sid:02x}", None) is None:
+        upload_off = sid == 0x35 and not self.config.allow_upload
+        if getattr(self, f"_service_{sid:02x}", None) is None or upload_off:
             raise NegativeResponse(0x11)
         if self.state.bootloader and sid not in BOOT_SERVICES:
             raise NegativeResponse(0x11)
+        if sid in SERVICE_SESSIONS and self.state.session not in SERVICE_SESSIONS[sid]:
+            raise NegativeResponse(0x7F)             # before the request's length or sub-function
         rule = service_rules(self.config).get(sid)
         if rule:
             sessions, level = rule
@@ -714,6 +727,8 @@ class DummyEcu:
         session, suppress = self._subfunction(request)
         if session not in SESSION_NAMES:
             raise NegativeResponse(0x12)
+        if len(request) != 2:
+            raise NegativeResponse(0x13)
         if (session == PROGRAMMING_SESSION and self.state.session == DEFAULT_SESSION
                 and self.config.programming_needs_extended and not self.state.bootloader):
             raise NegativeResponse(0x22)  # enter the extended session first
@@ -731,8 +746,10 @@ class DummyEcu:
 
     def _service_11(self, request):
         reset_type, suppress = self._subfunction(request)
-        if reset_type not in (0x01, 0x03):
+        if reset_type not in SUB_FUNCTIONS[0x11]:
             raise NegativeResponse(0x12)
+        if len(request) != 2:
+            raise NegativeResponse(0x13)
         return None if suppress else bytes([0x51, reset_type])
 
     def _reset(self):
@@ -807,7 +824,6 @@ class DummyEcu:
 
     def _service_85(self, request):
         setting, suppress = self._subfunction(request)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         if setting not in (0x01, 0x02):
             raise NegativeResponse(0x12)
         self.state.dtc_setting_on = setting == 0x01
@@ -875,7 +891,6 @@ class DummyEcu:
         signal, _sessions, level = self.did_access.get(did, ("", (), 0))
         if did not in self.dids or did not in self.writable or signal:   # a signal's DID: see 0x2F
             raise NegativeResponse(0x31)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         self._check_did_access(did)
         if not level:
             self._require_unlocked()
@@ -892,7 +907,6 @@ class DummyEcu:
         return 8 - address - (1 if self.config.periodic_id is not None else 3)
 
     def _service_2a(self, request):
-        self._require_session(DEFAULT_SESSION, EXTENDED_SESSION)
         if len(request) < 2:
             raise NegativeResponse(0x13)
         mode, identifiers = request[1], bytes(request[2:])
@@ -932,7 +946,6 @@ class DummyEcu:
                 self._send_frame(bytes([identifier]) + data, self.config.periodic_id)
 
     def _service_86(self, request):
-        self._require_session(DEFAULT_SESSION, EXTENDED_SESSION)
         sub, suppress = self._subfunction(request)
         event_type = sub & 0x3F                     # bit 6: storeEvent, kept as it is
         state = self.state
@@ -1022,7 +1035,6 @@ class DummyEcu:
     # --- input/output control ---------------------------------------------------------------
 
     def _service_2f(self, request):
-        self._require_session(EXTENDED_SESSION)
         if len(request) < 4:
             raise NegativeResponse(0x13)
         did, parameter, control_state = int.from_bytes(request[1:3], "big"), request[3], bytes(request[4:])
@@ -1079,7 +1091,6 @@ class DummyEcu:
             level, send_key = sub - 1, True
         else:
             raise NegativeResponse(0x12)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         if time.monotonic() < self.state.locked_until:
             raise NegativeResponse(0x37)
         settings = levels[level]
@@ -1111,10 +1122,11 @@ class DummyEcu:
         return bytes([0x67, sub])
 
     def _service_28(self, request):
-        control, suppress = self._subfunction(request, 3)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
-        if control not in (0x00, 0x01, 0x02, 0x03):
+        control, suppress = self._subfunction(request)
+        if control not in SUB_FUNCTIONS[0x28]:
             raise NegativeResponse(0x12)
+        if len(request) != 3:                        # controlType and communicationType, no more
+            raise NegativeResponse(0x13)
         self.state.communication_enabled = control == 0x00
         return None if suppress else bytes([0x68, control])
 
@@ -1122,6 +1134,8 @@ class DummyEcu:
         zero, suppress = self._subfunction(request)
         if zero != 0x00:
             raise NegativeResponse(0x12)
+        if len(request) != 2:
+            raise NegativeResponse(0x13)
         return None if suppress else b"\x7E\x00"
 
     # --- memory and flashing ----------------------------------------------------------------
@@ -1181,7 +1195,6 @@ class DummyEcu:
         return b"\x63" + bytes(self.read_memory(address, size))
 
     def _service_3d(self, request):
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         if len(request) < 2:
             raise NegativeResponse(0x13)
         fmt = request[1]
@@ -1296,13 +1309,9 @@ class DummyEcu:
         return bytes([rsid, length << 4]) + maximum.to_bytes(length, "big")
 
     def _service_34(self, request):
-        self._require_session(PROGRAMMING_SESSION)
         return self._start_transfer(request, "download")
 
     def _service_35(self, request):
-        if not self.config.allow_upload:
-            raise NegativeResponse(0x11)
-        self._require_session(PROGRAMMING_SESSION, EXTENDED_SESSION)
         return self._start_transfer(request, "upload")
 
     def _service_36(self, request):
