@@ -10,13 +10,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import can
-from PyQt5.QtCore import QSettings
+from PyQt5.QtCore import QEvent, QSettings
 from PyQt5.QtWidgets import QAction, QApplication
 
 from PyQtAds import ads
 
 from canexpert import can_bus
 from canexpert import main_window as main
+from canexpert.main_layouts import LAYOUT_STATE
 from canexpert.recording import Recorder, read_frames
 from canexpert.transmit_window import default_row
 
@@ -270,7 +271,7 @@ class MeasurementTest(unittest.TestCase):
         # Closing writes the arrangement, and a new window restores it.
         self.window.open_trace()
         self.window.close()
-        self.assertTrue(self.settings.value(main.LAYOUT_STATE))
+        self.assertTrue(self.settings.value(LAYOUT_STATE))
         restored = main.MainWindow()
         self.assertIsNotNone(restored.open_trace())
         restored.close()          # closed here, not in a cleanup: the settings patch is still in place
@@ -365,7 +366,7 @@ class MeasurementTest(unittest.TestCase):
         self.window.workspace.addDockWidget(ads.BottomDockWidgetArea, trace, self.window.database_pane.dockAreaWidget())
         APP.processEvents()                                    # back in the workspace: its floating window is empty
         self.window.apply_layout_state(self.window.layout_state())
-        APP.sendPostedEvents(None, main.QEvent.DeferredDelete)
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)
         self.assertEqual(self.window.workspace.floatingWidgets(), [], "the empty floating window is gone")
 
         trace.setFloating()

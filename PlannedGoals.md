@@ -9,10 +9,9 @@ database XML, or the `_script.py` mechanism: where a feature has to remember som
 its own file or in QSettings. Three items would genuinely be better with one new optional configuration
 field, and they say so.
 
-**Status:** tier 1 items 2-6 and 8, tier 2 items 11-18 and tier 3 items 19-25, 27-29 and 32 are
-**implemented** (item 7, the test feature set, and items 9 and 10, CAN FD and several channels, were left
-out on purpose; item 1 was built and then removed — see it below). Each one is marked; the rest is
-untouched.
+**Status:** tier 1 items 2-8, tier 2 items 11-18, tier 3 items 19-29 and 32, and tier 4 items 33, 36-38
+and 40 are **implemented** (items 9 and 10, CAN FD and several channels, were left out on purpose; item 1
+was built and then removed — see it below). Each one is marked; the rest is untouched.
 
 ---
 
@@ -112,15 +111,20 @@ when it is available.
 **Now:** `canexpert/uds_console.py` builds each request form from the function's own signature, sends
 on a background thread over a private mailbox, and logs the response with its NRC name. It also has a
 session and SecurityAccess bar and a fault-memory tab (read, count, snapshot, extended data, clear) that
-spells out the DTC status bits. ODX text for DTCs is still to do.
+spells out the DTC status bits, writes each code as a scan tool does (P0101-00) and shows its text from the
+ODX, PDX or CDD file loaded in the ODX tab (`ODX/dummy_ecu.odx-d` describes the Dummy ECU's DTCs).
 
-### 7. Test feature set with reports — *not started (left out on purpose)*
+### 7. Test feature set with reports — **DONE**
 *Effort: large*
 
-**Today:** absent. This is what separates a viewer from a validation tool.
+**Was:** absent. This is what separates a viewer from a validation tool.
 
-**Add:** a test tree that runs Python test cases against the live bus (reusing `ScriptRuntime` and the
-UDS functions), with pass/fail per step, setup and teardown, and an HTML or JUnit report.
+**Now:** *Tools → Test* (`canexpert/testing/`) runs a test module - a Python file of `@testcase`
+functions with `setup`, `teardown`, `before_each` and `after_each` - against the live bus with the UDS
+functions the scripts use and `t.check / check_equal / check_range / expect_nrc / require / fail / skip /
+log / wait / send / wait_for_frame / wait_for_signal`. The tree shows each case's verdict and every step as
+it runs; Stop skips the rest and still tears down. Each run leaves an HTML report and a JUnit XML file
+beside the module. `TestModules/dummy_ecu_checks.py` is an example against the Dummy ECU.
 
 ### 8. One docked workspace instead of separate dialogs, with saved desktops — **DONE**
 *Effort: medium — the single biggest "looks like CANoe" item*
@@ -367,16 +371,19 @@ names, Pass/Stop, and RX only / TX only on top - and the monitor's is rebuilt fr
 changes. Filtering in the adapter is the channel setup's receive filter. The channel column waits for
 item 10.
 
-### 26. Unsolicited-response services are only half implemented
+### 26. Unsolicited-response services are only half implemented — **DONE**
 *Effort: medium*
 
-`ROE` (0x86) and `RDBPI` (0x2A) can be sent, but there is no receive path for the event or periodic
-responses they cause: they arrive later as unrelated frames and are skipped (a periodic `6A` frame is no
-longer taken for the answer to 0x2A). The Dummy ECU now answers both, so the receive path has something
-to be tested against. `NRC 0x21
-busyRepeatRequest` is also returned to the caller instead of being retried. Authentication (0x29) and
-SecuredDataTransmission (0x84) are excluded by design
-([uds/client.py:488](canexpert/uds/client.py#L488)) — worth closing to claim full ISO 14229 coverage.
+**Was:** `ROE` (0x86) and `RDBPI` (0x2A) could be sent, but the event and periodic responses they cause
+were skipped as unrelated frames; `NRC 0x21 busyRepeatRequest` went back to the caller; Authentication
+(0x29) and SecuredDataTransmission (0x84) were excluded.
+
+**Now:** the session's CAN worker reassembles what the ECU sends by itself - with flow control for a
+multi-frame event response - and a request hands over the replies that are not its answer, so nothing is
+lost between or during exchanges. The UDS Console's *Periodic & events* tab starts and stops periodic data,
+sets up and controls ResponseOnEvent and lists what arrives; scripts get `@on_periodic_data` and
+`@on_response_event`. NRC 0x21 repeats the request (three times at most). `AUTH` (0x29) and `SDT` (0x84)
+send their records as bytes, which completes the ISO 14229-1 service list.
 
 ### 27. Panel runtime — **DONE**
 *Effort: medium*
@@ -446,11 +453,15 @@ Relative. A timestamp that is not a time of day is shown as seconds.
 
 ## Tier 4 — Small, cheap, high polish per hour
 
-### 33. Keyboard shortcuts
+### 33. Keyboard shortcuts — **DONE**
 *Effort: very small*
 
-There is not a single `setShortcut` or `QKeySequence` in the codebase: no F-key Connect/Disconnect, no
-Ctrl+S in the designer, no Esc, no menu accelerators.
+**Was:** not a single `setShortcut` or `QKeySequence` in the codebase.
+
+**Now:** F9 / Shift+F9 connect and disconnect, Ctrl+1...Ctrl+7 switch the tool windows in the toolbar's
+order, Ctrl+E the Form Designer, Ctrl+R / Ctrl+Shift+R / Ctrl+O record, stop and replay, Ctrl+N, Ctrl+Q,
+F1; floating windows get the same keys. The Form Designer has its own (Ctrl+S, F5, F7...). Plain letters and
+F5 stay free for the scripts' `@on_key`. The manual lists them (*Keyboard shortcuts*).
 
 ### 34. TesterPresent options
 *Effort: very small. Optional configuration field.*
@@ -465,25 +476,34 @@ used.
 ~~The CAN monitor cannot be saved or searched~~ — the CAN monitor is gone, the Trace covers it. Add
 "insert marker or comment" during a measurement (CANoe's trigger and comment).
 
-### 36. A status strip showing the system state
+### 36. A status strip showing the system state — **DONE**
 *Effort: small*
 
-Bus state, session, security, last error, TX queue depth. Errors currently land in a debug pane the
-user has to think to look at.
+**Was:** errors landed in a debug pane the user had to think to look at.
 
-### 37. Packaging: the .exe that is promised but absent
+**Now:** the status bar shows the bus state and error frames, the diagnostic session and security state
+read off the ECU's answers (whoever sent the request), and the last error - NRC, script error, bus off,
+failed session - linked to the Log. The TX queue depth is left out: python-can has no portable way to read
+it.
+
+### 37. Packaging: the .exe that is promised but absent — **DONE**
 *Effort: small*
 
-There is no `.spec`, no build script, no icon, no version resource and no installer in the repo (the
-`requirements-build.txt` that installed PyInstaller and Pillow for it was removed as misleading). For a tool colleagues will actually run, this
-matters more than most features above it.
+**Was:** no `.spec`, no build script, no icon, no version resource and no installer in the repo.
 
-### 38. About box with real information
+**Now:** `CanExpert.spec` and `tools/build_windows.py` build CanExpert.exe and DummyECU.exe into one
+folder with their icons (`tools/make_icons.py`) and a version resource from `canexpert.__version__`,
+check that both start (`--smoke-test`) and zip it; CI builds the zip for `main` and `v*` tags and also
+runs the tests on Windows. No installer: the zip unpacks and runs as it is.
+
+### 38. About box with real information — **DONE**
 *Effort: very small*
 
-It is a hardcoded text block with no version ([main_window.py:571](canexpert/main_window.py#L571)).
-Show the version, build date, detected driver and DLL versions (Kvaser, Vector, IXXAT, python-can) and
-a "copy support info" button.
+**Was:** a hardcoded text block with no version.
+
+**Now:** `about.py` shows the version, the build date (the executable's), Python, Qt, python-can and the
+other libraries, the Kvaser, Vector and IXXAT driver DLLs' versions, and the operating system, with
+**Copy** for a bug report.
 
 ### 39. Configuration quick-switch in the toolbar
 *Effort: very small*
@@ -491,11 +511,12 @@ a "copy support info" button.
 A combo box instead of only the dock list, plus a clear indicator of which configuration and channel
 are live.
 
-### 40. Context help
+### 40. Context help — **DONE**
 *Effort: very small*
 
-F1 on the focused window jumps to the right manual section. The sections and `go_to_section` already
-exist.
+F1 opens the manual at the section of the window with the focus - a tool window's, the panel's, the
+Configuration or CAN Channels panel's - also from a floating window; the Form Designer's F1 opens its own
+section.
 
 ---
 

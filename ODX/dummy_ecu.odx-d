@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Dummy ECU's fault memory for the UDS Console: the text of each DTC it can report.
+     Load it in the console's ODX tab (Load ODX / CDD...). -->
+<ODX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" MODEL-VERSION="2.2.0">
+  <DIAG-LAYER-CONTAINER ID="DLC.DummyECU">
+    <SHORT-NAME>DummyECU</SHORT-NAME>
+    <LONG-NAME>CAN Expert Dummy ECU</LONG-NAME>
+    <BASE-VARIANTS>
+      <BASE-VARIANT ID="BV.DummyECU">
+        <SHORT-NAME>DummyECU</SHORT-NAME>
+        <LONG-NAME>CAN Expert Dummy ECU</LONG-NAME>
+        <DIAG-DATA-DICTIONARY-SPEC>
+          <DTC-DOPS>
+            <DTC-DOP ID="BV.DummyECU.DOP.DTC">
+              <SHORT-NAME>DTC</SHORT-NAME>
+              <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                <BIT-LENGTH>24</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UINT32"/>
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DTCS>
+                <DTC ID="BV.DummyECU.DTC.P0101">
+                  <SHORT-NAME>P0101</SHORT-NAME>
+                  <TROUBLE-CODE>65792</TROUBLE-CODE>
+                  <DISPLAY-TROUBLE-CODE>P0101</DISPLAY-TROUBLE-CODE>
+                  <TEXT>Mass or volume air flow sensor A circuit range/performance</TEXT>
+                  <LEVEL>2</LEVEL>
+                </DTC>
+                <DTC ID="BV.DummyECU.DTC.U0100">
+                  <SHORT-NAME>U0100</SHORT-NAME>
+                  <TROUBLE-CODE>12648448</TROUBLE-CODE>
+                  <DISPLAY-TROUBLE-CODE>U0100</DISPLAY-TROUBLE-CODE>
+                  <TEXT>Lost communication with ECM/PCM A</TEXT>
+                  <LEVEL>1</LEVEL>
+                </DTC>
+              </DTCS>
+            </DTC-DOP>
+          </DTC-DOPS>
+        </DIAG-DATA-DICTIONARY-SPEC>
+      </BASE-VARIANT>
+    </BASE-VARIANTS>
+  </DIAG-LAYER-CONTAINER>
+</ODX>

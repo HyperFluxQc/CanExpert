@@ -2,8 +2,9 @@
 UDS client: uds_request() (one request over ISO-TP with response-pending handling) and the ISO 14229-1
 service functions for panel scripts, e.g. RDBI(0xF190) sends 22 F1 90.
 
-Every service is covered except Authentication (0x29) and SecuredDataTransmission (0x84). The
-functions are available by name in panel scripts and return a UdsResult:
+Every service is covered; Authentication (0x29) and SecuredDataTransmission (0x84) carry their records as
+bytes, the certificates and the cryptography being the caller's. The functions are available by name in panel
+scripts and return a UdsResult:
 
     vin = RDBI(0xF190)
     if vin:                              # positive response
@@ -12,8 +13,8 @@ functions are available by name in panel scripts and return a UdsResult:
         api.log(vin.error)               # "NRC 0x31 requestOutOfRange" or "no response"
 
 Requests go to the configuration's request/response IDs over ISO-TP (multi-frame, flow control,
-NRC 0x78 response pending). Sub-function services take suppress=True to set the
-suppressPosRspMsgIndicationBit; the request is then sent without waiting for a reply.
+NRC 0x78 response pending, NRC 0x21 busyRepeatRequest repeated). Sub-function services take suppress=True to
+set the suppressPosRspMsgIndicationBit; the request is then sent without waiting for a reply.
 """
 from __future__ import annotations
 
@@ -23,6 +24,10 @@ from contextlib import nullcontext
 
 from canexpert.uds.isotp import drain, isotp_recv, isotp_send
 
+BUSY_RETRIES = 3          # NRC 0x21 busyRepeatRequest: the request is sent again this many times at most
+BUSY_RETRY_DELAY = 0.1    # seconds between the busy answer and the repeat
+
+
 def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int = 0x7E8,
                 timeout: float = 2.0, extended: bool = False, address_byte: int | None = None,
                 padding: int | None = None, pending_timeout: float = 5.0, wait: bool = True,
@@ -30,21 +35,26 @@ def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int =
     """
     Send one UDS request and return the ECU's reply (positive or 0x7F negative), or None on timeout.
     wait=False only sends (for requests with the suppressPosRspMsgIndicationBit set).
-    Frames queued before the request are discarded, unrelated replies are skipped and
-    NRC 0x78 (response pending) extends the wait. A bus exposing transaction() (the
-    session mailbox) pauses the periodic TesterPresent while the exchange is in progress.
+    Frames queued before the request are discarded, NRC 0x78 (response pending) extends the wait and
+    NRC 0x21 (busyRepeatRequest) sends the request again, BUSY_RETRIES times at most. Unrelated replies - periodic
+    data, an event's response - are skipped, and handed to bus.unsolicited(payload) where the bus has one (the
+    session mailbox). A bus exposing transaction() (the session mailbox) pauses the periodic TesterPresent while
+    the exchange is in progress.
     padding fills every frame sent to 8 bytes; block_size and st_min are the flow control the tester
     asks for when the reply spans several frames.
     """
     request = bytes(request)
     sid = request[0]
     transaction = getattr(bus, "transaction", None)
+    unsolicited = getattr(bus, "unsolicited", None)
+    unsolicited = unsolicited if callable(unsolicited) else (lambda payload: None)
     with transaction() if callable(transaction) else nullcontext():
         drain(bus)
         isotp_send(bus, request_id, request, response_id, extended, address_byte, padding)
         if not wait:
             return None
         deadline = time.monotonic() + timeout
+        busy = 0
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -55,13 +65,33 @@ def uds_request(bus, request: bytes, request_id: int = 0x7DF, response_id: int =
                 return None
             if reply[0] == sid + 0x40:
                 if sid == 0x2A and len(reply) > 1:     # periodic data (6A <identifier> <data>), not the answer
+                    unsolicited(reply)
                     continue
                 return reply
             if reply[0] == 0x7F and len(reply) >= 3 and reply[1] == sid:
                 if reply[2] == 0x78:
                     deadline = time.monotonic() + pending_timeout
                     continue
+                if reply[2] == 0x21 and busy < BUSY_RETRIES:
+                    busy += 1
+                    time.sleep(BUSY_RETRY_DELAY)
+                    isotp_send(bus, request_id, request, response_id, extended, address_byte, padding)
+                    deadline = time.monotonic() + timeout
+                    continue
                 return reply
+            unsolicited(reply)
+
+
+def unsolicited_kind(payload: bytes):
+    """What an unsolicited response is: ("periodic", 0xF2xx identifier, data) for periodic data
+    (6A <identifier> <data>), else ("event", service, payload) - a response ResponseOnEvent sent, service being
+    the SID of the request it answers (the one in the event's serviceToRespondToRecord)."""
+    payload = bytes(payload)
+    if len(payload) >= 2 and payload[0] == 0x6A:
+        return "periodic", 0xF200 | payload[1], payload[2:]
+    if len(payload) >= 2 and payload[0] == 0x7F:
+        return "event", payload[1], payload
+    return "event", (payload[0] - 0x40) & 0xFF if payload else 0, payload
 
 
 def make_request(mailbox, transport):
@@ -286,6 +316,15 @@ class UdsFunctions:
         even sub_function = sendKey with data = key. See SecurityUnlock() for both steps."""
         return self._send(bytes([0x27, sub_function]) + to_bytes(data), 1, suppress, timeout)
 
+    def AUTH(self, sub_function: int, record=b"", suppress=False, timeout=None):
+        """0x29 Authentication. sub_function: 0x00 deAuthenticate, 0x01 verifyCertificateUnidirectional,
+        0x02 verifyCertificateBidirectional, 0x03 proofOfOwnership, 0x04 transmitCertificate,
+        0x05 requestChallengeForAuthentication, 0x06/0x07 verifyProofOfOwnership uni-/bidirectional,
+        0x08 authenticationConfiguration. record: the rest of the request as ISO 14229-1 lays it out
+        (communicationConfiguration, lengths, certificate, challenge, proof...); data = the answer after the
+        echoed sub-function, its returnValue first. The certificates and the cryptography are the caller's."""
+        return self._send(bytes([0x29, sub_function]) + to_bytes(record), 1, suppress, timeout)
+
     def CC(self, control_type: int, communication_type: int = 0x01, node_id: int | None = None, suppress=False,
            timeout=None):
         """0x28 CommunicationControl. control_type: 0x00 enableRxAndTx, 0x01 enableRxAndDisableTx,
@@ -305,6 +344,12 @@ class UdsFunctions:
         0x02 setTimingParametersToDefaultValues, 0x03 readCurrentlyActiveTimingParameters,
         0x04 setTimingParametersToGivenValues (record = TimingParameterRequestRecord)."""
         return self._send(bytes([0x83, access_type]) + to_bytes(record), 1, suppress, timeout)
+
+    def SDT(self, record, timeout=None):
+        """0x84 SecuredDataTransmission. record: the securityDataRequestRecord (administrative parameter,
+        signature/encryption calculation, signature length, anti-replay counter, the internal request and
+        the signature/MAC), already encrypted or signed; data = the securityDataResponseRecord."""
+        return self._send(bytes([0x84]) + to_bytes(record), 0, False, timeout)
 
     def CDTCS(self, setting_type: int, record=b"", suppress=False, timeout=None):
         """0x85 ControlDTCSetting. setting_type: 0x01 on, 0x02 off; record = DTCSettingControlOptionRecord."""
@@ -519,8 +564,10 @@ FUNCTIONS = [
     Entry("ER", 0x11, "ECUReset", _D, "ER(0x01)"),
     Entry("SA", 0x27, "SecurityAccess", _D, "seed = SA(0x01)"),
     Entry("CC", 0x28, "CommunicationControl", _D, "CC(0x03, 0x01)"),
+    Entry("AUTH", 0x29, "Authentication", _D, "AUTH(0x08)"),
     Entry("TP", 0x3E, "TesterPresent", _D, "TP()"),
     Entry("ATP", 0x83, "AccessTimingParameter", _D, "ATP(0x03)"),
+    Entry("SDT", 0x84, "SecuredDataTransmission", _D, "SDT(secured_record)"),
     Entry("CDTCS", 0x85, "ControlDTCSetting", _D, "CDTCS(0x02)"),
     Entry("ROE", 0x86, "ResponseOnEvent", _D, "ROE(0x03, 0x02, [0xF1, 0x90], [0x22, 0xF1, 0x90])"),
     Entry("LC", 0x87, "LinkControl", _D, "LC(0x01, 0x12)"),
@@ -552,4 +599,4 @@ FUNCTIONS = [
     Entry("RoutineResults", 0x31, "RoutineControl requestRoutineResults", _H, "RoutineResults(0xFF00)"),
     Entry("UdsLog", None, "Log UDS requests and responses", _H, "UdsLog(True)"),
 ]
-EXCLUDED_SERVICES = {0x29: "Authentication", 0x84: "SecuredDataTransmission"}
+EXCLUDED_SERVICES = {}      # ISO 14229-1 services without a function: none

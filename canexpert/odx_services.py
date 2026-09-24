@@ -2,15 +2,15 @@
 ODX, PDX and CDD files in the UDS Console: the services a file describes, a request built from their
 parameters, and answers decoded with it. Needs odxtools.
 
-Loaded once in the console's ODX tab, a file serves twice: its services can be sent from there with named
-parameters, and every answer the console gets - whichever tab sent the request - is decoded with it where
-the file describes the service.
+Loaded once in the console's ODX tab, a file serves three times: its services can be sent from there with
+named parameters, every answer the console gets - whichever tab sent the request - is decoded with it where
+the file describes the service, and the fault memory tab shows each DTC's text from its DTC-DOPs.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
@@ -36,7 +36,7 @@ try:
 except ImportError:
     HAS_ODXTOOLS = False
 
-FILE_FILTER = "ODX/PDX/CDD (*.odx *.pdx *-cdd.xml *.xml);;All files (*.*)"
+FILE_FILTER = "ODX/PDX/CDD (*.odx *.odx-d *.odx-c *.odx-e *.odx-f *.odx-v *.pdx *-cdd.xml *.xml);;All files (*.*)"
 
 
 def load_database(path):
@@ -59,6 +59,36 @@ def services(layer):
             yield sub_service, service
 
 
+def dtc_display(code: int) -> str:
+    """A 3-byte DTC as SAE J2012 writes it: P0101-00 - the system (P, C, B, U), the four characters, and the
+    failure type byte."""
+    high = (code >> 16) & 0xFF
+    return f"{'PCBU'[high >> 6]}{(high >> 4) & 0x3}{high & 0xF:X}{(code >> 8) & 0xFF:02X}-{code & 0xFF:02X}"
+
+
+def dtc_texts(layer) -> dict:
+    """{trouble code: (display code, text)} from the DTC-DOPs of a layer, including those it inherits; the
+    text is the DTC's TEXT, else its long or short name."""
+    texts = {}
+    spec = getattr(layer, "diag_data_dictionary_spec", None)
+    for dop in getattr(spec, "dtc_dops", None) or []:
+        for dtc in getattr(dop, "dtcs", None) or []:
+            code = getattr(dtc, "trouble_code", None)
+            if code is None:
+                continue
+            text = getattr(dtc, "text", None)
+            text = str(text).strip() if text is not None else ""
+            texts[int(code)] = (getattr(dtc, "display_trouble_code", None) or "",
+                                text or getattr(dtc, "long_name", None) or getattr(dtc, "short_name", "") or "")
+    return texts
+
+
+def dtc_text(texts: dict, code: int):
+    """(display code, text) for a DTC read from the ECU: its own entry, else the one for the DTC without its
+    failure type byte (files that list 2-byte codes); None when the file does not describe it."""
+    return texts.get(code) or texts.get(code >> 8)
+
+
 def name_of(item) -> str:
     return getattr(item, "short_name", None) or getattr(item, "long_name", None) or str(item)
 
@@ -79,6 +109,7 @@ def decoded(layer, request: bytes, reply: bytes, service=None) -> str | None:
 
 class OdxTab(QWidget):
     """The console's ODX tab: load a file, pick a service, fill its parameters, send."""
+    layer_changed = pyqtSignal()          # a file was loaded, or failed to load
 
     def __init__(self, send, parent=None):
         """send(payload, title, service) runs the request through the console's session."""
@@ -137,6 +168,7 @@ class OdxTab(QWidget):
             self.tree.clear()
             self.path_label.setText(f"Cannot read {Path(path).name}: {exc}")
             self.path_label.setStyleSheet("color: red;")
+            self.layer_changed.emit()
             return False
         return True
 
@@ -155,6 +187,7 @@ class OdxTab(QWidget):
             else:
                 self.tree.addTopLevelItem(item)
                 items[id(service)] = item
+        self.layer_changed.emit()
 
     # --- the request ---------------------------------------------------------------------------------
 

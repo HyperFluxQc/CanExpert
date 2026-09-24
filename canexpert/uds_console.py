@@ -4,7 +4,8 @@ UDS console: every ISO 14229-1 service, the services of an ODX file, and the ECU
 The service list, its documentation and its parameters come from canexpert.uds.client, so the console
 offers exactly what a panel script can call; an ODX, PDX or CDD file adds the services it describes and
 decodes the answers (odx_services.py). Requests run on a background thread over a private mailbox, so
-the panel script keeps its own replies.
+the panel script keeps its own replies. The Periodic & events tab starts periodic data (0x2A) and
+ResponseOnEvent (0x86) and lists what the ECU then sends by itself (on_unsolicited, from the CAN worker).
 """
 from __future__ import annotations
 
@@ -39,8 +40,9 @@ from PyQt5.QtWidgets import (
 from canexpert.can_bus import ReceiveMailbox
 from canexpert.clock import absolute_text
 from canexpert.config import uds_transport
-from canexpert.odx_services import OdxTab, decoded
-from canexpert.uds.client import FUNCTIONS, GROUPS, UdsFunctions, make_request
+from canexpert.odx_services import OdxTab, decoded, dtc_display, dtc_text, dtc_texts
+from canexpert.uds.client import FUNCTIONS, GROUPS, NRC_NAMES, UdsFunctions, make_request, unsolicited_kind
+from canexpert.uds.observer import service_name
 from canexpert.uds.seed_key import SeedKeyError, dll_key, xor_key
 from canexpert.ui_common import SplitterPanel, enable_maximize
 
@@ -51,6 +53,8 @@ STATUS_BITS = ("testFailed", "testFailedThisOperationCycle", "pendingDTC", "conf
 SESSIONS = (("Default (0x01)", 0x01), ("Programming (0x02)", 0x02), ("Extended (0x03)", 0x03))
 SESSION_NAMES = {0x01: "default", 0x02: "programming", 0x03: "extended", 0x04: "safety system"}
 KEY_SOURCES = ("key = seed XOR mask", "seed & key DLL")
+PERIODIC_RATES = (("Slow (0x01)", 0x01), ("Medium (0x02)", 0x02), ("Fast (0x03)", 0x03))
+EVENT_WINDOW = 0x02          # eventWindowTime: infinite, the events stay until stopped or cleared
 # Parameters that carry a byte string rather than a number.
 BYTE_PARAMETERS = {"data", "record", "parameter", "state", "mask", "event_record", "service_record", "key"}
 
@@ -95,6 +99,7 @@ class UdsConsoleWindow(QDialog):
         self.session_state = "unknown"
         self.security_state = "locked"
         self._library = None                # the seed & key DLL, loaded once
+        self._dtcs = []                     # the fault memory as last read: [(dtc, status)]
         self._build_ui()
         self.finished_request.connect(self._on_result)
 
@@ -106,14 +111,18 @@ class UdsConsoleWindow(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._services_tab(), "Services")
         self.odx = OdxTab(self.send_odx)
+        self.odx.layer_changed.connect(lambda: self._fill_dtcs(self._dtcs))    # the texts of a new file
         tabs.addTab(self.odx, "ODX")
         tabs.addTab(self._faults_tab(), "Fault memory")
+        tabs.addTab(self._unsolicited_tab(), "Periodic && events")
+        self.tabs = tabs
         layout.addWidget(tabs, 1)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(2000)
         self.log.setPlaceholderText("Requests and responses appear here.")
         layout.addWidget(self.log, 1)
+        self._fill_dtcs([])                 # the fault memory's hint
 
     def _session_bar(self):
         box = QGroupBox("Session and security")
@@ -270,13 +279,88 @@ class UdsConsoleWindow(QDialog):
             row.addWidget(button)
         row.addStretch()
         layout.addLayout(row)
-        self.dtc_table = QTableWidget(0, 3)
-        self.dtc_table.setHorizontalHeaderLabels(["DTC", "Status", "Meaning"])
+        self.dtc_table = QTableWidget(0, 5)
+        self.dtc_table.setHorizontalHeaderLabels(["DTC", "Code", "Status", "Status bits", "Description"])
         self.dtc_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.dtc_table.setColumnWidth(0, 110)
-        self.dtc_table.setColumnWidth(1, 70)
+        for column, width in enumerate((80, 90, 55, 330)):
+            self.dtc_table.setColumnWidth(column, width)
         self.dtc_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.dtc_table, 1)
+        self.dtc_hint = QLabel("")
+        self.dtc_hint.setStyleSheet("color: gray;")
+        layout.addWidget(self.dtc_hint)
+        return page
+
+    def _unsolicited_tab(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        periodic = QHBoxLayout()
+        periodic.addWidget(QLabel("Periodic identifiers (hex):"))
+        self.periodic_edit = QLineEdit("F201 F202")
+        self.periodic_edit.setToolTip("0xF2xx identifiers, separated by spaces; only the low byte goes on the bus")
+        periodic.addWidget(self.periodic_edit, 1)
+        self.rate_combo = QComboBox()
+        for label, value in PERIODIC_RATES:
+            self.rate_combo.addItem(label, value)
+        periodic.addWidget(self.rate_combo)
+        for text, slot, tip in (("Start", self.start_periodic, "ReadDataByPeriodicIdentifier (0x2A) at this rate"),
+                                ("Stop", self.stop_periodic,
+                                 "0x2A stopSending (0x04) for these identifiers; with none, for all of them")):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            periodic.addWidget(button)
+        layout.addLayout(periodic)
+
+        events = QHBoxLayout()
+        events.addWidget(QLabel("Event on change of DID (hex):"))
+        self.event_did_edit = QLineEdit("F190")
+        self.event_did_edit.setFixedWidth(60)
+        events.addWidget(self.event_did_edit)
+        button = QPushButton("Set up")
+        button.setToolTip("ResponseOnEvent onChangeOfDataIdentifier (86 03): the ECU answers 22 <DID> when it changes")
+        button.clicked.connect(self.set_up_did_event)
+        events.addWidget(button)
+        events.addWidget(QLabel("on DTC status change, mask:"))
+        self.event_mask_edit = QLineEdit("09")
+        self.event_mask_edit.setFixedWidth(40)
+        events.addWidget(self.event_mask_edit)
+        button = QPushButton("Set up")
+        button.setToolTip("ResponseOnEvent onDTCStatusChange (86 01): the ECU answers 19 02 <mask> when a DTC's "
+                          "status bits in the mask go on")
+        button.clicked.connect(self.set_up_dtc_event)
+        events.addWidget(button)
+        events.addSpacing(12)
+        for text, event_type, tip in (("Start", 0x05, "startResponseOnEvent (86 05)"),
+                                      ("Stop", 0x00, "stopResponseOnEvent (86 00): the events stay set up"),
+                                      ("Report", 0x04, "reportActivatedEvents (86 04)"),
+                                      ("Clear", 0x06, "clearResponseOnEvent (86 06): every event is removed")):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _=False, event_type=event_type: self.response_on_event(event_type))
+            events.addWidget(button)
+        events.addStretch()
+        layout.addLayout(events)
+
+        self.unsolicited_table = QTableWidget(0, 5)
+        self.unsolicited_table.setHorizontalHeaderLabels(["Kind", "Identifier / service", "Count", "Last data",
+                                                          "Last received"])
+        self.unsolicited_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.unsolicited_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        for column, width in enumerate((90, 190, 60)):
+            self.unsolicited_table.setColumnWidth(column, width)
+        self.unsolicited_table.setColumnWidth(3, 330)
+        self.unsolicited_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.unsolicited_table, 1)
+        bottom = QHBoxLayout()
+        self.unsolicited_label = QLabel("What the ECU sends without being asked: periodic data and event responses.")
+        self.unsolicited_label.setStyleSheet("color: gray;")
+        bottom.addWidget(self.unsolicited_label, 1)
+        clear = QPushButton("Clear list")
+        clear.clicked.connect(self.clear_unsolicited)
+        bottom.addWidget(clear)
+        layout.addLayout(bottom)
+        self._unsolicited_rows = {}           # (kind, identifier or service) -> [row, count]
         return page
 
     # --- the request form -------------------------------------------------------------------
@@ -479,6 +563,86 @@ class UdsConsoleWindow(QDialog):
             return None
         return self.run(lambda uds: uds.SecurityUnlock(level, compute_key), "SecurityAccess")
 
+    # --- periodic data and events -------------------------------------------------------------
+
+    def _periodic_identifiers(self):
+        identifiers = [parse_int(part) for part in self.periodic_edit.text().replace(",", " ").split()]
+        if any(not 0 <= identifier <= 0xFFFF or identifier > 0xFF and identifier >> 8 != 0xF2
+               for identifier in identifiers):
+            raise ValueError("periodic identifiers are 0xF200 to 0xF2FF")
+        return [0xF200 | (identifier & 0xFF) for identifier in identifiers]
+
+    def start_periodic(self):
+        try:
+            identifiers = self._periodic_identifiers()
+        except ValueError as exc:
+            self._log(f"Invalid identifier: {exc}")
+            return None
+        if not identifiers:
+            self._log("Name at least one periodic identifier, e.g. F201.")
+            return None
+        rate = self.rate_combo.currentData()
+        return self.run(lambda uds: uds.RDBPI(rate, *identifiers), "ReadDataByPeriodicIdentifier")
+
+    def stop_periodic(self):
+        try:
+            identifiers = self._periodic_identifiers()
+        except ValueError as exc:
+            self._log(f"Invalid identifier: {exc}")
+            return None
+        return self.run(lambda uds: uds.RDBPI(0x04, *identifiers), "ReadDataByPeriodicIdentifier stop")
+
+    def set_up_did_event(self):
+        did = parse_int(self.event_did_edit.text(), 0xF190) & 0xFFFF
+        record = did.to_bytes(2, "big")
+        return self.run(lambda uds: uds.ROE(0x03, EVENT_WINDOW, record, b"\x22" + record),
+                        "ResponseOnEvent onChangeOfDataIdentifier")
+
+    def set_up_dtc_event(self):
+        mask = parse_int(self.event_mask_edit.text(), 0x09) & 0xFF
+        return self.run(lambda uds: uds.ROE(0x01, EVENT_WINDOW, [mask], [0x19, 0x02, mask]),
+                        "ResponseOnEvent onDTCStatusChange")
+
+    def response_on_event(self, event_type):
+        names = {0x00: "stop", 0x04: "report", 0x05: "start", 0x06: "clear"}
+        if event_type == 0x04:                            # reportActivatedEvents has no eventWindowTime
+            call = lambda uds: uds.UDS(bytes([0x86, 0x04]))           # noqa: E731
+        else:
+            call = lambda uds: uds.ROE(event_type, EVENT_WINDOW)      # noqa: E731
+        return self.run(call, f"ResponseOnEvent {names.get(event_type, hex(event_type))}")
+
+    def on_unsolicited(self, timestamp, payload):
+        """A response the ECU sent without being asked, from the CAN worker: counted in the table; event
+        responses are logged too (periodic data would flood the log)."""
+        kind, key, data = unsolicited_kind(payload)
+        if kind == "periodic":
+            label, shown = f"0x{key:04X}", data
+        else:
+            label = service_name(bytes([key]))
+            if payload[:1] == b"\x7f" and len(payload) >= 3:
+                label += f" - NRC 0x{payload[2]:02X} {NRC_NAMES.get(payload[2], '')}".rstrip()
+            shown = payload
+            self._log(f"Event response: {payload[:32].hex(' ')}{' ...' if len(payload) > 32 else ''}")
+        entry = self._unsolicited_rows.get((kind, key))
+        if entry is None:
+            entry = self._unsolicited_rows[(kind, key)] = [self.unsolicited_table.rowCount(), 0]
+            self.unsolicited_table.insertRow(entry[0])
+            self.unsolicited_table.setItem(entry[0], 0, QTableWidgetItem("Periodic" if kind == "periodic" else "Event"))
+            self.unsolicited_table.setItem(entry[0], 1, QTableWidgetItem(label))
+        entry[1] += 1
+        text = shown[:48].hex(" ") + (" ..." if len(shown) > 48 else "")
+        if kind == "periodic" and 0 < len(shown) <= 4:
+            text += f"   ({int.from_bytes(shown, 'big')})"
+        for column, value in ((2, str(entry[1])), (3, text), (4, self.time_text(timestamp))):
+            self.unsolicited_table.setItem(entry[0], column, QTableWidgetItem(value))
+        total = sum(count for _row, count in self._unsolicited_rows.values())
+        self.unsolicited_label.setText(f"{total} unsolicited response(s)")
+
+    def clear_unsolicited(self):
+        self.unsolicited_table.setRowCount(0)
+        self._unsolicited_rows = {}
+        self.unsolicited_label.setText("What the ECU sends without being asked: periodic data and event responses.")
+
     # --- fault memory ----------------------------------------------------------------------------
 
     def read_dtcs(self):
@@ -508,9 +672,22 @@ class UdsConsoleWindow(QDialog):
         return self.run(lambda uds: uds.CDTCI(0xFFFFFF), "ClearDiagnosticInformation")
 
     def _fill_dtcs(self, dtcs):
+        """The DTCs read, each with its SAE code, its status bits and - from the ODX tab's file - its text."""
+        self._dtcs = list(dtcs)
+        texts = dtc_texts(self.odx.layer) if self.odx.layer is not None else {}
         self.dtc_table.setRowCount(len(dtcs))
         for row, (dtc, status) in enumerate(dtcs):
-            for column, text in enumerate((f"{dtc:06X}", f"{status:02X}", status_text(status))):
+            known = dtc_text(texts, dtc)
+            code = f"{known[0]}-{dtc & 0xFF:02X}" if known and known[0] else dtc_display(dtc)
+            description = known[1] if known else ("not in the ODX file" if texts else "")
+            for column, text in enumerate((f"{dtc:06X}", code, f"{status:02X}", status_text(status), description)):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if column == 4 and not known:
+                    item.setForeground(Qt.gray)
                 self.dtc_table.setItem(row, column, item)
+        if self.odx.layer is None:
+            self.dtc_hint.setText("Load the ECU's ODX, PDX or CDD file in the ODX tab to see what each DTC means.")
+        else:
+            self.dtc_hint.setText(f"Descriptions from {self.odx.path_label.text()}: "
+                                  f"{len(texts)} DTC{'s' if len(texts) != 1 else ''} described.")

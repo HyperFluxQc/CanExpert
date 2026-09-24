@@ -12,8 +12,12 @@ from dataclasses import dataclass, field
 
 from canexpert.uds.client import FUNCTIONS, NRC_NAMES
 
-# Service names by request identifier, from the functions the panel scripts and the console use.
-SERVICE_NAMES = {entry.sid: entry.service for entry in FUNCTIONS if entry.sid}
+# Service names by request identifier, from the functions the panel scripts and the console use: the service's
+# own entry, which comes before the helpers built on it ("RoutineControl", not "... requestRoutineResults").
+SERVICE_NAMES = {}
+for _entry in FUNCTIONS:
+    if _entry.sid:
+        SERVICE_NAMES.setdefault(_entry.sid, _entry.service)
 SINGLE, FIRST, CONSECUTIVE, FLOW_CONTROL = 0x0, 0x1, 0x2, 0x3
 FLOW_STATUS = {0x0: "continue", 0x1: "wait", 0x2: "overflow"}
 

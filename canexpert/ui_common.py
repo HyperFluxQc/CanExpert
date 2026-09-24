@@ -70,6 +70,8 @@ _PATHS = {
                   '<rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>',
     "write": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6.5 9h7M6.5 12.5h5M6.5 16h3"/>'
              '<path d="m14 17 1-3 4.5-4.5 2 2L17 16l-3 1z"/>',
+    "tests": '<rect x="4" y="3" width="16" height="18" rx="2"/>'
+             '<path d="m7.5 8.5 1.5 1.5 3-3M14 9h3M7.5 15.5 9 17l3-3M14 16h3"/>',
     "sysvars": '<path d="M7 5c-2 0-2 2-2 3.5S4 11 3 12c1 1 2 1.5 2 3.5S5 19 7 19"/>'
                '<path d="M17 5c2 0 2 2 2 3.5s1 2.5 2 3.5c-1 1-2 1.5-2 3.5S19 19 17 19"/>'
                '<path d="M9 9l6 6M15 9l-6 6"/>',
@@ -87,6 +89,7 @@ _COLORS = {
     "data": ("#2563eb", "#93c5fd"),
     "statistics": ("#0e7490", "#67e8f9"),
     "write": ("#4b5563", "#d1d5db"),
+    "tests": ("#047857", "#6ee7b7"),
     "sysvars": ("#9d174d", "#f9a8d4"),
 }
 
@@ -107,6 +110,17 @@ def _svg_icon(body, colours, stroke_width=1.8, sizes=(24, 32, 48, 64, 96)):
             renderer.render(painter)
             painter.end()
             icon.addPixmap(pixmap, mode)
+    return icon
+
+
+def app_icon(name: str = "canexpert") -> QIcon:
+    """The application icon (canexpert, or dummy_ecu), drawn by tools/make_icons.py."""
+    from canexpert.paths import RESOURCES_DIR
+    icon = QIcon()
+    for suffix in (".ico", ".png"):
+        path = RESOURCES_DIR / f"{name}{suffix}"
+        if path.exists():
+            icon.addFile(str(path))
     return icon
 
 

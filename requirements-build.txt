@@ -1,0 +1,3 @@
+# Building the Windows programs (python tools/build_windows.py): the application's requirements and PyInstaller.
+-r requirements.txt
+pyinstaller>=6.0

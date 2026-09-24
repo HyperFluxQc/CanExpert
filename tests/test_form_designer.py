@@ -443,6 +443,40 @@ class MenusAndDatabaseTabTest(unittest.TestCase):
         self.assertEqual(self.designer.db_id_edit.text(), "engine_2026-09-18")
         self.assertFalse(self.designer.windowTitle().endswith("*"), "just opened: nothing unsaved")
 
+    def test_the_dbc_path_travels_with_the_panel(self):
+        import shutil
+        from canexpert.designer.form_designer import portable_dbc_path
+        from canexpert.panel.view import PanelView
+        app = Path(tempfile.mkdtemp()) / "CanExpert"
+        databases, dbcs = app / "Databases", app / "DBC"
+        databases.mkdir(parents=True)
+        dbcs.mkdir()
+        shutil.copy(DBC, dbcs / "bench.dbc")
+        self.designer.database_dir = databases
+        self.designer.symbol_list.load_dbc_path(str(dbcs / "bench.dbc"))    # a whole path, as Browse gives
+        self.designer.db_id_edit.setText("bench_2026-09-18")
+        self.assertTrue(self.designer.save())
+        panel = databases / "bench_2026-09-18.xml"
+        self.assertEqual(parse_application_database(panel)["dbc_path"], "../DBC/bench.dbc")
+
+        again = FormDesigner()
+        self.addCleanup(again.close)
+        again.load(panel)
+        self.assertEqual(again.dbc_path_edit.text(), str((dbcs / "bench.dbc").resolve()), "shown whole, no ..")
+        self.assertTrue(again.save())
+        self.assertEqual(parse_application_database(panel)["dbc_path"], "../DBC/bench.dbc", "and kept relative")
+
+        moved = Path(shutil.copytree(app, Path(tempfile.mkdtemp()) / "elsewhere"))
+        view = PanelView(parse_application_database(moved / "Databases" / "bench_2026-09-18.xml"),
+                         lambda *args: None, lambda *args: None)
+        self.addCleanup(view.deleteLater)
+        self.assertIsNotNone(view.dbc, "the copied folder finds its DBC")
+
+        far = Path(tempfile.mkdtemp()) / "far.dbc"
+        shutil.copy(DBC, far)
+        self.assertEqual(portable_dbc_path(str(far), databases), str(far.resolve()), "far away: kept whole")
+        self.assertEqual(portable_dbc_path("", databases), "")
+
     def test_the_manual_opens_at_the_form_designer(self):
         window = self.designer.open_manual()
         self.addCleanup(window.close)

@@ -21,7 +21,7 @@ The main window has a toolbar and four panels:
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
 | **Log** | The application's messages, *Debug* or *Verbose*. The frames themselves are in the Trace window. |
 
-The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — open in
+The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — open in
 the **workspace** in
 the middle, together with the Database panel, where they can be tabbed, split and floated (see
 *Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
@@ -86,6 +86,18 @@ TesterPresent at the configured interval.
 the same as pressing Connect.
 
 **Disconnect** stops the script and the traffic, and closes the adapter.
+
+While you are connected, the **status bar** says how things stand:
+
+| | |
+|---|---|
+| **Bus** | The adapter's error state: *error active*, *error passive* (orange) or *bus off* (red), with the error frames counted. *on* means the adapter does not report its state. |
+| **Session** | The diagnostic session the ECU last confirmed: *default*, *extended*, *programming*... *unknown* until it answers a DiagnosticSessionControl or an ECUReset. |
+| **Security** | *unlocked (level 1)* (green) once the ECU accepts a key, *locked* again after a new session or a reset. |
+| **Last error** | The last negative response (`ReadDataByIdentifier: NRC 0x31 requestOutOfRange`), script error, bus off or failed session. Click it to show the Log. |
+
+Session and security are read from the ECU's own answers, so they are right whether the request came
+from the UDS Console, the panel script or the flashing sequence.
 
 The frames themselves are in the **Trace** window, each with its own time — the adapter's for received
 frames. **View → Time display** chooses between the time of day (**Absolute**) and seconds since the
@@ -300,7 +312,9 @@ documentation; double-click one to insert a call.
   **New version (today)** keeps the family and takes today's date, so saving leaves the previous version as
   it was.
 - **Name** and **Description** — the description is shown at the top of the Database window.
-- **DBC**: the panel's own DBC, with **Browse...** and **Remove**; its signals are the Symbols list.
+- **DBC**: the panel's own DBC, with **Browse...** and **Remove**; its signals are the Symbols list. When it
+  lies near the panel — `DBC/` beside `Databases/`, say — it is saved relative to the panel, so the panel
+  keeps working when the whole folder is copied to another PC.
 - **Contents**: the pages with their controls, and handlers named on controls but missing from the script.
 - **Where it is used**: the configurations with this family, and whether a newer version in the folder is
   the one they actually load.
@@ -342,6 +356,14 @@ def trouble(api, timestamp):
 @on_bus_state                              # error active, error passive or bus off
 def state(api, state):
     api.ui.set_value("bus", state)
+
+@on_periodic_data(0xF201)                  # periodic data, after RDBPI(0x03, 0xF201); none named: all
+def temperature(api, data, identifier):
+    api.ui.set_value("temperature", int.from_bytes(data, "big") / 10)
+
+@on_response_event(0x22)                   # what ROE set up: 62 F1 90 ... when the DID changed
+def vin_changed(api, response):
+    api.ui.set_value("vin", response[3:].decode())
 ```
 
 Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
@@ -467,7 +489,7 @@ adapter refusing — stops the simulation and says why, rather than filling the 
 ## UDS Console
 
 **Tools → UDS Console** sends diagnostic services using the session the main window has open; connect
-first. It has three tabs over one log.
+first. It has four tabs over one log.
 
 - **Services** lists every ISO 14229 service by functional unit, exactly as the panel scripts see them,
   without needing an ODX file. Pick one and its parameters appear as a form, with the defaults filled in;
@@ -476,11 +498,24 @@ first. It has three tabs over one log.
   file (the default folder is `ODX/`); choose a service in the tree, fill its free parameters — fixed
   ones are shown as *(coded/fixed)* — and press **Send**.
 - **Fault memory** reads the DTCs with their status bits spelled out (`confirmedDTC, testFailed`), counts
-  them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all.
+  them, reads a **Snapshot** or **Extended data** record for the selected DTC, and clears them all. Each
+  DTC shows its code as it is written on a scan tool (`P0101-00`: the system letter, four characters and
+  the failure type). With the ECU's ODX, PDX or CDD file loaded in the ODX tab — before or after reading —
+  the **Description** column says what each DTC means, from the file's DTC texts. `ODX/dummy_ecu.odx-d`
+  describes the Dummy ECU's two DTCs.
+- **Periodic & events** asks the ECU to send data by itself and lists what it sends. **Start** sends the
+  periodic identifiers you name (`F201 F202`) at the chosen rate (ReadDataByPeriodicIdentifier, 0x2A);
+  **Stop** ends them (all of them, with the field empty). **Set up** arranges a ResponseOnEvent (0x86):
+  the ECU answers `22 <DID>` when that DID changes, or `19 02 <mask>` when a DTC's status bits in the mask
+  go on; **Start**, **Stop**, **Report** and **Clear** act on the events set up. The table counts each
+  periodic identifier and each event's service, with the last data and when it came; event responses are
+  also written to the log. CAN Expert answers a long event response with flow control as a tester must, so
+  a 17-byte VIN arrives whole. Nothing is listed on a listen-only channel, where CAN Expert cannot answer.
 - The log shows every request and its response, each line with its time (see *View → Time display*): a
   positive answer with its data as hex, as a number and as text; a negative one as
   `NRC 0x31 requestOutOfRange`. Once an ODX file is loaded, answers are also shown **decoded** by it, from
-  whichever tab the request came. Requests and answers that span several frames are handled for you.
+  whichever tab the request came. Requests and answers that span several frames are handled for you, and an
+  ECU answering *busyRepeatRequest* (NRC 0x21) is asked again, up to three times, before you see the NRC.
 - The first bar sets the **session** (DiagnosticSessionControl); the connection itself keeps the ECU awake
   with TesterPresent. Beside it a strip says what is going on: `Session: extended   P2 75 ms / P2* 4000 ms   Security:
   unlocked (level 1)`. P2 and P2* are what the ECU itself asked for in its answer to the session
@@ -494,6 +529,62 @@ first. It has three tabs over one log.
 
 The frames of an exchange are in the Trace window; its **Transport** view shows each request and answer
 as one row.
+
+## Test modules
+
+**Tools → Test** runs test cases written in Python against the ECU, as CANoe's test modules do, and
+writes a report of every run. It opens `TestModules/dummy_ecu_checks.py`, the example, until you open
+another module with **Open...**; the one used last is opened again.
+
+Connect first. Tick the test cases to run and press **Run**: each one appears with its verdict — *passed*,
+*failed*, *error* (the test itself broke) or *skipped* — and under it every step with its own verdict, as
+it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
+still runs. The module is read again before every run, so you can edit it in any editor and run it again
+straight away (**Reload** shows the new list without running).
+
+Every run writes two reports into `reports/` beside the module, named after it and the time:
+an **HTML** page (**Open report**) with the verdict, the counts, and each test case's steps — the ones that
+did not pass are opened — and a **JUnit XML** file that CI servers such as Jenkins or GitLab read.
+
+A test module is a Python file:
+
+```python
+"""Dummy ECU checks"""                          # the first line is the module's title
+
+def setup(t):                                    # before the test cases; if it fails, they are skipped
+    t.require(DSC(0x01), "the ECU answers")
+
+def teardown(t):                                 # after them, also when one failed or you pressed Stop
+    DSC(0x01)
+
+@testcase("The VIN has 17 characters")           # a test case, in the order the file lists them
+def vin(t):
+    vin = RDBI(0xF190)
+    t.require(vin, "VIN read")                   # a failed require ends the test case
+    t.check_equal(len(vin.data), 17, "length")   # a failed check fails it, and the next step still runs
+
+@testcase("An unknown DID is refused")
+def unknown(t):
+    t.expect_nrc(RDBI(0x1234), 0x31)
+```
+
+`before_each(t)` and `after_each(t)` run around every test case. The UDS functions are the ones panel
+scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` offers:
+
+| | |
+|---|---|
+| `t.check(condition, "step", detail)` | A step that passes when the condition is true — a positive UDS answer is; its detail shows the request and the answer |
+| `t.check_equal(actual, expected, "step")`, `t.check_range(value, low, high, "step")` | The step's detail says what was expected and what came |
+| `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
+| `t.require(condition, "step")` | A check that ends the test case when it fails |
+| `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
+| `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
+| `t.send(0x200, [1, 2])` | Send a frame |
+| `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
+| `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
+
+A wait takes the frames that arrive after it starts — or after the test's last `t.send()`, so an answer
+that comes back before the wait begins is not missed.
 
 ## Firmware flashing
 
@@ -543,7 +634,7 @@ you can study a recording made in a vehicle at your desk.
 ## Arranging the windows
 
 The middle of the main window is the **workspace**, where the pages of the loaded database and the
-analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — live.
+analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — live.
 Configuration, CAN Channels and Log stay
 as fixed panels around it.
 
@@ -672,6 +763,24 @@ Several dummy ECUs can share a channel when each has its own identifiers (Addres
 the application frames. A second ECU answering the *same* requests is refused, because two ECUs answering
 them break security access and flashing.
 
+## Keyboard shortcuts
+
+| Key | Does |
+|---|---|
+| **F9** / **Shift+F9** | Connect / Disconnect |
+| **Ctrl+1** ... **Ctrl+8** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test — the toolbar's order; pressed again, the window closes |
+| **Ctrl+E** | Form Designer |
+| **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
+| **Ctrl+O** | Replay a recorded file |
+| **Ctrl+N** | New configuration |
+| **F1** | The manual, at the section of the window you are working in |
+| **Ctrl+Q** | Exit |
+
+The keys work in floating windows too. The toolbar buttons show theirs in their tooltips. In the Form
+Designer, **F1** opens its own section, **F5** tests the panel with the simulated ECU and **F7** checks the
+script. Plain letters and **F5** are left to the panel script's `@on_key`: keys CAN Expert uses itself
+do not reach the script.
+
 ## Where things are kept
 
 | Folder | Contents |
@@ -679,8 +788,9 @@ them break security access and flashing.
 | `Configurations/` | `config_<name>.json`, one per configuration |
 | `Databases/` | Panels: `family_YYYY-MM-DD.xml` and `family_YYYY-MM-DD_script.py` |
 | `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings |
-| `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab |
+| `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts) |
 | `examples/` | A runnable panel and script, and demo firmware images |
+| `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |
 
 Recordings go wherever you save them; `.blf` is the most compact.
 
@@ -711,3 +821,7 @@ under *Tools → Symbol databases...*.
 only while you are connected.
 
 **Light or dark** — *Options → Light Mode / Dark Mode*. The choice is remembered.
+
+**Reporting a problem** — *Help → About* lists the versions of CAN Expert, Python, Qt, python-can and the
+other libraries, and of the Kvaser, Vector and IXXAT drivers installed; **Copy** puts them on the
+clipboard to paste into the report.

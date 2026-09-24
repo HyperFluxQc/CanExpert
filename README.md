@@ -9,7 +9,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Statistics**: frames, rate, average/min/max cycle time and bus load per identifier, with the totals for the bus - bus load, error frames and the controller state (error active, error passive, bus off) - plus freeze, filter and CSV export
 - **Data window**: every signal of the symbol databases with the value it holds now, physical and raw, with its unit, age and count; signals that never arrived are listed too
 - **Transmit window** with two tabs that keep sending until the window is closed: the **message list** - raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator) - and the **simulated nodes** - the messages of a database's sending nodes, sent at their cycle times as those ECUs would, a rest-bus simulation for the ECU on the bench
-- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits; the P2/P2* timing the ECU announces is picked up and honoured by every later request
+- **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits and shows each DTC's code (P0101-00) and, from the ODX file, its text; the P2/P2* timing the ECU announces is picked up and honoured by every later request; a **Periodic & events** tab starts periodic data (0x2A) and ResponseOnEvent (0x86) and lists what the ECU then sends by itself
 - **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached
 - **Symbol databases**: one list of DBC files shared by the Trace, Data and Statistics windows, the CAN Logger and the Transmit window
 - **ISO-TP settings** per configuration, kept by CAN Expert rather than in the configuration file: every frame padded to 8 bytes (0xCC by default, as most ECUs require), and the block size and STmin the tester asks of the ECU
@@ -17,6 +17,8 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions each ECU accepts and its VIN, part and serial numbers and versions - beside a running measurement - with a configuration made from any ECU found
 - **One measurement clock**: the Trace, the Logger, the Write window and the UDS Console show each frame's own time, absolute or relative to the start of the measurement; the Trace also filters by direction
 - **Write window** for the script's output and its variables; scripts react to keys, error frames and the bus state
+- **Test modules**: test cases in Python against the live bus (`@testcase`, `setup`/`teardown`, `t.check`, `t.require`, `t.expect_nrc`, `t.wait_for_frame`, `t.wait_for_signal` and the UDS functions), with a verdict per step as it runs, Stop, and an HTML and a JUnit XML report of every run; an example module checks the Dummy ECU
+- **Status bar** with the bus state, the diagnostic session and security state read off the ECU's answers, and the last error; **keyboard shortcuts** (F9 connect, Ctrl+1...7 tool windows, F1 help at the window you are in) and an **About** box listing every library and adapter driver version
 - **Panel pages as windows**: every page of a database is a workspace window of its own that can be tabbed, split and floated, fitted to its window or zoomed
 - **CANoe-style window system**: the Database panel and the analysis windows live in a workspace where they tab together, split, and float as windows of their own, with drop guides while dragging (Qt Advanced Docking System); the arrangement is remembered and can be saved as named desktops
 - **Node monitoring**: Sends configured periodic TesterPresent requests, lists responding nodes, and marks lost nodes with a red cross
@@ -42,7 +44,14 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 pip install -r requirements.txt
 ```
 
-*(A standalone installer/executable build may be added in a future release.)*
+### Windows programs
+
+`python tools/build_windows.py` (after `pip install -r requirements-build.txt`) builds **CanExpert.exe** and
+**DummyECU.exe** into `dist/CanExpert`, with their icons and version, beside the `Configurations`,
+`Databases`, `DBC`, `ODX`, `examples` and `docs` folders they use. It checks that both start and zips the
+folder as `dist/CanExpert-<version>-windows.zip`: unzip it anywhere and run `CanExpert.exe`, no Python
+needed. The adapter drivers (Kvaser, Vector, IXXAT) are still installed separately. CI builds the same zip
+for every push to `main` and every `v*` tag (the *Windows programs* job's artifact).
 
 ## Usage
 
@@ -138,7 +147,7 @@ else:
 
 | Functional unit (ISO 14229-1) | Functions |
 |---|---|
-| Diagnostic and communication management | `DSC` 0x10, `ER` 0x11, `SA` 0x27, `CC` 0x28, `TP` 0x3E, `ATP` 0x83, `CDTCS` 0x85, `ROE` 0x86, `LC` 0x87 |
+| Diagnostic and communication management | `DSC` 0x10, `ER` 0x11, `SA` 0x27, `CC` 0x28, `AUTH` 0x29, `TP` 0x3E, `ATP` 0x83, `SDT` 0x84, `CDTCS` 0x85, `ROE` 0x86, `LC` 0x87 |
 | Data transmission | `RDBI` 0x22, `RMBA` 0x23, `RSDBI` 0x24, `RDBPI` 0x2A, `DDDI_DefineById` / `DDDI_DefineByAddress` / `DDDI_Clear` 0x2C, `WDBI` 0x2E, `WMBA` 0x3D |
 | Stored data transmission | `CDTCI` 0x14, `RDTCI` 0x19 |
 | Input/output control | `IOCBI` 0x2F |
@@ -146,7 +155,10 @@ else:
 | Upload/download | `RD` 0x34, `RU` 0x35, `TD` 0x36, `RTE` 0x37, `RFT` 0x38 |
 | Helpers | `UDS("22 F1 90")` (any request), `SecurityUnlock(level, compute_key)`, `ReadDTCs(mask)`, `StartRoutine` / `StopRoutine` / `RoutineResults`, `UdsLog(True)` |
 
-Authentication (0x29) and SecuredDataTransmission (0x84) are not included.
+Authentication (0x29) and SecuredDataTransmission (0x84) take their records as bytes: the certificates and
+the cryptography are yours. An ECU answering *busyRepeatRequest* (NRC 0x21) is asked again, three times at
+most. What the ECU sends by itself after `RDBPI` and `ROE` reaches `@on_periodic_data(0xF201)` and
+`@on_response_event(0x22)`, and the UDS Console's *Periodic & events* tab.
 
 See [Requirements implementation](docs/REQUIREMENTS_STATUS.md#panel-scripts) for the full API and [Firmware flashing](docs/REQUIREMENTS_STATUS.md#firmware-flashing) for `Flashing(api, firmware)`.
 
@@ -154,10 +166,12 @@ See [Requirements implementation](docs/REQUIREMENTS_STATUS.md#panel-scripts) for
 
 ```
 CanExpert/
-├── main.py                     # Start CAN Expert
+├── main.py                     # Start CAN Expert (--smoke-test: only check that it can start)
+├── CanExpert.spec              # PyInstaller: the Windows programs (tools/build_windows.py runs it)
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
+│   ├── main_tools.py, main_layouts.py, main_channels.py, main_session.py   # its parts (mixins)
 │   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox
 │   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
@@ -168,6 +182,7 @@ CanExpert/
 │   ├── transmit_window.py      # Transmit list: one-shot and cyclic messages
 │   ├── simulation_window.py    # Simulated nodes: a database's messages sent as those ECUs would
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service, ODX services, the fault memory
+│   ├── testing/                # Test modules: runner, HTML/JUnit reports, the Test window
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
 │   ├── workspace.py            # The workspace: the docking system the windows live in
@@ -177,11 +192,13 @@ CanExpert/
 │   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
 │   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
 │   └── simulator/              # ecu.py (the simulated ECU), signals.py (its frames), dtc.py (its fault
-│                               #   memory), window.py (its window)
+│                               #   memory), window.py (its window; window_pages.py, window_tables.py,
+│                               #   fields.py, widgets.py)
 ├── Configurations/             # config_<name>.json, one per configuration
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
-├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files
+├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files (ODX/dummy_ecu.odx-d: its DTC texts)
 ├── examples/                   # Runnable panel + script pair, demo firmware
+├── TestModules/                # Test modules (dummy_ecu_checks.py); reports/ of their runs
 ├── docs/                       # USER_MANUAL.md, DOCUMENTATION.md, REQUIREMENTS_STATUS.md
 ├── tests/                      # Hardware-free acceptance, UDS and UI tests
 └── requirements.txt
@@ -232,7 +249,9 @@ Console options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--res
 python -B -m unittest discover -s tests -v
 ```
 
-The tests use python-can's virtual interface; no hardware is required.
+The tests use python-can's virtual interface; no hardware is required. CI runs them on Ubuntu (Python 3.10
+and 3.13) and Windows (3.10); a failure or a crash shows as an annotation on the pull request, with the
+test and its traceback.
 
 With the Kvaser driver installed, one more script drives the real main window against `dummy_ecu.py` over the two virtual channels — opening the adapter, node status, a panel, flashing, the CAN Logger, the activity scan, the ECU check and reconnecting. It uses a temporary configuration and temporary settings, so nothing of yours changes:
 

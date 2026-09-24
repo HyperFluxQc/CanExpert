@@ -15,41 +15,33 @@ from dataclasses import asdict, fields, replace
 
 import can
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QComboBox,
-    QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
-    QGroupBox,
     QHBoxLayout,
-    QHeaderView,
-    QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
-    QScrollArea,
-    QSpinBox,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from canexpert.paths import DBC_DIR
-from canexpert.simulator.dtc import status_text
+from canexpert.simulator.fields import (
+    parse_byte_list,
+    parse_did_list,
+    parse_address_format,
+    parse_ranges,
+    format_ranges,
+    stmin_text,
+)
 from canexpert.simulator.ecu import (
     DEFAULT_CONNECTION,
     DEFAULT_DIDS,
-    IMAGE_CHECKS,
     PERIODIC_MODES,
-    SERVICE_NAMES,
     SESSION_NAMES,
     DummyEcu,
     EcuConfig,
@@ -60,148 +52,17 @@ from canexpert.simulator.ecu import (
     parse_channel,
     save_profile,
 )
-from canexpert.simulator.signals import DEFAULT_GENERATORS, GENERATORS, SignalSimulation
+from canexpert.simulator.signals import DEFAULT_GENERATORS, SignalSimulation
 from canexpert.uds.client import NRC_NAMES
 from canexpert.uds.isotp import flow_control_frame
-from canexpert.ui_common import app_settings, toolbar_icon
+from canexpert.ui_common import app_icon, app_settings
+from canexpert.simulator.window_pages import Pages
+from canexpert.simulator.window_tables import BUILTIN_DBC_TEXT, Tables
 
-INTERFACES = ("kvaser", "virtual", "vector", "ixxat", "pcan", "socketcan")
-BITRATES = ("125000", "250000", "500000", "1000000")
-ADDRESS_FORMATS = ("Any", "44", "24", "34", "14", "33", "22", "11")
 SETTINGS_KEY = "dummy_ecu/profile"
 ERROR_STYLE = "background: #fde2e2;"
-BUILTIN_DBC_TEXT = "Built-in: DBC/dummy_ecu.dbc (0x300 EngineData, 0x301 EcuStatus)"
-IMAGE_CHECK_TEXT = {"off": "None: any complete download passes",
-                    "option": "CRC-32 given as the check routine's option record",
-                    "trailer": "CRC-32 in the image's last four bytes"}
-GENERATOR_TEXT = {"constant": "Constant", "ramp": "Ramp", "sine": "Sine", "square": "Square", "random": "Random",
-                  "counter": "Counter", "running": "Engine running", "logging": "Logging", "session": "Session"}
-# (setting, label, what happens) of the Errors tab
-ERROR_ROWS = (
-    ("error_refuse", "Refuse",
-     "A negative response instead of the answer: 7F <service> <NRC>. 21 busyRepeatRequest asks the tester to "
-     "send the request again."),
-    ("error_no_answer", "No answer",
-     "The request is carried out but not answered: the tester runs into its P2 timeout."),
-    ("error_wrong_id", "Answer on another ID",
-     "The response goes to the response ID + 1: the tester never sees it."),
-    ("error_drop_frame", "Drop a consecutive frame",
-     "One consecutive frame of a long response is not sent: the tester sees the sequence jump and drops the "
-     "message."),
-    ("error_wrong_sequence", "Wrong sequence number",
-     "One consecutive frame of a long response carries the wrong sequence number."),
-    ("error_stall", "Consecutive frame late",
-     "One consecutive frame of a long response waits 1.2 s, past the tester's N_Cr of 1 s."),
-)
-# Columns of the tables
-DID_DID, DID_DATA, DID_TEXT, DID_WRITABLE, DID_SIGNAL, DID_SESSIONS, DID_LEVEL = range(7)
-DTC_DTC, DTC_STATUS, DTC_NOW, DTC_FAULT, DTC_SNAPSHOT, DTC_EXTENDED = range(6)
-SIG_NAME, SIG_UNIT, SIG_KIND, SIG_LOW, SIG_HIGH, SIG_PERIOD, SIG_NOW = range(7)
-MSG_NAME, MSG_ID, MSG_PERIOD, MSG_SEND = range(4)
 
 
-# --- text fields ------------------------------------------------------------------------
-
-def printable(data: bytes) -> str:
-    """Bytes as text where they are text, for the DID table's preview."""
-    return "".join(chr(byte) if 32 <= byte < 127 else "." for byte in data)
-
-
-def forced_text(sid: int, nrc: int) -> str:
-    """"SecurityAccess: requiredTimeDelayNotExpired" - which service is refused, and how."""
-    return f"{SERVICE_NAMES.get(sid, f'service {sid:02X}')}: {NRC_NAMES.get(nrc, 'unknown NRC')}"
-
-
-def parse_byte_list(text: str) -> tuple[int, ...]:
-    """'00, 11' -> (0x00, 0x11)."""
-    values = tuple(int(part, 16) for part in text.replace(",", " ").split())
-    if not values or any(not 0 <= value <= 0xFF for value in values):
-        raise ValueError("expected hexadecimal bytes, e.g. 00, 11")
-    return values
-
-
-def parse_did_list(text: str) -> tuple[int, ...]:
-    """'0101, 0102' -> (0x0101, 0x0102); empty -> ()."""
-    try:
-        values = tuple(int(part, 16) for part in text.replace(",", " ").split())
-    except ValueError:
-        raise ValueError("expected DIDs in hexadecimal, e.g. 0101, 0102") from None
-    if any(not 0 <= value <= 0xFFFF for value in values):
-        raise ValueError("a DID is 0000-FFFF")
-    return values
-
-
-def parse_address_format(text: str) -> int | None:
-    """'Any' -> None, '44' -> 0x44 (both nibbles must be set)."""
-    text = text.strip()
-    if not text or text.lower() == "any":
-        return None
-    value = int(text, 16)
-    if not 0 <= value <= 0xFF or not value & 0x0F or not value >> 4:
-        raise ValueError("expected Any or a byte like 44")
-    return value
-
-
-def parse_ranges(text: str) -> tuple:
-    """'10000-1FFFF, 20000-2FFFF' -> ((0x10000, 0x1FFFF), (0x20000, 0x2FFFF)); empty -> () (any address)."""
-    ranges = []
-    for part in text.replace(";", ",").split(","):
-        if not part.strip():
-            continue
-        first, separator, last = part.partition("-")
-        if not separator:
-            raise ValueError(f"expected first-last, got {part.strip()}")
-        first, last = int(first, 16), int(last, 16)
-        if last < first:
-            raise ValueError(f"{part.strip()} ends before it starts")
-        ranges.append((first, last))
-    return tuple(ranges)
-
-
-def format_ranges(ranges) -> str:
-    return ", ".join(f"{first:08X}-{last:08X}" for first, last in ranges)
-
-
-SESSION_WORDS = {"default": 0x01, "d": 0x01, "programming": 0x02, "p": 0x02, "extended": 0x03, "e": 0x03}
-
-
-def parse_sessions(text: str) -> list[int]:
-    """'default, extended' (or 'd e', or '01 03') -> [1, 3]; empty -> [] (any session)."""
-    sessions = []
-    for word in text.replace(",", " ").split():
-        word = word.lower()
-        try:
-            session = SESSION_WORDS[word] if word in SESSION_WORDS else int(word, 16)
-        except ValueError:
-            raise ValueError(f"{word!r} is no session: default, programming, extended or a number") from None
-        if not 0 < session <= 0x7F:
-            raise ValueError(f"session {session:02X}: sessions are 01-7F")
-        if session not in sessions:
-            sessions.append(session)
-    return sessions
-
-
-def format_sessions(sessions) -> str:
-    return ", ".join(SESSION_NAMES.get(session, f"{session:02X}") for session in sessions or ())
-
-
-def stmin_text(value: int) -> str:
-    if value <= 0x7F:
-        return f"{value} ms"
-    if 0xF1 <= value <= 0xF9:
-        return f"{(value - 0xF0) * 100} µs"
-    return "127 ms (reserved value)"
-
-
-def number_text(value) -> str:
-    return "" if value is None else f"{value:.6g}"
-
-
-def hint(text: str = "") -> QLabel:
-    label = QLabel(text)
-    label.setWordWrap(True)
-    label.setStyleSheet("color: #6b7280;")
-    return label
 
 
 def _stamp() -> str:
@@ -224,39 +85,15 @@ def saved_profile() -> tuple[EcuConfig, dict]:
         return EcuConfig(), {}
 
 
-def signal_setup(config: EcuConfig) -> SignalSimulation:
-    """The messages and signals of a configuration's DBC with its generators (the built-in DBC when the
-    configured one cannot be read), for the Signals tab."""
-    engine = SignalSimulation()
-    try:
-        engine.load(config.dbc_path)
-    except ValueError:
-        engine.load("")
-    try:
-        engine.configure(config.generators, config.messages)
-    except ValueError:
-        pass
-    return engine
 
 
-class HexSpinBox(QSpinBox):
-    """Hexadecimal entry for CAN IDs, bytes and routine identifiers."""
-
-    def __init__(self, maximum: int):
-        super().__init__()
-        self.setDisplayIntegerBase(16)
-        self.setPrefix("0x")
-        self.setRange(0, maximum)
-
-    def textFromValue(self, value):
-        return f"{value:X}"
 
 
-class DummyEcuWindow(QMainWindow):
+class DummyEcuWindow(Pages, Tables, QMainWindow):
     def __init__(self, config: EcuConfig | None = None, connection: dict | None = None):
         super().__init__()
         self.setWindowTitle("Dummy ECU")
-        self.setWindowIcon(toolbar_icon("diagnostics"))
+        self.setWindowIcon(app_icon("dummy_ecu"))
         self.resize(1280, 820)
         self._lines = collections.deque()          # log lines from the ECU thread, shown by a timer
         self._bus = self._lock = self._stop = self._thread = None
@@ -278,67 +115,6 @@ class DummyEcuWindow(QMainWindow):
 
     # --- widgets ------------------------------------------------------------------------
 
-    def _spin(self, low, high, step=1, suffix=""):
-        box = QSpinBox()
-        box.setRange(low, high)
-        box.setSingleStep(step)
-        box.setSuffix(suffix)
-        box.valueChanged.connect(self._apply)
-        return box
-
-    def _double(self, low, high, decimals, suffix=""):
-        box = QDoubleSpinBox()
-        box.setRange(low, high)
-        box.setDecimals(decimals)
-        box.setSuffix(suffix)
-        box.valueChanged.connect(self._apply)
-        return box
-
-    def _hex(self, maximum):
-        box = HexSpinBox(maximum)
-        box.valueChanged.connect(self._apply)
-        return box
-
-    def _check(self, text):
-        box = QCheckBox(text)
-        box.toggled.connect(self._apply)
-        return box
-
-    def _line(self, placeholder=""):
-        line = QLineEdit()
-        line.setPlaceholderText(placeholder)
-        line.textChanged.connect(self._apply)
-        return line
-
-    @staticmethod
-    def _page(*groups):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        for group in groups:
-            layout.addWidget(group)
-        layout.addStretch()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(page)
-        return scroll
-
-    @staticmethod
-    def _group(title):
-        group = QGroupBox(title)
-        form = QFormLayout(group)
-        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)  # text fields grow, numbers keep their size
-        return group, form
-
-    @staticmethod
-    def _row(*widgets, stretch=True):
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        for widget in widgets:
-            layout.addWidget(widget)
-        if stretch:
-            layout.addStretch()
-        return row
 
     def _build(self):
         central = QWidget()
@@ -374,717 +150,15 @@ class DummyEcuWindow(QMainWindow):
         layout.addWidget(splitter, 1)
         self.setCentralWidget(central)
 
-    def _connection_bar(self):
-        box = QGroupBox("Connection")
-        row = QHBoxLayout(box)
-        self.interface = QComboBox()
-        self.interface.setEditable(True)
-        self.interface.addItems(INTERFACES)
-        self.interface.activated.connect(lambda _: self.detect_channels())
-        self.channel = QComboBox()
-        self.channel.setEditable(True)
-        self.channel.setMinimumContentsLength(26)
-        self.bitrate = QComboBox()
-        self.bitrate.setEditable(True)
-        self.bitrate.addItems(BITRATES)
-        self.detect_button = QPushButton("Detect")
-        self.detect_button.setToolTip("List the channels of this interface")
-        self.detect_button.clicked.connect(self.detect_channels)
-        self.connection_state = QLabel()
-        self.connect_button = QPushButton("Connect")
-        self.connect_button.setMinimumWidth(110)
-        self.connect_button.clicked.connect(self.toggle_connection)
-        for label, widget in (("Interface", self.interface), ("Channel", self.channel), ("Bit rate", self.bitrate)):
-            row.addWidget(QLabel(label))
-            row.addWidget(widget)
-        row.addWidget(self.detect_button)
-        row.addStretch()
-        row.addWidget(self.connection_state)
-        row.addWidget(self.connect_button)
-        return box
-
-    def _addressing_page(self):
-        ids, form = self._group("CAN identifiers")
-        self.request_id, self.functional_id, self.response_id = (self._hex(0x1FFFFFFF) for _ in range(3))
-        self.extended_ids = self._check("29-bit identifiers")
-        form.addRow("Physical request ID", self.request_id)
-        form.addRow(hint("Requests addressed to this ECU (tester → ECU); segmented requests must use it."))
-        form.addRow("Functional request ID", self.functional_id)
-        form.addRow(hint("Requests to every ECU, such as the OBD broadcast 7DF (single frames only)."))
-        form.addRow("Response ID", self.response_id)
-        form.addRow(hint("This ECU's responses and flow control frames (ECU → tester)."))
-        form.addRow("", self.extended_ids)
-        self.can_expert_hint = hint()
-        form.addRow(self.can_expert_hint)
-        frames, form = self._group("Frames")
-        self.use_address_byte = self._check("Extended addressing byte")
-        self.address_byte = self._hex(0xFF)
-        self.use_padding = self._check("Pad frames to 8 bytes with")
-        self.padding = self._hex(0xFF)
-        form.addRow(self.use_address_byte, self.address_byte)
-        form.addRow(hint("ISO-TP extended addressing: every frame starts with this byte."))
-        form.addRow(self.use_padding, self.padding)
-        form.addRow(hint("Without padding, frames are only as long as their content (e.g. 3 bytes for 02 7E 00)."))
-        return self._page(ids, frames)
-
-    def _flow_page(self):
-        group, form = self._group("Flow control the ECU sends for segmented requests")
-        self.block_size = self._spin(0, 255, suffix=" frames")
-        self.block_size.setSpecialValueText("0 (no limit)")
-        self.st_min = self._spin(0, 127)
-        self.st_min_unit = QComboBox()
-        self.st_min_unit.addItems(["ms", "× 100 µs"])
-        self.st_min_unit.currentIndexChanged.connect(self._stmin_unit_changed)
-        self.flow_waits = self._spin(0, 30, suffix=" frames")
-        self.wait_interval = self._spin(10, 990, step=10, suffix=" ms")
-        self.rx_buffer = self._spin(0, 0xFFFFFF, suffix=" bytes")
-        self.rx_buffer.setSpecialValueText("maxNumberOfBlockLength")
-        form.addRow("Block size (BS)", self.block_size)
-        form.addRow(hint("Consecutive frames the tester sends before it waits for the next flow control frame."))
-        form.addRow("STmin", self._row(self.st_min, self.st_min_unit))
-        form.addRow(hint("Minimum gap the tester keeps between consecutive frames: 0-127 ms, or 100-900 µs."))
-        form.addRow("WAIT frames", self.flow_waits)
-        form.addRow("WAIT interval", self.wait_interval)
-        form.addRow(hint("Flow control WAIT (31 00 00) sent before each ContinueToSend, like a busy ECU. "
-                         "CAN Expert accepts up to 16 in a row, each within 1 s."))
-        form.addRow("Receive buffer", self.rx_buffer)
-        form.addRow(hint("Longest request the ECU accepts; a longer first frame is refused with flow control "
-                         "overflow (32 00 00)."))
-        self.flow_preview = hint()
-        form.addRow(self.flow_preview)
-        return self._page(group)
-
-    def _uds_page(self):
-        timing, form = self._group("Timing")
-        self.p2 = self._spin(1, 0xFFFF, suffix=" ms")
-        self.p2_star = self._spin(10, 655350, step=10, suffix=" ms")
-        self.response_delay = self._spin(0, 60000, step=10, suffix=" ms")
-        self.pending_interval = self._spin(100, 60000, step=100, suffix=" ms")
-        self.s3 = self._double(0.5, 600, 1, " s")
-        form.addRow("P2 server", self.p2)
-        form.addRow("P2* server", self.p2_star)
-        self.timing_hint = hint()
-        form.addRow(self.timing_hint)
-        form.addRow("Response delay", self.response_delay)
-        form.addRow(hint("Time the ECU takes per request. Longer than P2: it first answers NRC 0x78 "
-                         "(response pending), repeated every pending interval."))
-        form.addRow("Pending interval", self.pending_interval)
-        form.addRow("S3 timeout", self.s3)
-        form.addRow(hint("Back to the default session when no request arrives for this long."))
-        sessions, form = self._group("Sessions")
-        self.programming_needs_extended = self._check("Programming session only from the extended session")
-        form.addRow(self.programming_needs_extended)
-        form.addRow(hint("Otherwise 10 02 from the default session gets NRC 0x22. The bootloader takes it from "
-                         "any session."))
-        periodic, form = self._group("Periodic data (0x2A) and events (0x86)")
-        self.periodic_rates = [self._spin(10, 60000, step=10, suffix=" ms") for _ in PERIODIC_MODES]
-        form.addRow("Slow, medium, fast", self._row(*self.periodic_rates))
-        self.periodic_own_id = self._check("Send periodic data on an ID of its own")
-        self.periodic_id = self._hex(0x1FFFFFFF)
-        form.addRow(self.periodic_own_id, self.periodic_id)
-        self.periodic_hint = hint()
-        form.addRow(self.periodic_hint)
-        form.addRow(hint("ReadDataByPeriodicIdentifier sends the F2xx DIDs (2A 03 01 sends F201 fast; 2A 04 "
-                         "stops). ResponseOnEvent answers unasked when a DID changes (86 03 02 <DID> 22 <DID>) or "
-                         "a DTC's status gets a bit of a mask (86 01 02 <mask> 19 02 <mask>), from startResponse"
-                         "OnEvent (86 05 02) until stopResponseOnEvent (86 00 02). Both end when the session "
-                         "changes."))
-        return self._page(timing, sessions, periodic)
-
-    def _access_page(self):
-        security, form = self._group("SecurityAccess (0x27)")
-        self.security_level = self._hex(0x7F)
-        self.security_level.setRange(1, 0x7F)
-        self.security_level.setSingleStep(2)
-        self.seed_length = self._spin(1, 16, suffix=" bytes")
-        self.key_mask = self._hex(0xFF)
-        self.key_dll = self._line("the mask above is used while this is empty")
-        self.key_dll.setMinimumWidth(260)
-        browse = QPushButton("Browse...")
-        browse.clicked.connect(lambda: self._browse_dll(self.key_dll))
-        self.key_variant = self._line()
-        self.max_attempts = self._spin(1, 10)
-        self.lockout = self._double(0, 600, 1, " s")
-        form.addRow("Level (requestSeed)", self.security_level)
-        form.addRow("Seed length", self.seed_length)
-        form.addRow("Key XOR mask", self.key_mask)
-        self.security_hint = hint()
-        form.addRow(self.security_hint)
-        form.addRow("Seed && key DLL", self._row(self.key_dll, browse, stretch=False))   # && : not a shortcut
-        form.addRow("DLL variant", self.key_variant)
-        form.addRow(hint("With a DLL the ECU expects the key its GenerateKeyEx computes, which is what the UDS "
-                         "Console and the flashing sequence send when they are given the same DLL."))
-        form.addRow("Wrong keys allowed", self.max_attempts)
-        form.addRow("Lockout delay", self.lockout)
-        form.addRow(hint("After that many wrong keys: NRC 0x36, then 0x37 until the delay has passed."))
-        levels, form = self._group("More security levels")
-        self.level_table = self._table(["Level", "Seed length", "Key mask", "Seed & key DLL", "Variant"],
-                                       stretch_column=3)
-        self.level_table.setMinimumHeight(110)
-        form.addRow(self.level_table)
-        self.level_buttons = self._table_buttons(self.level_table, self._add_free_level)
-        form.addRow(self.level_buttons)
-        form.addRow(hint("Each level is unlocked on its own - requestSeed with the level, sendKey with the level "
-                         "+ 1 - and stays unlocked until the session changes. A DID or a service can require "
-                         "one."))
-        rules, form = self._group("Service rules")
-        self.rule_table = self._table(["Service", "Sessions", "Level", "Meaning"], stretch_column=3)
-        self.rule_table.setMinimumHeight(110)
-        form.addRow(self.rule_table)
-        self.rule_buttons = self._table_buttons(self.rule_table, lambda: self._add_rule(0x2F, [0x03], 0x01))
-        form.addRow(self.rule_buttons)
-        form.addRow(hint("A service used outside its sessions gets NRC 0x7F (serviceNotSupportedInActive"
-                         "Session), without its level unlocked NRC 0x33 (securityAccessDenied). Sessions: "
-                         "default, programming, extended (or 01, 02, 03), empty for any; Level: empty for none. "
-                         "The ECU's own rules still apply: 2F wants the extended session, flashing the "
-                         "programming session and security."))
-        return self._page(security, levels, rules)
-
-    def _flashing_page(self):
-        download, form = self._group("RequestDownload (0x34) and TransferData (0x36)")
-        self.block_data = self._spin(1, 0xFFFD, suffix=" bytes")
-        self.length_bytes = self._spin(1, 4, suffix=" bytes")
-        self.full_blocks = self._check("Require full blocks (every TransferData but the last)")
-        self.data_formats = self._line("00")
-        self.address_format = QComboBox()
-        self.address_format.setEditable(True)
-        self.address_format.addItems(ADDRESS_FORMATS)
-        self.address_format.currentTextChanged.connect(self._apply)
-        self.memory_ranges = self._line("any address, e.g. 00010000-0001FFFF, 00020000-0002FFFF")
-        form.addRow("Data per TransferData", self.block_data)
-        self.block_hint = hint()
-        form.addRow(self.block_hint)
-        form.addRow("Length field", self.length_bytes)
-        form.addRow(hint("Bytes used for maxNumberOfBlockLength in the response (lengthFormatIdentifier)."))
-        form.addRow("", self.full_blocks)
-        form.addRow(hint("Otherwise any block up to the maximum is accepted, as ISO 14229 allows; a short block "
-                         "then gets NRC 0x13."))
-        form.addRow("dataFormatIdentifier", self.data_formats)
-        form.addRow(hint("Accepted values, e.g. 00, 11. High nibble compression, low nibble encryption, 00 = "
-                         "neither. Other accepted values are stored as received (not decoded); the rest get "
-                         "NRC 0x31."))
-        form.addRow("addressAndLengthFormat", self.address_format)
-        form.addRow(hint("Low nibble: memoryAddress bytes, high nibble: memorySize bytes (44 = 4 and 4). "
-                         "Any: every format; otherwise other formats get NRC 0x31."))
-        form.addRow("Memory ranges", self.memory_ranges)
-        form.addRow(hint("Addresses open to erase, download, upload and the memory services 23 and 3D "
-                         "(first-last, hex); outside: NRC 0x31. Empty: any address."))
-        routines, form = self._group("RoutineControl (0x31)")
-        self.require_erase = self._check("Require erase before RequestDownload")
-        self.erase_routine = self._hex(0xFFFF)
-        self.erase_seconds = self._double(0, 120, 2, " s")
-        self.check_routine = self._hex(0xFFFF)
-        form.addRow("", self.require_erase)
-        form.addRow(hint("RequestDownload of a range not erased gets NRC 0x70."))
-        form.addRow("Erase routine", self.erase_routine)
-        form.addRow("Erase time", self.erase_seconds)
-        form.addRow(hint("Option record: addressAndLengthFormatIdentifier, address, size (31 01 FF 00 44 ...). "
-                         "NRC 0x78 is sent while erasing."))
-        form.addRow("Check routine", self.check_routine)
-        form.addRow(hint("checkProgrammingDependencies: status 00 once a download completed and the image "
-                         "passes the check below; the software version (F195) then changes."))
-        boot, form = self._group("Bootloader")
-        self.image_crc = QComboBox()
-        for name in IMAGE_CHECKS:
-            self.image_crc.addItem(IMAGE_CHECK_TEXT[name], name)
-        self.image_crc.currentIndexChanged.connect(self._apply)
-        form.addRow("Image check", self.image_crc)
-        form.addRow(hint("Option record: 31 01 FF 01 and the CRC-32 of the image (its segments' data in address "
-                         "order, one after the other) - the built-in flashing sequence sends it when asked to. "
-                         "A wrong CRC gets status 01."))
-        self.version_from_image = self._check("Read the software version from the image at")
-        self.version_address = self._hex(0x7FFFFFFF)
-        self.version_length = self._spin(1, 64, suffix=" bytes")
-        form.addRow(self.version_from_image, self._row(self.version_address, self.version_length))
-        form.addRow(hint("Otherwise F195 becomes APP-FLASHED-<CRC-32>. The demo image "
-                         "(examples/firmware/demo_app.s19) has its name at 00020000."))
-        form.addRow(hint("An erase or a download makes the application invalid until the check passes. An "
-                         "ECUReset with an invalid application - a flash that failed or was abandoned - starts "
-                         "the bootloader: no application frames, F195 answers BOOTLOADER, and only the "
-                         "services needed to flash again are answered. A reset after a good check starts the "
-                         "application."))
-        other, form = self._group("Upload and image")
-        self.allow_upload = self._check("Allow RequestUpload (0x35) to read the memory back")
-        self.dump_path = self._line("not saved")
-        browse = QPushButton("Browse...")
-        browse.clicked.connect(self._browse_dump)
-        form.addRow("", self.allow_upload)
-        form.addRow("Save image to", self._row(self.dump_path, browse))
-        form.addRow(hint("Written as S-records after checkProgrammingDependencies."))
-        self.dump_path.setMinimumWidth(260)
-        return self._page(download, routines, boot, other)
-
-    def _signals_page(self):
-        source, form = self._group("Database")
-        self.dbc_label = QLineEdit()
-        self.dbc_label.setReadOnly(True)
-        self.dbc_label.setMinimumWidth(300)
-        browse = QPushButton("Browse...")
-        browse.clicked.connect(self._browse_dbc)
-        builtin = QPushButton("Built-in")
-        builtin.setToolTip("DBC/dummy_ecu.dbc, which the example panels use")
-        builtin.clicked.connect(lambda: self.choose_dbc(""))
-        form.addRow("DBC", self._row(self.dbc_label, browse, builtin, stretch=False))
-        form.addRow(hint("The messages the ECU sends and the signals in them. Choosing another DBC starts every "
-                         "signal at its initial value; the built-in one comes back with the ECU's usual "
-                         "traffic."))
-        frames, form = self._group("Application frames")
-        self.broadcast = self._check("Send the application frames")
-        self.broadcast_interval = self._spin(10, 10000, step=10, suffix=" ms")
-        form.addRow("", self.broadcast)
-        form.addRow("Default period", self.broadcast_interval)
-        form.addRow(hint("For the messages without a period of their own (below, or GenMsgCycleTime in the "
-                         "DBC). They stop while CommunicationControl disables normal messages and while the "
-                         "bootloader runs. 0x200 (01 start, 02 stop) and 0x201 (bit 0 logging) are accepted as "
-                         "commands."))
-        self.message_table = self._table(["Message", "ID", "Period (ms)", "Send"], stretch_column=MSG_NAME)
-        self.message_table.setMinimumHeight(110)
-        form.addRow(self.message_table)
-        form.addRow(hint("Period 0: the DBC's, or else the default period. Multiplexed messages and CAN FD "
-                         "lengths are not sent."))
-        signals, form = self._group("Signals")
-        self.signal_table = self._table(["Signal", "Unit", "Generator", "Low", "High", "Period (s)", "Now"],
-                                        stretch_column=SIG_NAME)
-        self.signal_table.setMinimumHeight(240)
-        self.signal_table.currentCellChanged.connect(lambda row, *_: self._show_generator(row))
-        form.addRow(self.signal_table)
-        self.generator_hint = hint("Pick a signal to see what its generator does.")
-        form.addRow(self.generator_hint)
-        form.addRow(hint("Values are physical, in the signal's unit. InputOutputControlByIdentifier (0x2F) on "
-                         "a DID that follows a signal takes the signal over (Now says so) until control "
-                         "returns to the ECU."))
-        return self._page(source, frames, signals)
-
-    def _errors_page(self):
-        group, form = self._group("Transport errors on purpose")
-        form.addRow(hint("The chance that a response gets each error. Use them to see how a tester copes; "
-                         "0 % everywhere is a well-behaved ECU."))
-        self.error_spins = {}
-        for name, label, text in ERROR_ROWS:
-            spin = self._spin(0, 100, suffix=" %")
-            self.error_spins[name] = spin
-            if name == "error_refuse":
-                self.error_refuse_nrc = self._hex(0xFF)
-                self.error_nrc_text = QLabel()
-                form.addRow(label, self._row(spin, QLabel("with NRC"), self.error_refuse_nrc, self.error_nrc_text))
-            else:
-                form.addRow(label, spin)
-            form.addRow(hint(text))
-        self.errors_on_tester_present = self._check("Also on TesterPresent")
-        form.addRow("", self.errors_on_tester_present)
-        form.addRow(hint("Off, the TesterPresent of CAN Expert's ECU check always gets its answer, so the ECU "
-                         "stays in the node list while the other requests go wrong."))
-        return self._page(group)
-
-    def _monitor(self):
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        status = QGroupBox("ECU status")
-        form = QFormLayout(status)
-        self.status_labels = {}
-        for name in ("Session", "Security", "Application", "DTC setting", "Normal messages", "Transfer", "Memory",
-                     "Software version", "Periodic data", "Events", "I/O control", "Operation cycle"):
-            label = QLabel("-")
-            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            label.setWordWrap(True)
-            form.addRow(name, label)
-            self.status_labels[name] = label
-        reset = QPushButton("Reset ECU")
-        reset.setToolTip("Back to the factory state: default session, locked, original DIDs and DTCs, erased memory, "
-                         "a valid application")
-        reset.clicked.connect(self.reset_ecu)
-        save_image = QPushButton("Save memory as S-record...")
-        save_image.clicked.connect(self.save_memory)
-        form.addRow(self._row(reset, save_image))
-        layout.addWidget(status)
-        log_box = QGroupBox("Log")
-        log_layout = QVBoxLayout(log_box)
-        self.show_frames = QCheckBox("Show CAN frames (diagnostic IDs)")
-        self.show_frames.toggled.connect(self._show_frames)
-        clear = QPushButton("Clear")
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(5000)
-        self.log_view.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.log_view.setFont(QFont("Consolas", 9))
-        clear.clicked.connect(self.log_view.clear)
-        log_layout.addWidget(self._row(self.show_frames, clear))
-        log_layout.addWidget(self.log_view)
-        layout.addWidget(log_box, 1)
-        return panel
 
     # --- settings <-> widgets ---------------------------------------------------------------
 
-    def _stmin_unit_changed(self, index):
-        if index == 0:
-            self.st_min.setRange(0, 127)
-        else:
-            self.st_min.setRange(1, 9)
-        self._apply()
 
     # --- tables ---------------------------------------------------------------------------------
 
-    def _table(self, headers, stretch_column):
-        """A table that fits the settings pane: stretch_column takes the room, the others their content."""
-        table = QTableWidget(0, len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.verticalHeader().setVisible(False)
-        header = table.horizontalHeader()
-        for column in range(len(headers)):
-            header.setSectionResizeMode(column, QHeaderView.Stretch if column == stretch_column
-                                        else QHeaderView.ResizeToContents)
-        table.setMinimumHeight(150)
-        table.itemChanged.connect(self._on_data_edited)
-        return table
-
-    def _table_buttons(self, table, add):
-        add_button, remove_button = QPushButton("Add"), QPushButton("Remove")
-        add_button.clicked.connect(lambda: (add(), self._apply()))
-        remove_button.clicked.connect(lambda: self._remove_row(table))
-        row = self._row(add_button, remove_button)
-        row.add_button = add_button
-        return row
-
-    def _data_page(self):
-        dids, form = self._group("DIDs: ReadDataByIdentifier (0x22) and WriteDataByIdentifier (0x2E)")
-        self.did_table = self._table(["DID", "Data (hex)", "As text", "Writable", "Signal", "Sessions", "Level"],
-                                     stretch_column=DID_DATA)
-        form.addRow(self.did_table)
-        self.did_buttons = self._table_buttons(self.did_table, lambda: self._add_did({"did": 0x0000, "data": "00"}))
-        form.addRow(self.did_buttons)
-        form.addRow(hint("A writable DID takes a new value of the same length, in the extended or programming "
-                         "session once security access is unlocked. Signal (Message.Signal): the DID answers "
-                         "that signal's raw value in as many bytes as its data has, and 2F controls it. "
-                         "Sessions: where it can be read (and written), empty for any - elsewhere NRC 0x31; "
-                         "Level: the security level it needs - otherwise NRC 0x33. F186 (session) and 0100 "
-                         "(uptime) are always there; F2xx DIDs are the periodic ones."))
-        dtcs, form = self._group("DTCs: ReadDTCInformation (0x19) and ClearDiagnosticInformation (0x14)")
-        self.dtc_table = self._table(["DTC", "Status", "Now", "Fault", "Snapshot record 01 (hex)",
-                                      "Extended data 01 (hex)"], stretch_column=DTC_SNAPSHOT)
-        form.addRow(self.dtc_table)
-        self.dtc_buttons = self._table_buttons(self.dtc_table, lambda: self._add_dtc(0x000000, 0x00, b"", b""))
-        form.addRow(self.dtc_buttons)
-        form.addRow(hint("Status: at power-on; Now: as it is. Tick Fault and the DTC's test fails: pending at "
-                         "once, confirmed after the operation cycles below, with the snapshot of that moment "
-                         "and one more occurrence (the extended data's first byte). Untick it and the DTC "
-                         "heals: no longer pending after a cycle, aged out after more. Snapshot: the number "
-                         "of identifiers, then each DID and its data (19 04). 19 01, 19 02 and 19 0A report "
-                         "the DTCs and their status."))
-        cycle, form = self._group("Fault memory")
-        self.confirm_cycles = self._spin(1, 255, suffix=" cycles")
-        self.aging_cycles = self._spin(1, 255, suffix=" cycles")
-        self.operation_cycle = self._double(0, 3600, 1, " s")
-        self.operation_cycle.setSpecialValueText("on ECUReset and the button")
-        self.snapshot_dids = self._line("none: the table's snapshot is kept")
-        new_cycle = QPushButton("New operation cycle")
-        new_cycle.setToolTip("End this operation cycle (ignition off) and start the next (ignition on)")
-        new_cycle.clicked.connect(self.new_operation_cycle)
-        form.addRow("Confirmed after", self.confirm_cycles)
-        form.addRow("Aged out after", self.aging_cycles)
-        form.addRow("Operation cycle every", self._row(self.operation_cycle, new_cycle))
-        form.addRow("Snapshot DIDs", self.snapshot_dids)
-        form.addRow(hint("When a fault appears, the snapshot record takes these DIDs with their values at that "
-                         "moment, e.g. 0101, 0102 (temperature and pressure). ControlDTCSetting off (85 02) "
-                         "freezes every status."))
-        forced, form = self._group("Forced negative responses")
-        self.nrc_table = self._table(["Service", "NRC", "Meaning"], stretch_column=2)
-        self.nrc_table.setMinimumHeight(110)
-        form.addRow(self.nrc_table)
-        self.nrc_buttons = self._table_buttons(self.nrc_table, lambda: self._add_forced(0x22, 0x22))
-        form.addRow(self.nrc_buttons)
-        form.addRow(hint("Every request of that service is answered 7F <service> <NRC> - to see how a tester "
-                         "copes with a refusal."))
-        return self._page(dids, dtcs, cycle, forced)
-
-    @staticmethod
-    def _cell(text, editable=True):
-        item = QTableWidgetItem(text)
-        if not editable:
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-        return item
-
-    def _check_cell(self, checked):
-        item = self._cell("")
-        item.setFlags((item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
-        item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
-        return item
-
-    def _append(self, table, cells):
-        loading, self._loading = self._loading, True
-        try:
-            row = table.rowCount()
-            table.insertRow(row)
-            for column, cell in enumerate(cells):
-                if isinstance(cell, QWidget):
-                    table.setCellWidget(row, column, cell)
-                else:
-                    table.setItem(row, column, cell)
-        finally:
-            self._loading = loading
-
-    def _add_did(self, item):
-        data = bytes.fromhex(str(item.get("data", "")))
-        level = int(item.get("level", 0) or 0)
-        self._append(self.did_table, [self._cell(f"{int(item['did']):04X}"), self._cell(data.hex(" ").upper()),
-                                      self._cell(printable(data), editable=False),
-                                      self._check_cell(bool(item.get("writable"))),
-                                      self._cell(str(item.get("signal", "") or "")),
-                                      self._cell(format_sessions(item.get("sessions"))),
-                                      self._cell(f"{level:02X}" if level else "")])
-
-    def _add_dtc(self, dtc, status, snapshot, extended):
-        now = self._cell(f"{status:02X}", editable=False)
-        now.setToolTip(status_text(status))
-        self._append(self.dtc_table, [self._cell(f"{dtc:06X}"), self._cell(f"{status:02X}"), now,
-                                      self._check_cell(False), self._cell(snapshot.hex(" ").upper()),
-                                      self._cell(extended.hex(" ").upper())])
-
-    def _add_forced(self, sid, nrc):
-        meaning = self._cell(forced_text(sid, nrc), editable=False)
-        meaning.setToolTip(f"Every request of this service is answered 7F {sid:02X} {nrc:02X}")
-        self._append(self.nrc_table, [self._cell(f"{sid:02X}"), self._cell(f"{nrc:02X}"), meaning])
-
-    def _add_level(self, level, seed_length, key_mask, dll, variant):
-        self._append(self.level_table, [self._cell(f"{level:02X}"), self._cell(str(seed_length)),
-                                        self._cell(f"{key_mask:02X}"), self._cell(dll), self._cell(variant)])
-
-    def _add_free_level(self):
-        taken = {self.security_level.value()}
-        for row in range(self.level_table.rowCount()):
-            try:
-                taken.add(int(self.level_table.item(row, 0).text(), 16))
-            except ValueError:
-                pass
-        level = next(level for level in range(0x03, 0x80, 2) if level not in taken)
-        self._add_level(level, 4, 0x5A, "", "")
-
-    def _add_rule(self, sid, sessions, level):
-        self._append(self.rule_table, [self._cell(f"{sid:02X}"), self._cell(format_sessions(sessions)),
-                                       self._cell(f"{level:02X}" if level else ""),
-                                       self._cell(SERVICE_NAMES.get(sid, f"service {sid:02X}"), editable=False)])
-
-    def _add_message(self, entry):
-        message = entry.message
-        can_id = f"{message.frame_id:08X}x" if message.is_extended_frame else f"{message.frame_id:03X}"
-        send = self._check_cell(entry.on)
-        if not entry.sendable:
-            send.setFlags(send.flags() & ~Qt.ItemIsEnabled)
-            send.setToolTip("Multiplexed or longer than 8 bytes: not sent")
-        period = round(entry.cycle * 1000) if entry.cycle and entry.cycle != (message.cycle_time or 0) / 1000 else 0
-        self._append(self.message_table, [self._cell(message.name, editable=False), self._cell(can_id, editable=False),
-                                          self._cell(str(period)), send])
-
-    def _add_signal(self, engine, item):
-        signal = engine.signal(item["signal"])
-        kind = QComboBox()
-        for name in GENERATORS:
-            kind.addItem(GENERATOR_TEXT[name], name)
-        kind.setCurrentIndex(max(0, kind.findData(item["kind"])))
-        kind.currentIndexChanged.connect(lambda _index, combo=kind: self._generator_changed(combo))
-        self._append(self.signal_table, [self._cell(item["signal"], editable=False),
-                                         self._cell(signal.unit or "" if signal is not None else "", editable=False),
-                                         kind, self._cell(number_text(item["low"])),
-                                         self._cell(number_text(item["high"])),
-                                         self._cell(number_text(item["period"])), self._cell("", editable=False)])
-
-    def _fill_signal_tables(self, engine: SignalSimulation):
-        loading, self._loading = self._loading, True
-        try:
-            for table in (self.message_table, self.signal_table):
-                table.setRowCount(0)
-            for entry in engine.messages:
-                self._add_message(entry)
-            for item in engine.generators():
-                self._add_signal(engine, item)
-        finally:
-            self._loading = loading
-
-    def _generator_changed(self, combo):
-        for row in range(self.signal_table.rowCount()):
-            if self.signal_table.cellWidget(row, SIG_KIND) is combo:
-                self._show_generator(row)
-        self._apply()
-
-    def _show_generator(self, row):
-        combo = self.signal_table.cellWidget(row, SIG_KIND) if row >= 0 else None
-        if combo is not None:
-            name = self.signal_table.item(row, SIG_NAME).text()
-            self.generator_hint.setText(f"{name}: {GENERATORS[combo.currentData()]}.")
-
-    def _remove_row(self, table):
-        row = table.currentRow()
-        if row >= 0:
-            table.removeRow(row)
-            self._apply()
-
-    def _on_data_edited(self, item):
-        if self._loading:
-            return
-        table = item.tableWidget()
-        if table is self.dtc_table and item.column() == DTC_FAULT:
-            self._fault_toggled(item)
-            return
-        loading, self._loading = self._loading, True      # the previews are the window's own writing
-        try:
-            if table is self.did_table and item.column() == DID_DATA:
-                try:
-                    preview = printable(bytes.fromhex(item.text()))
-                except ValueError:
-                    preview = ""
-                self.did_table.item(item.row(), DID_TEXT).setText(preview)
-            if table is self.nrc_table and item.column() in (0, 1):
-                try:
-                    preview = forced_text(int(self.nrc_table.item(item.row(), 0).text(), 16),
-                                          int(self.nrc_table.item(item.row(), 1).text(), 16))
-                except ValueError:
-                    preview = ""
-                self.nrc_table.item(item.row(), 2).setText(preview)
-            if table is self.rule_table and item.column() == 0:
-                try:
-                    sid = int(item.text(), 16)
-                    preview = SERVICE_NAMES.get(sid, f"service {sid:02X}")
-                except ValueError:
-                    preview = ""
-                self.rule_table.item(item.row(), 3).setText(preview)
-        finally:
-            self._loading = loading
-        self._apply()
-
-    def _fault_toggled(self, item):
-        """The Fault box: the fault behind the DTC appears or goes away in the running ECU."""
-        try:
-            dtc = int(self.dtc_table.item(item.row(), DTC_DTC).text(), 16)
-            self.ecu.set_fault(dtc, item.checkState() == Qt.Checked)
-        except (ValueError, KeyError):
-            loading, self._loading = self._loading, True
-            item.setCheckState(Qt.Unchecked)
-            self._loading = loading
-            self.statusBar().showMessage("Not applied: that DTC is not in the ECU's table yet (check the row)")
-            return
-        self._refresh_dtc_status()
 
     # --- reading the widgets -----------------------------------------------------------------------
 
-    @staticmethod
-    def _mark(item, error: str | None):
-        if error:
-            item.setBackground(QColor("#fde2e2"))
-            raise ValueError(error)
-        item.setData(Qt.BackgroundRole, None)
-
-    def _number(self, table, row, column, what, maximum, optional=False):
-        item = table.item(row, column)
-        text = item.text().strip()
-        if optional and not text:
-            self._mark(item, None)
-            return 0
-        try:
-            value = int(text, 16)
-            valid = 0 <= value <= maximum
-        except ValueError:
-            valid = False
-        self._mark(item, None if valid else f"{what} in row {row + 1} must be hexadecimal, at most {maximum:X}")
-        return value
-
-    def _decimal(self, table, row, column, what, low=None, high=None):
-        item = table.item(row, column)
-        try:
-            value = float(item.text().strip().replace(",", "."))
-            valid = (low is None or value >= low) and (high is None or value <= high)
-        except ValueError:
-            valid = False
-        self._mark(item, None if valid else f"{what} in row {row + 1} must be a number"
-                   + (f", {low} or more" if low is not None else ""))
-        return value
-
-    def _hex_data(self, table, row, column, what, required):
-        item = table.item(row, column)
-        try:
-            raw = bytes.fromhex(item.text())
-            valid = bool(raw) or not required
-        except ValueError:
-            valid = False
-        self._mark(item, None if valid else f"{what} in row {row + 1} must be hexadecimal bytes, e.g. 57 56 57")
-        return raw.hex()
-
-    def _session_list(self, table, row, column):
-        item = table.item(row, column)
-        try:
-            sessions = parse_sessions(item.text())
-        except ValueError as exc:
-            self._mark(item, f"Sessions in row {row + 1}: {exc}")
-        self._mark(item, None)
-        return sessions
-
-    def _read_tables(self):
-        """The data tables as configuration lists; ValueError naming the bad cell."""
-        dids = []
-        for row in range(self.did_table.rowCount()):
-            entry = {"did": self._number(self.did_table, row, DID_DID, "The DID", 0xFFFF),
-                     "data": self._hex_data(self.did_table, row, DID_DATA, "The DID's data", True),
-                     "writable": self.did_table.item(row, DID_WRITABLE).checkState() == Qt.Checked}
-            signal = self.did_table.item(row, DID_SIGNAL).text().strip()
-            sessions = self._session_list(self.did_table, row, DID_SESSIONS)
-            level = self._number(self.did_table, row, DID_LEVEL, "The level", 0x7F, optional=True)
-            entry.update({key: value for key, value in (("signal", signal), ("sessions", sessions),
-                                                        ("level", level)) if value})
-            dids.append(entry)
-        dtcs = [{"dtc": self._number(self.dtc_table, row, DTC_DTC, "The DTC", 0xFFFFFF),
-                 "status": self._number(self.dtc_table, row, DTC_STATUS, "The status", 0xFF),
-                 "snapshot": self._hex_data(self.dtc_table, row, DTC_SNAPSHOT, "The snapshot", False),
-                 "extended": self._hex_data(self.dtc_table, row, DTC_EXTENDED, "The extended data", False)}
-                for row in range(self.dtc_table.rowCount())]
-        forced = [{"sid": self._number(self.nrc_table, row, 0, "The service", 0xFF),
-                   "nrc": self._number(self.nrc_table, row, 1, "The NRC", 0xFF)}
-                  for row in range(self.nrc_table.rowCount())]
-        levels = []
-        for row in range(self.level_table.rowCount()):
-            level = self._number(self.level_table, row, 0, "The level", 0x7F)
-            if not level % 2:
-                self._mark(self.level_table.item(row, 0), f"The level in row {row + 1} must be odd (requestSeed)")
-            length = int(self._decimal(self.level_table, row, 1, "The seed length", 1, 64))
-            levels.append({"level": level, "seed_length": length,
-                           "key_mask": self._number(self.level_table, row, 2, "The key mask", 0xFF),
-                           "dll": self.level_table.item(row, 3).text().strip(),
-                           "variant": self.level_table.item(row, 4).text().strip()})
-        rules = [{"sid": self._number(self.rule_table, row, 0, "The service", 0xFF),
-                  "sessions": self._session_list(self.rule_table, row, 1),
-                  "level": self._number(self.rule_table, row, 2, "The level", 0x7F, optional=True)}
-                 for row in range(self.rule_table.rowCount())]
-        messages = [{"message": self.message_table.item(row, MSG_NAME).text(),
-                     "on": self.message_table.item(row, MSG_SEND).checkState() == Qt.Checked,
-                     "cycle_ms": int(self._decimal(self.message_table, row, MSG_PERIOD, "The period", 0, 3600000))}
-                    for row in range(self.message_table.rowCount())]
-        generators = [{"signal": self.signal_table.item(row, SIG_NAME).text(),
-                       "kind": self.signal_table.cellWidget(row, SIG_KIND).currentData(),
-                       "low": self._decimal(self.signal_table, row, SIG_LOW, "Low"),
-                       "high": self._decimal(self.signal_table, row, SIG_HIGH, "High"),
-                       "period": self._decimal(self.signal_table, row, SIG_PERIOD, "The period", 0)}
-                      for row in range(self.signal_table.rowCount())]
-        return dids, dtcs, forced, levels, rules, messages, generators
-
-    def _fill_tables(self, config: EcuConfig):
-        for table in (self.did_table, self.dtc_table, self.nrc_table, self.level_table, self.rule_table):
-            table.setRowCount(0)
-        for item in config.dids:
-            self._add_did(item)
-        for item in config.dtcs:
-            self._add_dtc(int(item["dtc"]), int(item.get("status", 0)), bytes.fromhex(item.get("snapshot", "")),
-                          bytes.fromhex(item.get("extended", "")))
-        for item in config.forced_nrcs:
-            self._add_forced(int(item["sid"]), int(item["nrc"]))
-        for item in config.security_levels:
-            self._add_level(int(item["level"]), int(item.get("seed_length", 4)), int(item.get("key_mask", 0)),
-                            str(item.get("dll", "") or ""), str(item.get("variant", "") or ""))
-        for item in config.service_rules:
-            self._add_rule(int(item["sid"]), item.get("sessions") or [], int(item.get("level", 0) or 0))
-        engine = signal_setup(config)
-        if engine.source != config.dbc_path:
-            self._log(f"Cannot read {config.dbc_path}: the built-in database is used")
-        self._dbc_path = engine.source
-        self.dbc_label.setText(engine.source or BUILTIN_DBC_TEXT)
-        self._fill_signal_tables(engine)
 
     def _fill(self, config: EcuConfig, connection: dict | None = None):
         self._loading = True
@@ -1479,42 +553,6 @@ class DummyEcuWindow(QMainWindow):
         if self.tabs.currentWidget() is self.signals_tab:
             self._refresh_signal_values()
 
-    def _refresh_dtc_status(self):
-        """The Now and Fault columns: the running ECU's statuses and faults, however they changed."""
-        statuses, faults = self.ecu.dtcs, self.ecu.dtc_memory.faults
-        loading, self._loading = self._loading, True
-        try:
-            for row in range(self.dtc_table.rowCount()):
-                try:
-                    dtc = int(self.dtc_table.item(row, DTC_DTC).text(), 16)
-                except ValueError:
-                    continue
-                status = statuses.get(dtc)
-                item = self.dtc_table.item(row, DTC_NOW)
-                text = "" if status is None else f"{status:02X}"
-                if item.text() != text:
-                    item.setText(text)
-                    item.setToolTip("" if status is None else status_text(status))
-                fault = Qt.Checked if dtc in faults else Qt.Unchecked
-                if self.dtc_table.item(row, DTC_FAULT).checkState() != fault:
-                    self.dtc_table.item(row, DTC_FAULT).setCheckState(fault)
-        finally:
-            self._loading = loading
-
-    def _refresh_signal_values(self):
-        signals = self.ecu.signals
-        overridden = signals.overridden()
-        loading, self._loading = self._loading, True
-        try:
-            for row in range(self.signal_table.rowCount()):
-                key = self.signal_table.item(row, SIG_NAME).text()
-                value = signals.value(key)
-                text = number_text(value) + (" (I/O control)" if key in overridden else "")
-                item = self.signal_table.item(row, SIG_NOW)
-                if item.text() != text:
-                    item.setText(text)
-        finally:
-            self._loading = loading
 
     def _log(self, text):
         """Called from any thread; the text appears with the next timer tick."""
@@ -1591,13 +629,19 @@ class DummyEcuWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def run_window(config: EcuConfig | None = None, overrides: dict | None = None, connection: dict | None = None) -> int:
-    """Open the window with the last settings, a profile (config) and command-line overrides on top."""
+def run_window(config: EcuConfig | None = None, overrides: dict | None = None, connection: dict | None = None,
+               smoke_test: bool = False) -> int:
+    """Open the window with the last settings, a profile (config) and command-line overrides on top.
+    smoke_test: only build the window, as a check that everything it needs is there."""
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setWindowIcon(app_icon("dummy_ecu"))
     saved_config, saved_connection = saved_profile()
     window = DummyEcuWindow(replace(config or saved_config, **(overrides or {})),
                             {**saved_connection, **(connection or {})})
+    if smoke_test:
+        print("startup ok")
+        return 0
     window.show()
     return app.exec_()
 
