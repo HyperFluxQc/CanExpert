@@ -29,6 +29,21 @@ def _number(value):
     return int(number) if number.is_integer() else number
 
 
+DATE_SUFFIX = re.compile(r"(?:^|_)(\d{4})-?(\d{2})-?(\d{2})$")
+
+
+def split_database_id(stem: str):
+    """(family, date or None) of a database file stem, as select_database() reads it:
+    engine_2026-09-18 -> ("engine", date(2026, 9, 18)); an undated stem is a family of its own."""
+    match = DATE_SUFFIX.search(stem)
+    if match:
+        try:
+            return stem[:match.start()].rstrip("_"), date(*map(int, match.groups()))
+        except ValueError:
+            pass
+    return stem, None
+
+
 def select_database(databases_dir=DATABASES_DIR, family=""):
     """Newest YYYY-MM-DD or YYYYMMDD filename; undated legacy files rank last."""
     base = Path(databases_dir)

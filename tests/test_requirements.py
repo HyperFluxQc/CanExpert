@@ -882,7 +882,9 @@ def ready(api):
             canvas.add_widget_at("button", 1500, 900)                  # beyond the initial page
             self.assertGreaterEqual(canvas.scene.sceneRect().right(), 1600)
             self.assertGreaterEqual(canvas.scene.sceneRect().bottom(), 1000)
-            designer.close()
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.Discard) as asked:
+                designer.close()                                       # on screen with changes: it asks first
+            asked.assert_called_once()
 
     def test_all_display_and_input_widget_types(self):
         path = self.databases/'controls.xml'

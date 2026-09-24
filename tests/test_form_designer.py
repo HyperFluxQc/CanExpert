@@ -301,5 +301,153 @@ class FormDesignerTest(unittest.TestCase):
             dialog.close()
 
 
+class MenusAndDatabaseTabTest(unittest.TestCase):
+    """The menu bar in place of the Save/Load/New buttons, and the Database tab in place of the fields."""
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.designer = FormDesigner()
+        self.designer.database_dir = self.folder
+        self.canvas = self.designer.canvas
+
+    def tearDown(self):
+        self.designer.hide()                     # not on screen: closing asks nobody
+        self.designer.close()
+
+    def action(self, menu, text):
+        return next(action for action in self.designer.menus[menu].actions() if action.text().replace("&", "") == text)
+
+    def test_the_menus_replace_the_buttons(self):
+        titles = [menu.title().replace("&", "") for menu in self.designer.menus.values()]
+        self.assertEqual(titles, ["File", "Edit", "Arrange", "Page", "Script", "Test", "Help"])
+        self.assertEqual(self.action("file", "Save").shortcut().toString(), "Ctrl+S")
+        self.assertEqual(self.action("test", "Test panel with the simulated ECU").shortcut().toString(), "F5")
+        texts = {button.text() for button in self.designer.findChildren(QPushButton)}
+        self.assertFalse({"Save", "Load", "New"} & texts, "the File menu does that now")
+        self.assertIn("Test panel...", texts, "still one click away, in the menu bar's corner")
+
+    def test_unsaved_changes_show_and_saving_clears_them(self):
+        self.designer.db_id_edit.setText("engine_2026-09-18")
+        self.assertTrue(self.designer.windowTitle().endswith("engine_2026-09-18 *"))
+        self.action("file", "Save").trigger()
+        self.assertTrue((self.folder / "engine_2026-09-18.xml").exists())
+        self.assertTrue((self.folder / "engine_2026-09-18_script.py").exists())
+        self.assertEqual(self.designer.windowTitle(), "Form Designer — engine_2026-09-18")
+        self.assertIn("Saved engine_2026-09-18.xml", self.designer.status.currentMessage())
+        self.canvas.add_widget_at("button", 10, 10)
+        self.assertTrue(self.designer.windowTitle().endswith(" *"))
+
+    def test_on_screen_it_asks_before_dropping_changes(self):
+        self.designer.show()
+        self.canvas.add_widget_at("button", 10, 10)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Cancel):
+            self.assertFalse(self.designer.new_form())
+        self.assertEqual(len(self.canvas._current_widgets()), 1, "cancelled: the form stays")
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Discard):
+            self.assertTrue(self.designer.new_form())
+        self.assertEqual(self.canvas._current_widgets(), [])
+        self.canvas.add_widget_at("button", 10, 10)
+        self.designer.db_id_edit.setText("kept_2026-09-18")
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Save):
+            self.designer.close()
+        self.assertTrue((self.folder / "kept_2026-09-18.xml").exists(), "Save saves, then it closes")
+        self.assertFalse(self.designer.isVisible())
+
+    def test_save_as_and_a_new_version(self):
+        today = time.strftime("%Y-%m-%d")
+        self.designer.db_id_edit.setText("engine_2026-09-01")
+        self.designer.new_version()
+        self.assertEqual(self.designer.db_id_edit.text(), f"engine_{today}")
+        with patch("canexpert.designer.form_designer.QInputDialog.getText", return_value=("body_2026-09-20", True)) \
+                as asked:
+            self.assertTrue(self.designer.save_as())
+        self.assertEqual(asked.call_args[0][4], f"engine_{today}", "offered: today's version of the family")
+        self.assertTrue((self.folder / "body_2026-09-20.xml").exists())
+
+    def test_the_edit_menu_acts_on_the_tab_in_front(self):
+        self.canvas.add_widget_at("button", 10, 10)
+        self.canvas.set_selection([0])
+        self.designer.design_tabs.setCurrentWidget(self.designer.code_page)
+        editor = self.designer.code_editor
+        editor.setPlainText("x = 1\n")
+        editor.moveCursor(editor.textCursor().End)
+        editor.insertPlainText("y = 2\n")
+        self.designer._update_edit_menu()
+        self.assertFalse(self.designer.edit_actions["duplicate"].isEnabled(), "nothing to duplicate in text")
+        self.designer.edit_actions["undo"].trigger()
+        self.assertEqual(editor.toPlainText(), "x = 1\n", "the script's own undo")
+        self.assertEqual(len(self.canvas._current_widgets()), 1, "the form untouched")
+        self.designer.design_tabs.setCurrentWidget(self.canvas)
+        self.designer.edit_actions["duplicate"].trigger()
+        self.assertEqual(len(self.canvas._current_widgets()), 2)
+        self.designer.edit_actions["undo"].trigger()
+        self.assertEqual(len(self.canvas._current_widgets()), 1, "the form's undo")
+        self.assertTrue(self.designer.edit_actions["undo"].shortcutContext() == Qt.WidgetWithChildrenShortcut,
+                        "Ctrl+Z belongs to the form: a text field keeps its own")
+
+    def test_the_arrange_and_page_menus(self):
+        for x in (10, 60, 110):
+            self.canvas.add_widget_at("button", x, x)
+        self.canvas.set_selection([0])
+        self.designer._update_arrange_menu()
+        self.assertFalse(self.designer.arrange_actions["left"].isEnabled(), "two controls to align")
+        self.assertTrue(self.designer.arrange_actions["front"].isEnabled())
+        self.canvas.set_selection([0, 1, 2])
+        self.designer._update_arrange_menu()
+        self.assertTrue(self.designer.arrange_actions["distribute_h"].isEnabled())
+        self.designer.arrange_actions["top"].trigger()
+        self.assertEqual({data["y"] for data in self.canvas._current_widgets()}, {110})
+        self.designer.grid_action.setChecked(False)
+        self.assertFalse(self.canvas.show_grid)
+        self.action("page", "Add page").trigger()
+        with patch("canexpert.designer.form_designer.QInputDialog.getText", return_value=("Body", True)):
+            self.action("page", "Rename page...").trigger()
+        self.assertEqual([page["name"] for page in self.canvas.pages], ["Main", "Body"])
+        self.action("page", "Remove page").trigger()
+        self.assertEqual(len(self.canvas.pages), 1)
+
+    def test_the_database_tab(self):
+        tab = self.designer
+        tab.db_id_edit.setText("bad/name")
+        self.assertIn("without folders", tab.id_hint.text())
+        tab.db_id_edit.setText("engine_2026-09-18")
+        self.assertIn("Family <b>engine</b>, version <b>2026-09-18</b>", tab.id_hint.text())
+        tab.db_id_edit.setText("undated")
+        self.assertIn("No date at its end", tab.id_hint.text())
+        (self.folder / "engine_2026-09-20.xml").write_text("<application_database/>")
+        tab.db_id_edit.setText("engine_2026-09-20")
+        self.assertIn("exists: saving replaces it", tab.id_hint.text())
+        tab.db_id_edit.setText("engine_2026-09-18")
+        self.canvas.add_widget_at("switch", 10, 10, handler="on_run_changed")
+        tab.code_editor.setPlainText("def elsewhere(api):\n    pass\n")
+        configs = self.folder / "configs"
+        configs.mkdir()
+        (configs / "config_Bench.json").write_text('{"name": "Bench", "request_id": 2016, "response_id": 2024, '
+                                                   '"database_family": "engine"}')
+        with patch("canexpert.designer.form_designer.CONFIG_DIR", configs):
+            tab.design_tabs.setCurrentWidget(tab.database_page)
+        self.assertIn("1 control(s)", tab.contents_label.text())
+        self.assertIn("not in the script: on_run_changed", tab.contents_label.text())
+        self.assertIn('Database family "engine": Bench', tab.usage_label.text())
+        self.assertIn("The newest version in the folder is engine_2026-09-20", tab.usage_label.text())
+
+    def test_open_from_the_databases_folder(self):
+        for stem in ("engine_2026-09-01", "engine_2026-09-18", "body_2026-09-10"):
+            (self.folder / f"{stem}.xml").write_text('<application_database name="x"><pages><page name="Main"/>'
+                                                     '</pages></application_database>')
+        self.designer._fill_open_menu()
+        entries = [action.text() for action in self.designer.recent_menu.actions()]
+        self.assertEqual(entries, ["body_2026-09-10", "engine_2026-09-18", "engine_2026-09-01"],
+                         "by family, the newest version first")
+        self.designer.recent_menu.actions()[1].trigger()
+        self.assertEqual(self.designer.db_id_edit.text(), "engine_2026-09-18")
+        self.assertFalse(self.designer.windowTitle().endswith("*"), "just opened: nothing unsaved")
+
+    def test_the_manual_opens_at_the_form_designer(self):
+        window = self.designer.open_manual()
+        self.addCleanup(window.close)
+        self.assertEqual(window.browser.textCursor().block().text().strip(), "Form Designer")
+
+
 if __name__ == "__main__":
     unittest.main()

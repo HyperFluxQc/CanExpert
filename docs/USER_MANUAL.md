@@ -258,8 +258,21 @@ keeps its zoom, also in a newer dated version of the database.
 **Tools → Form Designer** builds and edits panels. A panel is two files in `Databases/`: the layout
 `family_YYYY-MM-DD.xml` and its script `family_YYYY-MM-DD_script.py`.
 
-The window has the **Symbols & controls** panel on the left, the form in the middle and **Properties** on
-the right.
+The window has a menu bar, the **Symbols & controls** panel on the left, the **Form**, **Python script** and
+**Database** tabs in the middle and **Properties** on the right. The title shows the database ID, with a
+**\*** while there are unsaved changes.
+
+| Menu | What it holds |
+|---|---|
+| **File** | **New** (Ctrl+N), **Open...** (Ctrl+O), **Open from the Databases folder** (each family's newest version first), **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S, offering today's version of the family), **Close**. |
+| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. |
+| **Arrange** | Align, make the same size, distribute, bring to front, send to back, and the grid. |
+| **Page** | Add, rename and remove pages. |
+| **Script** | **Check syntax** (F7), **Handler of the selected control** (F4). |
+| **Test** | **Test panel with the simulated ECU** (F5, also the **Test panel...** button at the right of the menu bar), or on an empty bus (Shift+F5). |
+| **Help** | This section of the manual (F1). |
+
+New, Open and closing the window ask whether to save changes first.
 
 **Building a form**
 - Drag a control from the palette onto the page. There are inputs (button, switch, checkbox, radio, combo,
@@ -280,7 +293,17 @@ the script tab opens with the function created for you.
 signals, a syntax check, and the **UDS functions** panel listing every ISO 14229 service with its
 documentation; double-click one to insert a call.
 
-**Save** writes both files; **Load** opens an existing panel; **New** starts an empty one.
+**The Database tab** — what the panel is and where it goes:
+- **Database ID**: the file name, `family_YYYY-MM-DD`. The line under it says where it will be saved and how
+  a configuration finds it — a configuration whose *Database family* is `engine` loads the newest `engine_`
+  version — and warns about a name that cannot be a file, a missing date, or an ID that already exists.
+  **New version (today)** keeps the family and takes today's date, so saving leaves the previous version as
+  it was.
+- **Name** and **Description** — the description is shown at the top of the Database window.
+- **DBC**: the panel's own DBC, with **Browse...** and **Remove**; its signals are the Symbols list.
+- **Contents**: the pages with their controls, and handlers named on controls but missing from the script.
+- **Where it is used**: the configurations with this family, and whether a newer version in the folder is
+  the one they actually load.
 
 **Test panel...** runs the panel against a simulated ECU on a virtual bus, without touching your hardware.
 Its **Flashing...** opens the same dialog as the main window's Flashing button (see *Firmware flashing*):

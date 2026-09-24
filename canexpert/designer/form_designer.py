@@ -17,10 +17,11 @@ from datetime import date
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QTextCursor
+from PyQt5.QtGui import QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-    QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QMenuBar, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QStatusBar, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from canexpert.designer.canvas import FormCanvas
@@ -32,9 +33,11 @@ from canexpert.flash_sequence import FlashProfile
 from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
 from canexpert.panel.controls import CONTROLS, WIDGET_GROUPS
-from canexpert.panel.database import DATABASES_DIR, parse_application_database, parse_widget
+from canexpert.config import read_configurations
+from canexpert.panel.database import (DATABASES_DIR, parse_application_database, parse_widget, select_database,
+                                      split_database_id)
 from canexpert.panel.runtime import SCRIPT_TEMPLATE
-from canexpert.paths import EXAMPLE_FIRMWARE_DIR
+from canexpert.paths import CONFIG_DIR, EXAMPLE_FIRMWARE_DIR
 from canexpert.ui_common import SplitterPanel, enable_maximize
 
 # -----------------------------------------------------------------------------
@@ -220,12 +223,11 @@ class TestPanelDialog(QDialog):
 # -----------------------------------------------------------------------------
 
 class FormDesigner(QDialog):
-    """Main form designer dialog."""
+    """Main form designer dialog: a menu bar, the Form, Python script and Database tabs, a status line."""
     saved = pyqtSignal(str)
 
     def __init__(self, parent=None, db_id: str = "", db_name: str = "", description: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Form Designer")
         enable_maximize(self)
         self.setMinimumSize(900, 600)
         self.resize(1200, 780)
@@ -233,6 +235,8 @@ class FormDesigner(QDialog):
         self.db_id = db_id or f"new_{date.today().isoformat()}"
         self.db_name = db_name or self.db_id
         self.description = description
+        self._loaded_id = None          # the ID of the file on disk this form came from, if any
+        self._dirty = False
 
         self.symbol_list = SymbolListPanel()
         self.palette = WidgetPalette()
@@ -263,9 +267,9 @@ class FormDesigner(QDialog):
         left_layout.addWidget(left_split)
         left_widget.setLayout(left_layout)
 
-        # Middle: form and Python code editors
-        code_page = QWidget()
-        code_layout = QVBoxLayout(code_page)
+        # Middle: the form, the Python script, and what the database is
+        self.code_page = QWidget()
+        code_layout = QVBoxLayout(self.code_page)
         code_layout.setContentsMargins(0, 0, 0, 0)
         code_bar = QHBoxLayout()
         check_btn = QPushButton("Check syntax")
@@ -284,9 +288,11 @@ class FormDesigner(QDialog):
         code_split.setStretchFactor(0, 1)
         code_split.setSizes([640, 330])
         code_layout.addWidget(code_split, 1)
+        self.database_page = self._database_page()
         self.design_tabs = QTabWidget()
         self.design_tabs.addTab(self.canvas, "Form")
-        self.design_tabs.addTab(code_page, "Python script")
+        self.design_tabs.addTab(self.code_page, "Python script")
+        self.design_tabs.addTab(self.database_page, "Database")
         self.design_tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -302,43 +308,352 @@ class FormDesigner(QDialog):
         self.design_splitter, self.design_sizes = splitter, [230, 680, 300]
         splitter.setSizes(self.design_sizes)
 
-        top_layout = QHBoxLayout()
-        self.db_id_edit = QLineEdit(self.db_id)
-        self.db_id_edit.setPlaceholderText("Database ID (e.g. engine_2026-09-18)")
-        top_layout.addWidget(QLabel("Database ID:"))
-        top_layout.addWidget(self.db_id_edit)
-        self.db_name_edit = QLineEdit(self.db_name)
-        self.db_name_edit.setPlaceholderText("Database name")
-        top_layout.addWidget(QLabel("Name:"))
-        top_layout.addWidget(self.db_name_edit)
-        self.desc_edit = QLineEdit(self.description)
-        self.desc_edit.setPlaceholderText("Description")
-        top_layout.addWidget(QLabel("Description:"))
-        top_layout.addWidget(self.desc_edit)
-        top_layout.addWidget(QLabel("DBC path:"))
-        self.dbc_path_edit = QLineEdit()
-        self.dbc_path_edit.setPlaceholderText("Optional DBC for symbols")
-        self.dbc_path_edit.setMinimumWidth(120)
-        top_layout.addWidget(self.dbc_path_edit)
-        self.symbol_list.dbc_loaded.connect(self.dbc_path_edit.setText)
-
-        btn_layout = QHBoxLayout()
-        for text, slot in (("Save", self.save), ("Load", self.load), ("New", self.new_form)):
-            button = QPushButton(text)
-            button.clicked.connect(slot)
-            btn_layout.addWidget(button)
-        test_btn = QPushButton("Test panel...")
-        test_btn.setToolTip("Run this panel and its script against the simulated ECU on a virtual CAN bus")
-        test_btn.clicked.connect(lambda: self.test_panel())      # with the simulated ECU, not clicked's False
-        btn_layout.addWidget(test_btn)
-        btn_layout.addStretch()
-
+        self.status = QStatusBar()
+        self.status.setSizeGripEnabled(False)
         layout = QVBoxLayout()
-        layout.addLayout(top_layout)
-        layout.addLayout(btn_layout)
-        layout.addWidget(splitter)
+        layout.setMenuBar(self._menu_bar())
+        layout.addWidget(splitter, 1)
+        layout.addWidget(self.status)
         self.setLayout(layout)
         self._load_script()
+
+        # Anything that changes what would be saved makes the form "unsaved" (a * in the title).
+        self.canvas.changed.connect(self._mark_dirty)
+        self.code_editor.textChanged.connect(self._mark_dirty)
+        for edit in (self.db_id_edit, self.db_name_edit, self.dbc_path_edit):
+            edit.textChanged.connect(self._mark_dirty)
+        self.desc_edit.textChanged.connect(self._mark_dirty)
+        self.db_id_edit.textChanged.connect(self._refresh_id_hint)
+        self._mark_clean()
+
+    # --- the menu bar ----------------------------------------------------------------------
+
+    def _action(self, menu, text, slot, shortcut=None, tip="", canvas_only=False):
+        action = menu.addAction(text)
+        action.triggered.connect(lambda _checked=False: slot())      # never hand Qt's "checked" to slot
+        if shortcut:
+            action.setShortcut(QKeySequence(shortcut))
+            if canvas_only:
+                # The keys belong to the form: a text field or the script editor keeps its own Ctrl+C, Ctrl+Z...
+                action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+                self.canvas.addAction(action)
+        if tip:
+            action.setStatusTip(tip)
+            action.setToolTip(tip)
+        return action
+
+    def _menu_bar(self):
+        bar = QMenuBar(self)
+        self.menus = {}
+
+        menu = self.menus["file"] = bar.addMenu("&File")
+        self._action(menu, "&New", self.new_form, QKeySequence.New, "An empty panel and the script template")
+        self._action(menu, "&Open...", lambda: self.load(), QKeySequence.Open, "Open a panel database (.xml)")
+        self.recent_menu = menu.addMenu("Open from the &Databases folder")
+        self.recent_menu.aboutToShow.connect(self._fill_open_menu)
+        menu.addSeparator()
+        self._action(menu, "&Save", self.save, QKeySequence.Save, "Save the panel and its script")
+        self._action(menu, "Save &as...", self.save_as, "Ctrl+Shift+S", "Save under another database ID")
+        menu.addSeparator()
+        self._action(menu, "&Close", self.close, "Ctrl+W")
+
+        menu = self.menus["edit"] = bar.addMenu("&Edit")
+        self.edit_actions = {}
+        for entry in (("undo", "&Undo", "Ctrl+Z"), ("redo", "&Redo", "Ctrl+Y"), None,
+                      ("cut", "Cu&t", "Ctrl+X"), ("copy", "&Copy", "Ctrl+C"), ("paste", "&Paste", "Ctrl+V"),
+                      ("duplicate", "D&uplicate", "Ctrl+D"), ("delete", "&Delete", "Delete"), None,
+                      ("select_all", "Select &all", "Ctrl+A")):
+            if entry is None:
+                menu.addSeparator()
+                continue
+            key, text, shortcut = entry
+            self.edit_actions[key] = self._action(menu, text, lambda k=key: self._edit(k), shortcut, canvas_only=True)
+        menu.aboutToShow.connect(self._update_edit_menu)
+
+        menu = self.menus["arrange"] = bar.addMenu("&Arrange")
+        self.arrange_actions = {}
+        for entry in (("left", "Align &left edges"), ("center", "Align centres &horizontally"),
+                      ("right", "Align &right edges"), ("top", "Align &top edges"),
+                      ("middle", "Align centres &vertically"), ("bottom", "Align &bottom edges"), None,
+                      ("same_width", "Same &width"), ("same_height", "Same h&eight"), ("same_size", "Same &size"),
+                      ("distribute_h", "Distribute hori&zontally"), ("distribute_v", "Distribute verti&cally"),
+                      None, ("front", "Bring to &front"), ("back", "Send to bac&k")):
+            if entry is None:
+                menu.addSeparator()
+                continue
+            key, text = entry
+            slot = {"front": self.canvas.bring_to_front, "back": self.canvas.send_to_back}.get(
+                key, lambda k=key: self.canvas.align(k))
+            self.arrange_actions[key] = self._action(menu, text, slot)
+        menu.addSeparator()
+        self.grid_action = menu.addAction("Show the &grid and snap to it")
+        self.grid_action.setCheckable(True)
+        self.grid_action.toggled.connect(self.canvas.set_grid)
+        menu.aboutToShow.connect(self._update_arrange_menu)
+
+        menu = self.menus["page"] = bar.addMenu("&Page")
+        self._action(menu, "&Add page", self.canvas.add_page)
+        self._action(menu, "&Rename page...", self.rename_page)
+        self.remove_page_action = self._action(menu, "Re&move page", lambda: self.canvas.remove_page(
+            self.canvas.current_page_index))
+        menu.aboutToShow.connect(lambda: self.remove_page_action.setEnabled(len(self.canvas.pages) > 1))
+
+        menu = self.menus["script"] = bar.addMenu("&Script")
+        self._action(menu, "&Check syntax", self.check_syntax, "F7")
+        self.handler_action = self._action(menu, "&Handler of the selected control", self._edit_selected_handler,
+                                           "F4", "Go to the selected control's handler, creating it if needed")
+        menu.aboutToShow.connect(lambda: self.handler_action.setEnabled(len(self.canvas.selection) == 1))
+
+        menu = self.menus["test"] = bar.addMenu("&Test")
+        self._action(menu, "Test panel with the &simulated ECU", lambda: self.test_panel(), "F5",
+                     "Run the panel and its script against the simulated ECU on a virtual CAN bus")
+        self._action(menu, "Test panel &without an ECU", lambda: self.test_panel(simulate_ecu=False), "Shift+F5",
+                     "Run the panel and its script on an empty virtual CAN bus")
+
+        menu = self.menus["help"] = bar.addMenu("&Help")
+        self._action(menu, "Form Designer in the &manual", self.open_manual, "F1")
+
+        test_btn = QPushButton("Test panel...")
+        test_btn.setToolTip("Run this panel and its script against the simulated ECU on a virtual CAN bus (F5)")
+        test_btn.clicked.connect(lambda: self.test_panel())      # with the simulated ECU, not clicked's False
+        bar.setCornerWidget(test_btn, Qt.TopRightCorner)
+        return bar
+
+    def _edit_target(self):
+        """What the Edit menu acts on: a focused text field, else the script or the form in front."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QPlainTextEdit)) and self.isAncestorOf(focus):
+            return focus
+        if self.design_tabs.currentWidget() is self.code_page:
+            return self.code_editor
+        return self.canvas if self.design_tabs.currentWidget() is self.canvas else None
+
+    def _edit(self, key):
+        target = self._edit_target()
+        if target is self.canvas:
+            {"undo": self.canvas.undo, "redo": self.canvas.redo, "cut": self.canvas.cut_selection,
+             "copy": self.canvas.copy_selection, "paste": self.canvas.paste_at,
+             "duplicate": self.canvas.duplicate_selection, "delete": self.canvas.delete_selection,
+             "select_all": self.canvas.select_all}[key]()
+        elif target is not None:
+            if key == "delete":
+                if isinstance(target, QLineEdit):
+                    target.del_()
+                else:
+                    target.textCursor().removeSelectedText()
+            elif key != "duplicate":
+                getattr(target, {"select_all": "selectAll"}.get(key, key))()
+
+    def _update_edit_menu(self):
+        target = self._edit_target()
+        on_canvas = target is self.canvas
+        selected = bool(self.canvas.selection)
+        states = {"undo": bool(self.canvas._undo), "redo": bool(self.canvas._redo), "cut": selected,
+                  "copy": selected, "paste": bool(self.canvas._widget_clipboard), "duplicate": selected,
+                  "delete": selected, "select_all": bool(self.canvas._current_widgets())} if on_canvas else \
+            {key: target is not None and key != "duplicate" for key in self.edit_actions}
+        for key, action in self.edit_actions.items():
+            action.setEnabled(states[key])
+
+    def _update_arrange_menu(self):
+        count = len(self.canvas.selection)
+        for key, action in self.arrange_actions.items():
+            needed = 3 if key.startswith("distribute") else 1 if key in ("front", "back") else 2
+            action.setEnabled(count >= needed)
+        self.grid_action.blockSignals(True)
+        self.grid_action.setChecked(self.canvas.show_grid)
+        self.grid_action.blockSignals(False)
+
+    def _edit_selected_handler(self):
+        if len(self.canvas.selection) == 1:
+            self.edit_handler(self.canvas._current_widgets()[self.canvas.selected_index])
+
+    def rename_page(self):
+        index = self.canvas.current_page_index
+        name, ok = QInputDialog.getText(self, "Rename page", "Page name:", QLineEdit.Normal,
+                                        self.canvas.pages[index]["name"])
+        if ok:
+            self.canvas.rename_page(index, name)
+
+    def open_manual(self):
+        from canexpert.help_window import show_manual
+        window = show_manual(self)
+        window.go_to_section("Form Designer")
+        return window
+
+    def _fill_open_menu(self):
+        """The panels in the Databases folder, each family's newest version first."""
+        self.recent_menu.clear()
+        entries = []
+        for path in Path(self.database_dir).glob("*.xml"):
+            family, stamp = split_database_id(path.stem)
+            entries.append((family.lower(), -(stamp.toordinal() if stamp else 0), path))
+        for _family, _age, path in sorted(entries):
+            self.recent_menu.addAction(path.stem, lambda p=path: self.load(p))
+        if not entries:
+            self.recent_menu.addAction(f"No panel in {self.database_dir}").setEnabled(False)
+
+    # --- the Database tab --------------------------------------------------------------------
+
+    def _database_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        identity = QGroupBox("Identity")
+        form = QFormLayout(identity)
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.db_id_edit = QLineEdit(self.db_id)
+        self.db_id_edit.setPlaceholderText("family_YYYY-MM-DD, e.g. engine_2026-09-18")
+        new_version = QPushButton("New version (today)")
+        new_version.setToolTip("The same family with today's date: saving keeps the version you started from")
+        new_version.clicked.connect(lambda: self.new_version())
+        form.addRow("Database ID", _row(self.db_id_edit, new_version))
+        self.id_hint = QLabel()
+        self.id_hint.setWordWrap(True)
+        self.id_hint.setTextFormat(Qt.RichText)
+        form.addRow(self.id_hint)
+        self.db_name_edit = QLineEdit(self.db_name)
+        self.db_name_edit.setPlaceholderText("Database name")
+        form.addRow("Name", self.db_name_edit)
+        self.desc_edit = QPlainTextEdit(self.description)
+        self.desc_edit.setPlaceholderText("Shown at the top of the Database window while it is loaded")
+        self.desc_edit.setFixedHeight(70)
+        form.addRow("Description", self.desc_edit)
+
+        symbols = QGroupBox("Symbols")
+        form = QFormLayout(symbols)
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.dbc_path_edit = QLineEdit()
+        self.dbc_path_edit.setPlaceholderText("No DBC: controls bind to script names and raw CAN bytes")
+        self.dbc_path_edit.setMinimumWidth(120)
+        self.symbol_list.dbc_loaded.connect(self.dbc_path_edit.setText)
+        browse, remove = QPushButton("Browse..."), QPushButton("Remove")
+        browse.clicked.connect(self.symbol_list._load_dbc)
+        remove.clicked.connect(self.remove_dbc)
+        form.addRow("DBC", _row(self.dbc_path_edit, browse, remove))
+        form.addRow(_hint("The panel's own DBC: controls bound to Message.Signal decode and send with it, and "
+                          "its signals are the Symbols list on the Form tab."))
+
+        contents = QGroupBox("Contents")
+        self.contents_label = QLabel()
+        self.contents_label.setWordWrap(True)
+        self.contents_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        QVBoxLayout(contents).addWidget(self.contents_label)
+        usage = QGroupBox("Where it is used")
+        self.usage_label = QLabel()
+        self.usage_label.setWordWrap(True)
+        self.usage_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        QVBoxLayout(usage).addWidget(self.usage_label)
+        for group in (identity, symbols, contents, usage):
+            layout.addWidget(group)
+        layout.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
+
+    def _current_id(self) -> str:
+        return self.db_id_edit.text().strip() or "new"
+
+    def new_version(self):
+        """Today's version of the same family."""
+        family, _stamp = split_database_id(self._current_id())
+        self.db_id_edit.setText(f"{family or 'panel'}_{date.today().isoformat()}")
+
+    def remove_dbc(self):
+        self.dbc_path_edit.clear()
+        self.symbol_list.clear_dbc()
+
+    def _refresh_id_hint(self, *_):
+        stem = self.db_id_edit.text().strip()
+        if not stem or Path(stem).name != stem or any(c in stem for c in '/\\:*?"<>|'):
+            self.id_hint.setText('<span style="color:#b91c1c">A database ID is a file name without folders or '
+                                 '<code>/ \\ : * ? " &lt; &gt; |</code>, e.g. engine_2026-09-18.</span>')
+            return
+        family, stamp = split_database_id(stem)
+        where = f"Saved as <b>{stem}.xml</b> and <b>{stem}_script.py</b> in {self.database_dir}."
+        if stamp is None:
+            note = (f'<br><span style="color:#b45309">No date at its end: configurations whose Database family is '
+                    f'"{family}" load it, but after any dated version.</span>')
+        else:
+            note = (f'<br>Family <b>{family}</b>, version <b>{stamp.isoformat()}</b>: a configuration whose Database '
+                    f'family is "{family}" loads the newest version.')
+        if (Path(self.database_dir) / f"{stem}.xml").exists() and stem != self._loaded_id:
+            note += '<br><span style="color:#b45309">A panel with this ID exists: saving replaces it.</span>'
+        self.id_hint.setText(where + note)
+
+    def _refresh_database_info(self):
+        """The Contents and Where it is used groups."""
+        self._refresh_id_hint()
+        script = self.code_editor.toPlainText()
+        defined = set(re.findall(r"^\s*def\s+(\w+)\s*\(", script, re.M))
+        lines, handlers, missing = [], 0, []
+        for page in self.canvas.pages:
+            widgets = page["widgets"]
+            dbc = sum(1 for data in widgets if data.get("binding_type") == BINDING_TYPE_DBC)
+            lines.append(f"<b>{page['name']}</b>: {len(widgets)} control(s), {dbc} bound to DBC signals")
+            for data in widgets:
+                name = str(data.get("handler") or "").strip()
+                if name:
+                    handlers += 1
+                    if name not in defined:
+                        missing.append(name)
+        lines.append(f"Handlers: {handlers} named" + (
+            f', <span style="color:#b45309">not in the script: {", ".join(sorted(set(missing)))}</span>'
+            if missing else ", all in the script"))
+        self.contents_label.setText("<br>".join(lines))
+
+        family, _stamp = split_database_id(self._current_id())
+        try:
+            configurations, _errors = read_configurations(CONFIG_DIR)
+        except OSError:
+            configurations = []
+        users = [config.get("name", "") for config in configurations if config.get("database_family") == family]
+        anyone = [config.get("name", "") for config in configurations if not config.get("database_family")]
+        text = (f"Configurations with Database family \"{family}\": {', '.join(users)}" if users else
+                f"No configuration has Database family \"{family}\" yet.")
+        if anyone:
+            text += f"<br>Without a family, these load the newest panel of any family: {', '.join(anyone)}"
+        try:
+            newest = select_database(self.database_dir, family)
+        except ValueError:
+            newest = None
+        if newest is not None and newest.stem != self._current_id():
+            text += (f'<br><span style="color:#b45309">The newest version in the folder is {newest.stem}: that '
+                     f'one is what configurations load.</span>')
+        self.usage_label.setText(text)
+
+    # --- unsaved changes ------------------------------------------------------------------------
+
+    def _mark_dirty(self, *_):
+        if not self._dirty:
+            self._dirty = True
+            self._update_title()
+
+    def _mark_clean(self):
+        self._dirty = False
+        self.code_editor.document().setModified(False)
+        self._update_title()
+        self._refresh_id_hint()
+
+    def _update_title(self):
+        self.setWindowTitle(f"Form Designer — {self._current_id()}{' *' if self._dirty else ''}")
+
+    def _confirm_discard(self) -> bool:
+        """Whether what is on screen may go: nothing unsaved, or the user saved or dropped it. A window
+        that is not on screen asks nobody."""
+        if not self._dirty or not self.isVisible():
+            return True
+        answer = QMessageBox.question(self, "Form Designer", f"Save the changes to {self._current_id()}?",
+                                      QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                                      QMessageBox.Save)
+        if answer == QMessageBox.Save:
+            return self.save()
+        return answer == QMessageBox.Discard
+
+    def reject(self):
+        """Esc, the window's close button and Close: not without asking about unsaved changes."""
+        if self._confirm_discard():
+            super().reject()
 
     # --- script -------------------------------------------------------------------------
 
@@ -377,21 +692,24 @@ class FormDesigner(QDialog):
         return ok
 
     def _on_tab_changed(self, index):
-        # The palette, the DBC symbols and the properties all act on the form; the script gets the room instead.
-        on_form = self.design_tabs.widget(index) is self.canvas
-        if not on_form:
+        # The palette, the DBC symbols and the properties all act on the form; the others get the room instead.
+        page = self.design_tabs.widget(index)
+        on_form = page is self.canvas
+        if not on_form and not self.symbols_panel.isHidden():
             self.design_sizes = self.design_splitter.sizes()
         self.symbols_panel.setVisible(on_form)
         self.properties_panel.setVisible(on_form)
         if on_form:
             self.design_splitter.setSizes(self.design_sizes)
-        else:
+        elif page is self.code_page:
             words = []
-            for page in self.canvas.pages:
-                for data in page["widgets"]:
+            for form_page in self.canvas.pages:
+                for data in form_page["widgets"]:
                     words += [control_name(data), str(data.get("handler", ""))]
             words += self.symbol_list.get_dbc_signals()
             self.code_editor.set_completion_words(words)
+        elif page is self.database_page:
+            self._refresh_database_info()
 
     def edit_handler(self, data):
         """Open (creating if needed) the handler function of a control in the Python script."""
@@ -423,7 +741,7 @@ class FormDesigner(QDialog):
             code = self.code_editor.toPlainText()
             match = re.search(rf"^def {re.escape(name)}\s*\(", code, re.M)
         line = code[:match.start()].count("\n") + 1
-        self.design_tabs.setCurrentIndex(1)
+        self.design_tabs.setCurrentWidget(self.code_page)
         self.code_editor.go_to_line(line + 2, 4)
 
     # --- canvas events --------------------------------------------------------------------------
@@ -455,20 +773,30 @@ class FormDesigner(QDialog):
     # --- files ----------------------------------------------------------------------------------
 
     def new_form(self):
+        """An empty panel with the script template (after asking about unsaved changes)."""
+        if not self._confirm_discard():
+            return False
         self.canvas.load_from_data({})
         self.properties.clear()
         self.db_id_edit.setText(f"new_{date.today().isoformat()}")
         self.db_name_edit.setText(f"new_{date.today().isoformat()}")
         self.desc_edit.clear()
-        self.dbc_path_edit.clear()
-        self.symbol_list._dbc_db = None
-        self.symbol_list.symbol_tree.clear()
+        self.remove_dbc()
         self.code_editor.setPlainText(SCRIPT_TEMPLATE)
+        self._loaded_id = None
+        self._mark_clean()
+        self.status.showMessage("New panel", 5000)
+        return True
 
-    def load(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Load Database", str(self.database_dir), "XML (*.xml)")
-        if not path:
-            return
+    def load(self, path=None):
+        """Open a panel database: path, or the one chosen in a file dialog (after asking about unsaved changes)."""
+        if not self._confirm_discard():
+            return False
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Load Database", str(self.database_dir), "XML (*.xml)")
+            if not path:
+                return False
+        path = str(path)
         try:
             root = ET.parse(path).getroot()
             self.database_dir = Path(path).resolve().parent
@@ -479,7 +807,7 @@ class FormDesigner(QDialog):
             self.db_name_edit.setText(self.db_name)
             desc = root.find("description")
             self.description = desc.text.strip() if desc is not None and desc.text else ""
-            self.desc_edit.setText(self.description)
+            self.desc_edit.setPlainText(self.description)
             dbc_el = root.find("dbc_path")
             dbc_path = root.get("dbc_path", "") or (dbc_el.text.strip() if dbc_el is not None and dbc_el.text else "")
             if dbc_path and not Path(dbc_path).is_absolute():
@@ -488,7 +816,7 @@ class FormDesigner(QDialog):
                 self.dbc_path_edit.setText(dbc_path)
                 self.symbol_list.load_dbc_path(dbc_path)
             else:
-                self.dbc_path_edit.clear()
+                self.remove_dbc()
 
             pages_el = root.find("pages")
             if pages_el is not None:
@@ -508,6 +836,11 @@ class FormDesigner(QDialog):
             self._load_script()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load: {e}")
+            return False
+        self._loaded_id = self.db_id
+        self._mark_clean()
+        self.status.showMessage(f"Opened {path}", 5000)
+        return True
 
     def _build_root(self, db_name, description):
         data = self.canvas.get_data()
@@ -530,17 +863,21 @@ class FormDesigner(QDialog):
                 ET.SubElement(page_el, key, attrs)
         return root
 
-    def save(self):
+    def save(self) -> bool:
+        """Write the panel and its script. True when both were written."""
         db_id = self.db_id_edit.text().strip() or "new"
         db_name = self.db_name_edit.text().strip() or db_id
-        description = self.desc_edit.text().strip()
+        description = self.desc_edit.toPlainText().strip()
 
         if Path(db_id).name != db_id or any(c in db_id for c in '/\\:*?"<>|'):
             QMessageBox.warning(self, "Invalid database ID", "Use a filename stem such as engine_2026-09-18.")
-            return
+            return False
         path = self.database_dir
         path.mkdir(parents=True, exist_ok=True)
         filepath = path / f"{db_id}.xml"
+        if filepath.exists() and db_id != self._loaded_id and self.isVisible() and QMessageBox.question(
+                self, "Save", f"{filepath.name} exists. Replace it and its script?") != QMessageBox.Yes:
+            return False
         root = self._build_root(db_name, description)
         tree = ET.ElementTree(root)
         ET.indent(tree, space="    ")
@@ -550,21 +887,35 @@ class FormDesigner(QDialog):
                     parse_widget(elem)
             compile(self.code_editor.toPlainText(), str(self._script_path()), "exec")
             tree.write(filepath, encoding="utf-8", xml_declaration=True, default_namespace=None)
-            if self._save_script():
-                QMessageBox.information(self, "Saved", f"Saved to {filepath}\nScript: {self._script_path()}")
-            else:
-                QMessageBox.information(self, "Saved", f"Form saved to {filepath}")
-            self.saved.emit(str(filepath))
+            if not self._save_script():
+                return False
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save: {e}")
+            return False
+        self._loaded_id = db_id
+        self._mark_clean()
+        self.status.showMessage(f"Saved {filepath.name} and {self._script_path().name} in {path} at "
+                                f"{time.strftime('%H:%M:%S')}")
+        self.saved.emit(str(filepath))
+        return True
+
+    def save_as(self) -> bool:
+        """Save under another database ID - today's version of the same family unless another is typed."""
+        family, _stamp = split_database_id(self._current_id())
+        name, ok = QInputDialog.getText(self, "Save as", "Database ID (family_YYYY-MM-DD):", QLineEdit.Normal,
+                                        f"{family or 'panel'}_{date.today().isoformat()}")
+        if not ok or not name.strip():
+            return False
+        self.db_id_edit.setText(name.strip())
+        return self.save()
 
     def test_panel(self, simulate_ecu=True):
         """Run the form as it is now (no need to save) in a test window."""
         if not self.check_syntax():
-            self.design_tabs.setCurrentIndex(1)
+            self.design_tabs.setCurrentWidget(self.code_page)
             return None
         try:
-            root = self._build_root(self.db_name_edit.text().strip() or "Test", self.desc_edit.text().strip())
+            root = self._build_root(self.db_name_edit.text().strip() or "Test", self.desc_edit.toPlainText().strip())
             temp = Path(tempfile.mkdtemp()) / "test_panel.xml"
             ET.ElementTree(root).write(temp, encoding="utf-8", xml_declaration=True)
             database = parse_application_database(temp)
@@ -576,3 +927,19 @@ class FormDesigner(QDialog):
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
         return dialog
+
+
+def _row(*widgets):
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    for index, widget in enumerate(widgets):
+        layout.addWidget(widget, 1 if index == 0 else 0)
+    return row
+
+
+def _hint(text):
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setStyleSheet("color: gray;")
+    return label

@@ -182,6 +182,13 @@ class SymbolListPanel(QGroupBox):
             self._dbc_db = None
             self.symbol_tree.clear()
 
+    def clear_dbc(self):
+        """No DBC: the symbol list empties."""
+        self._dbc_db = None
+        self.symbol_tree.clear()
+        self.dbc_path_label.setText("No DBC loaded")
+        self.dbc_path_label.setStyleSheet("color: gray; font-size: 11px;")
+
     def _fill_tree(self):
         self.symbol_tree.clear()
         if not self._dbc_db:

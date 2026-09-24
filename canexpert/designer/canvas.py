@@ -215,6 +215,7 @@ class FormCanvas(QGroupBox):
     selection_cleared = pyqtSignal()
     handler_requested = pyqtSignal(int)
     geometry_changed = pyqtSignal(dict)
+    changed = pyqtSignal()               # the form is about to change, or was undone/redone: unsaved work
 
     def __init__(self):
         super().__init__("Form Preview")
@@ -354,6 +355,7 @@ class FormCanvas(QGroupBox):
         self._redo.clear()
         self._last_checkpoint = (key, now)
         self._update_tool_states()
+        self.changed.emit()
 
     def _restore(self, snapshot):
         pages, page_index = snapshot
@@ -370,11 +372,13 @@ class FormCanvas(QGroupBox):
         if self._undo:
             self._redo.append(self._snapshot())
             self._restore(self._undo.pop())
+            self.changed.emit()
 
     def redo(self):
         if self._redo:
             self._undo.append(self._snapshot())
             self._restore(self._redo.pop())
+            self.changed.emit()
 
     # --- pages ----------------------------------------------------------------------------
 
@@ -394,6 +398,23 @@ class FormCanvas(QGroupBox):
             self.page_buttons.append(btn)
             bar.insertWidget(i, btn)
 
+    def add_page(self):
+        self._add_page()
+
+    def rename_page(self, index: int, name: str):
+        if 0 <= index < len(self.pages) and name.strip():
+            self.checkpoint()
+            self.pages[index]["name"] = name.strip()
+            self._rebuild_page_bar()
+
+    def remove_page(self, index: int):
+        self._remove_page(index)
+
+    def set_grid(self, enabled: bool):
+        """Show the grid and snap to it (the toolbar's grid switch)."""
+        self._tool_buttons["grid"].setChecked(bool(enabled))
+        self._toggle_grid()
+
     def _add_page(self):
         self.checkpoint()
         self.pages.append({"name": f"Page {len(self.pages) + 1}", "widgets": []})
@@ -411,10 +432,8 @@ class FormCanvas(QGroupBox):
         if action is rename_act:
             name, ok = QInputDialog.getText(self, "Rename page", "Page name:", QLineEdit.Normal,
                                             self.pages[page_index]["name"])
-            if ok and name.strip():
-                self.checkpoint()
-                self.pages[page_index]["name"] = name.strip()
-                self._rebuild_page_bar()
+            if ok:
+                self.rename_page(page_index, name)
         elif action is remove_act and len(self.pages) > 1:
             self._remove_page(page_index)
 
