@@ -7,7 +7,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH)
 sys.path.insert(0, str(ROOT))
@@ -17,6 +17,9 @@ DATA = [(str(ROOT / folder), folder) for folder in ("Configurations", "Databases
         if (ROOT / folder).exists()]
 DATA += [(str(ROOT / "docs" / "USER_MANUAL.md"), "docs"), (str(ROOT / "canexpert" / "resources"), "canexpert/resources")]
 DATA += collect_data_files("odxtools") + collect_data_files("cantools")
+# The About box reads the libraries' versions from their metadata.
+for _distribution in ("python-can", "cantools", "odxtools", "pyqtgraph", "PyQtAds"):
+    DATA += copy_metadata(_distribution)
 # python-can opens its interfaces by name at run time, so the analysis cannot see them.
 HIDDEN = collect_submodules("can.interfaces")
 

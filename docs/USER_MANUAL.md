@@ -87,6 +87,18 @@ the same as pressing Connect.
 
 **Disconnect** stops the script and the traffic, and closes the adapter.
 
+While you are connected, the **status bar** says how things stand:
+
+| | |
+|---|---|
+| **Bus** | The adapter's error state: *error active*, *error passive* (orange) or *bus off* (red), with the error frames counted. *on* means the adapter does not report its state. |
+| **Session** | The diagnostic session the ECU last confirmed: *default*, *extended*, *programming*... *unknown* until it answers a DiagnosticSessionControl or an ECUReset. |
+| **Security** | *unlocked (level 1)* (green) once the ECU accepts a key, *locked* again after a new session or a reset. |
+| **Last error** | The last negative response (`ReadDataByIdentifier: NRC 0x31 requestOutOfRange`), script error, bus off or failed session. Click it to show the Log. |
+
+Session and security are read from the ECU's own answers, so they are right whether the request came
+from the UDS Console, the panel script or the flashing sequence.
+
 The frames themselves are in the **Trace** window, each with its own time — the adapter's for received
 frames. **View → Time display** chooses between the time of day (**Absolute**) and seconds since the
 measurement started (**Relative**) for the lines of the Write window and the UDS Console. The measurement
@@ -691,6 +703,24 @@ Several dummy ECUs can share a channel when each has its own identifiers (Addres
 the application frames. A second ECU answering the *same* requests is refused, because two ECUs answering
 them break security access and flashing.
 
+## Keyboard shortcuts
+
+| Key | Does |
+|---|---|
+| **F9** / **Shift+F9** | Connect / Disconnect |
+| **Ctrl+1** ... **Ctrl+7** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write — the toolbar's order; pressed again, the window closes |
+| **Ctrl+E** | Form Designer |
+| **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
+| **Ctrl+O** | Replay a recorded file |
+| **Ctrl+N** | New configuration |
+| **F1** | The manual, at the section of the window you are working in |
+| **Ctrl+Q** | Exit |
+
+The keys work in floating windows too. The toolbar buttons show theirs in their tooltips. In the Form
+Designer, **F1** opens its own section, **F5** tests the panel with the simulated ECU and **F7** checks the
+script. Plain letters and **F5** are left to the panel script's `@on_key`: keys CAN Expert uses itself
+do not reach the script.
+
 ## Where things are kept
 
 | Folder | Contents |
@@ -730,3 +760,7 @@ under *Tools → Symbol databases...*.
 only while you are connected.
 
 **Light or dark** — *Options → Light Mode / Dark Mode*. The choice is remembered.
+
+**Reporting a problem** — *Help → About* lists the versions of CAN Expert, Python, Qt, python-can and the
+other libraries, and of the Kvaser, Vector and IXXAT drivers installed; **Copy** puts them on the
+clipboard to paste into the report.

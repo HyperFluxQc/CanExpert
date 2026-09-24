@@ -449,11 +449,15 @@ Relative. A timestamp that is not a time of day is shown as seconds.
 
 ## Tier 4 — Small, cheap, high polish per hour
 
-### 33. Keyboard shortcuts
+### 33. Keyboard shortcuts — **DONE**
 *Effort: very small*
 
-There is not a single `setShortcut` or `QKeySequence` in the codebase: no F-key Connect/Disconnect, no
-Ctrl+S in the designer, no Esc, no menu accelerators.
+**Was:** not a single `setShortcut` or `QKeySequence` in the codebase.
+
+**Now:** F9 / Shift+F9 connect and disconnect, Ctrl+1...Ctrl+7 switch the tool windows in the toolbar's
+order, Ctrl+E the Form Designer, Ctrl+R / Ctrl+Shift+R / Ctrl+O record, stop and replay, Ctrl+N, Ctrl+Q,
+F1; floating windows get the same keys. The Form Designer has its own (Ctrl+S, F5, F7...). Plain letters and
+F5 stay free for the scripts' `@on_key`. The manual lists them (*Keyboard shortcuts*).
 
 ### 34. TesterPresent options
 *Effort: very small. Optional configuration field.*
@@ -468,11 +472,15 @@ used.
 ~~The CAN monitor cannot be saved or searched~~ — the CAN monitor is gone, the Trace covers it. Add
 "insert marker or comment" during a measurement (CANoe's trigger and comment).
 
-### 36. A status strip showing the system state
+### 36. A status strip showing the system state — **DONE**
 *Effort: small*
 
-Bus state, session, security, last error, TX queue depth. Errors currently land in a debug pane the
-user has to think to look at.
+**Was:** errors landed in a debug pane the user had to think to look at.
+
+**Now:** the status bar shows the bus state and error frames, the diagnostic session and security state
+read off the ECU's answers (whoever sent the request), and the last error - NRC, script error, bus off,
+failed session - linked to the Log. The TX queue depth is left out: python-can has no portable way to read
+it.
 
 ### 37. Packaging: the .exe that is promised but absent — **DONE**
 *Effort: small*
@@ -484,12 +492,14 @@ folder with their icons (`tools/make_icons.py`) and a version resource from `can
 check that both start (`--smoke-test`) and zip it; CI builds the zip for `main` and `v*` tags and also
 runs the tests on Windows. No installer: the zip unpacks and runs as it is.
 
-### 38. About box with real information
+### 38. About box with real information — **DONE**
 *Effort: very small*
 
-It is a hardcoded text block with no version ([main_window.py:571](canexpert/main_window.py#L571)).
-Show the version, build date, detected driver and DLL versions (Kvaser, Vector, IXXAT, python-can) and
-a "copy support info" button.
+**Was:** a hardcoded text block with no version.
+
+**Now:** `about.py` shows the version, the build date (the executable's), Python, Qt, python-can and the
+other libraries, the Kvaser, Vector and IXXAT driver DLLs' versions, and the operating system, with
+**Copy** for a bug report.
 
 ### 39. Configuration quick-switch in the toolbar
 *Effort: very small*
@@ -497,11 +507,12 @@ a "copy support info" button.
 A combo box instead of only the dock list, plus a clear indicator of which configuration and channel
 are live.
 
-### 40. Context help
+### 40. Context help — **DONE**
 *Effort: very small*
 
-F1 on the focused window jumps to the right manual section. The sections and `go_to_section` already
-exist.
+F1 opens the manual at the section of the window with the focus - a tool window's, the panel's, the
+Configuration or CAN Channels panel's - also from a floating window; the Form Designer's F1 opens its own
+section.
 
 ---
 

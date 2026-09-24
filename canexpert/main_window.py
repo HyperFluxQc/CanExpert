@@ -70,6 +70,8 @@ from canexpert.trace_window import TraceWindow
 from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
+from canexpert.about import AboutDialog
+from canexpert.status_strip import DiagnosticState, StatusStrip
 from canexpert.ui_common import DockTitleBar, app_icon, app_settings, line_icon, toolbar_icon
 from canexpert.workspace import (add_pane, create_workspace, drop_empty_floating, fit_on_screen, make_pane,
                                  pane_names, put_back, set_content)
@@ -92,6 +94,15 @@ ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console"
                   "write", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 TOOL_AREAS = {"trace": "bottom", "transmit": "bottom", "write": "bottom"}   # the others: an area of their own
 PAGE_PANE = re.compile(r"pane_page_(\d+)$")
+# Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
+# panel scripts' @on_key.
+SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
+             "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
+             "sysvars": "Ctrl+8", "designer": "Ctrl+E"}
+# The manual's section for each tool window, for F1.
+HELP_SECTIONS = {"trace": "Trace window", "logger": "CAN Logger", "data": "Data window", "statistics": "Statistics",
+                 "transmit": "Transmit window", "console": "UDS Console", "write": "Writing panel scripts",
+                 "sysvars": "Writing panel scripts"}
 
 
 def tool_panes() -> tuple:
@@ -156,6 +167,7 @@ class MainWindow(QMainWindow):
         self.recorder = None
         self.replay = None
         self.tool_panes = {}       # the tool windows opened so far (their panes are in _tool_slots from the start)
+        self._diagnostic_answers = (None, False, None)   # response ID, extended, address byte of the session
         self._bus_state = "unknown"
 
         self.init_ui()
@@ -170,10 +182,14 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         """Build CANoe-style main window: toolbar, status bar, dockable Configuration, CAN Channels, Database, Log."""
-        # Status bar (status message)
+        # Status bar: the bus, the diagnostic session and security, the last error, and the connection
+        self.status_strip = StatusStrip()
+        self.status_strip.error_clicked.connect(self._show_log_dock)
+        self.statusBar().addPermanentWidget(self.status_strip)
         self.status_label = QLabel("No active connections")
         self._set_status("No active connections", "gray")
         self.statusBar().addPermanentWidget(self.status_label)
+        self._shortcut_actions = []    # the actions whose keys also work in floating windows
 
         toolbar = QToolBar("Main actions", self)
         toolbar.setMovable(False)
@@ -227,6 +243,10 @@ class MainWindow(QMainWindow):
                 hint = f"{hint}\nPress again to close the pane"
             else:
                 action.triggered.connect(callback)
+            if name in SHORTCUTS:
+                action.setShortcut(QKeySequence(SHORTCUTS[name]))
+                hint = f"{hint}\nShortcut: {SHORTCUTS[name]}"
+                self._shortcut_actions.append(action)
             action.setToolTip(hint)
             action.setStatusTip(hint)
             button = QToolButton()
@@ -245,13 +265,15 @@ class MainWindow(QMainWindow):
                 self.connect_btn = button
             elif name == "disconnect":
                 self.disconnect_btn = button
-                button.setEnabled(False)
+                action.setEnabled(False)     # the button follows its action; so do the key and the menu
         self.addToolBar(toolbar)
 
         # The centre is the workspace: the panel and the analysis windows, which tab together, float
         # and can be dragged onto each other. Configuration, CAN Channels and Log stay Qt docks around it.
         self.workspace = create_workspace(self)
         self._workspace_style = self.workspace.styleSheet()   # palette(...) colours, re-read per theme
+        # A floating window is a window of its own: the main window's keys are given to it too.
+        self.workspace.floatingWidgetCreated.connect(lambda floating: floating.addActions(self._shortcut_actions))
 
         # Dock: Configuration (closable, collapsible)
         config_widget = QWidget()
@@ -554,6 +576,7 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu('File')
         
         new_config_action = file_menu.addAction('New Configuration')
+        new_config_action.setShortcut(QKeySequence.New)
         new_config_action.triggered.connect(self.create_new_config)
         
         import_config_action = file_menu.addAction('Import Configuration')
@@ -569,6 +592,7 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
         exit_action = file_menu.addAction('Exit')
+        exit_action.setShortcut(QKeySequence("Ctrl+Q"))
         exit_action.triggered.connect(self.close)
 
         # Connection menu: the session, and what is written to or read from a file
@@ -577,17 +601,22 @@ class MainWindow(QMainWindow):
             measurement_menu.addAction(self._toolbar_actions[name])
         measurement_menu.addSeparator()
         self._record_action = measurement_menu.addAction('Record to file...')
+        self._record_action.setShortcut(QKeySequence("Ctrl+R"))
         self._record_action.triggered.connect(self.start_recording)
         self._stop_record_action = measurement_menu.addAction('Stop recording')
+        self._stop_record_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
         self._stop_record_action.setEnabled(False)
         self._stop_record_action.triggered.connect(self.stop_recording)
-        measurement_menu.addAction('Replay a recorded file...').triggered.connect(lambda: self.replay_log())
+        replay_action = measurement_menu.addAction('Replay a recorded file...')
+        replay_action.setShortcut(QKeySequence("Ctrl+O"))
+        replay_action.triggered.connect(lambda: self.replay_log())
+        self._shortcut_actions += [self._record_action, self._stop_record_action, replay_action]
         measurement_menu.addSeparator()
         measurement_menu.addAction('Scan for ECUs...').triggered.connect(lambda: self.open_ecu_scan())
 
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
-        tools_menu.addAction('Form Designer').triggered.connect(self.open_form_designer)
+        tools_menu.addAction(self._toolbar_actions["designer"])
         for name in self.tool_names:
             tools_menu.addAction(self._toolbar_actions[name])   # checked while the pane is open
         tools_menu.addSeparator()
@@ -641,6 +670,13 @@ class MainWindow(QMainWindow):
         help_btn.setPopupMode(QToolButton.InstantPopup)
         help_menu = QMenu(help_btn)
         help_menu.addAction("User manual", self.open_manual)
+        self.context_help_action = help_menu.addAction("Help on this window", self.context_help)
+        self.context_help_action.setShortcut(QKeySequence.HelpContents)
+        self.context_help_action.setToolTip("The manual at the section of the window you are working in")
+        self.addAction(self.context_help_action)         # a menu of a tool button gives its keys nothing
+        self._shortcut_actions.append(self.context_help_action)
+        help_menu.addAction("Keyboard shortcuts", lambda: self.open_manual("Keyboard shortcuts"))
+        help_menu.addSeparator()
         help_menu.addAction("About", self.show_about)
         help_btn.setMenu(help_menu)
         self.manual_btn = QToolButton()
@@ -659,23 +695,39 @@ class MainWindow(QMainWindow):
     def _refresh_manual_icon(self):
         self.manual_btn.setIcon(line_icon(MANUAL_ICON, self.palette().color(QPalette.WindowText)))
 
-    def open_manual(self):
-        """Show the user manual (docs/USER_MANUAL.md)."""
-        return show_manual(self)
+    def open_manual(self, section=None):
+        """Show the user manual (docs/USER_MANUAL.md), at a section if one is named."""
+        window = show_manual(self)
+        if section:
+            window.go_to_section(section)
+        return window
+
+    def help_section(self, widget=None) -> str:
+        """The manual's section for a widget (default: the one with the focus): its tool window's, the
+        panel's, a side panel's, else the start of the manual."""
+        widget = widget if widget is not None else QApplication.focusWidget()
+        tools = {id(pane.widget()): name for name, pane in self.tool_panes.items()}
+        panels = {id(self.app_db_container), *(id(pane.widget()) for pane in self.page_panes)}
+        docks = {id(self.config_dock): "Configurations", id(self.channels_dock): "Connecting"}
+        while widget is not None:
+            if id(widget) in tools:
+                return HELP_SECTIONS.get(tools[id(widget)], "Starting up")
+            if id(widget) in panels:
+                return "Using a panel"
+            if id(widget) in docks:
+                return docks[id(widget)]
+            widget = widget.parentWidget()
+        return "Starting up"
+
+    def context_help(self):
+        """F1: the manual at the section of the window being worked in."""
+        return self.open_manual(self.help_section())
 
     def show_about(self):
-        """Show About dialog with app info."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle("About CAN Expert")
-        layout = QVBoxLayout(dlg)
-        layout.setSpacing(12)
-        layout.addWidget(QLabel("CAN Expert"))
-        layout.addWidget(QLabel("CAN and UDS tool: panel databases with Python scripts, Form Designer, CAN Logger,\n"
-                                "Trace, UDS Console, firmware flashing and a simulated ECU."))
-        ok_btn = QPushButton("OK")
-        ok_btn.clicked.connect(dlg.accept)
-        layout.addWidget(ok_btn, 0, Qt.AlignCenter)
-        dlg.exec_()
+        """The About box: the version of CAN Expert, its libraries and the adapter drivers."""
+        dialog = AboutDialog(self)
+        dialog.exec_()
+        return dialog
 
     def apply_theme(self, theme: str, restore: bool = False):
         """Apply light or dark theme to the application."""
@@ -798,6 +850,7 @@ class MainWindow(QMainWindow):
             window.add(*entry)
         if level == "error":
             self.log_verbose(text)
+            self.status_strip.set_error(text)
 
     def script_watch(self):
         """(the script's globals, the names CAN Expert put there), for the Write window's watch."""
@@ -1176,6 +1229,8 @@ class MainWindow(QMainWindow):
             if setup.describe():
                 self.log_verbose(f"Channel setup: {setup.describe()}")
             self.session_config = config
+            transport = uds_transport(config)
+            self._diagnostic_answers = (transport["response_id"], transport["extended"], transport["address_byte"])
             self.connected_channel_config = dict(cfg)
             self._remember_channel(cfg)
             self.session_generation += 1
@@ -1210,8 +1265,9 @@ class MainWindow(QMainWindow):
             runtime.dbc = self.panel.dbc
             runtime.handlers = self.panel.handlers()
             runtime.start(script_path)
-            self.connect_btn.setEnabled(False)
-            self.disconnect_btn.setEnabled(True)
+            self._toolbar_actions["connect"].setEnabled(False)
+            self._toolbar_actions["disconnect"].setEnabled(True)
+            self.status_strip.connected()
             self._set_flashing_available(False)
             self.flashing_toolbar_item.setVisible(True)
             self.config_list.setEnabled(False)
@@ -1243,6 +1299,7 @@ class MainWindow(QMainWindow):
 
     def _session_failed(self, error):
         self.log_verbose(error)
+        self.status_strip.set_error(error)
         self.on_disconnect_clicked()
         self._set_status(error, "red")
 
@@ -1269,8 +1326,9 @@ class MainWindow(QMainWindow):
         self.connected_channel_config = None
         self.stop_recording()
         self._label_channels()
-        self.connect_btn.setEnabled(True)
-        self.disconnect_btn.setEnabled(False)
+        self._toolbar_actions["connect"].setEnabled(True)
+        self._toolbar_actions["disconnect"].setEnabled(False)
+        self.status_strip.disconnected()
         self.config_list.setEnabled(True)
         self._restore_side_panels()
         self.database_pane.toggleView(False)
@@ -1648,7 +1706,10 @@ class MainWindow(QMainWindow):
         if status.get("state") == "bus off" and self._bus_state != "bus off":
             self.log_verbose("The adapter reports bus off: no frames are being sent or received")
             self._set_status("Bus off — check the wiring, the bit rate and the termination", "red")
+            self.status_strip.set_error("Bus off")
         state = status.get("state", "unknown")
+        if self.session_config is not None:
+            self.status_strip.set_bus(state, status.get("error_frames", 0))
         if self._bus_state is not None and state != self._bus_state and self.script_runtime is not None:
             self.script_runtime.post("bus_state", None, state)      # @on_bus_state
         self._bus_state = state
@@ -1666,6 +1727,11 @@ class MainWindow(QMainWindow):
             self.node_states[(channel_key(self.connected_channel_config), can_id)] = {
                 "last_seen": time.monotonic(), "timeout": self.session_config["node_timeout_seconds"]}
             self._update_nodes()
+        response_id, extended, address_byte = self._diagnostic_answers
+        if can_id == response_id and bool(msg_dict.get("is_extended_frame", False)) == extended:
+            payload = DiagnosticState.payload(data, address_byte)       # session, security, NRCs
+            if payload:
+                self.status_strip.on_response(payload)
         self.dispatch_frame(msg_dict.get("timestamp") or time.time(), "RX", can_id, data,
                             msg_dict.get("is_extended_frame", False))
         if self.panel:
