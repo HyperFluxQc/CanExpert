@@ -65,7 +65,7 @@ class ToggleButtonTest(unittest.TestCase):
         """Every button in the application that switches an option on: (where, name, button)."""
         buttons = {button.accessibleName(): button for button in self.window.findChildren(QToolButton)}
         found = [("toolbar", name, buttons[self.window._toolbar_actions[name].text()])
-                 for name in main.TOOL_PANES]
+                 for name in self.window.tool_names]
         for where, window in (("logger", self.window.open_can_logger()), ("trace", self.window.open_trace())):
             found += [(where, name, button) for name, button in window._tool_buttons.items()
                       if button.isCheckable()]

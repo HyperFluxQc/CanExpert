@@ -13,6 +13,7 @@ from PyQt5.QtGui import QColor, QFont, QPainter, QPalette, QSyntaxHighlighter, Q
 from PyQt5.QtWidgets import (QCompleter, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter,
                              QTextBrowser, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from canexpert import features
 from canexpert.uds.client import EXCLUDED_SERVICES, FUNCTIONS, GROUPS
 
 # What completion offers. The deprecated calls (api.on, api.on_can, api.every, api.uds.rdbi, ...) still
@@ -27,6 +28,11 @@ API_WORDS = [
     "Flashing", "frame.id", "frame.data", "frame.signals",
     ".ok", ".data", ".text", ".int", ".nrc", ".nrc_name", ".error", ".raw", ".max_block_length",
 ] + [entry.name for entry in FUNCTIONS]
+
+
+def api_words() -> list[str]:
+    """What completion offers: API_WORDS without the system variables while they are switched off."""
+    return [word for word in API_WORDS if features.SYSTEM_VARIABLES or "sysvar" not in word]
 
 
 def _format(colour, bold=False, italic=False):
@@ -190,7 +196,7 @@ class CodeEditor(QPlainTextEdit):
         self._refresh_completions()
 
     def _refresh_completions(self):
-        words = set(keyword.kwlist) | set(API_WORDS) | set(self._extra_words)
+        words = set(keyword.kwlist) | set(api_words()) | set(self._extra_words)
         words |= set(re.findall(r"\b[A-Za-z_]\w{2,}\b", self.toPlainText()))
         self.completer.setModel(QStringListModel(sorted(words, key=str.lower), self.completer))
 

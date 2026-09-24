@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import can
 from PyQt5.QtCore import QSettings, Qt
-from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
+from PyQt5.QtWidgets import QAction, QApplication, QDialog, QMessageBox
 
 from canexpert import can_bus
 from canexpert import main_window as main
@@ -717,7 +717,6 @@ VAL_ 256 Enable 0 "Off" 1 "On";
 @on_start
 def hello(api):
     api.log("written by the script")
-    api.sysvar.set("Bench::Ready", 1)
 
 @on_key("k")
 def key(api, key):
@@ -733,11 +732,49 @@ def key(api, key):
         APP.processEvents()
         QApplication.sendEvent(self.window.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
         self.assertTrue(spin_until(lambda: any("key k" in line for line in write.lines())), write.lines())
-        self.assertEqual(self.window.sysvars.get("Bench::Ready"), 1)
-        logger = self.window.open_can_logger()                     # opened later: filled from the history
-        self.assertIn("Bench::Ready", logger._items)
         self.window.on_disconnect_clicked()
         self.assertFalse(self.window._keys_watched)
+
+    def test_system_variables_are_nowhere_while_switched_off(self):
+        from canexpert import features
+        self.assertFalse(features.SYSTEM_VARIABLES, "switched off for now (canexpert/features.py)")
+        self.assertIsNone(self.window.sysvars)
+        self.assertNotIn("sysvars", self.window._toolbar_actions)
+        self.assertNotIn("sysvars", self.window._tool_slots)
+        menus = [action.text() for action in self.window.findChildren(QAction)]
+        self.assertNotIn("System Variables", menus)
+        (self.databases / 'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_start
+def names(api):
+    api.log(f"on_sysvar there: {'on_sysvar' in globals()}, api.sysvar there: {hasattr(api, 'sysvar')}")
+""")
+        self.window.on_connect_clicked()
+        write = self.window.open_write()
+        self.assertTrue(spin_until(lambda: any("on_sysvar there: False, api.sysvar there: False" in line
+                                               for line in write.lines())), write.lines())
+
+    def test_system_variables_when_switched_on(self):
+        from canexpert import features
+        switched = patch.object(features, "SYSTEM_VARIABLES", True)
+        switched.start()
+        self.addCleanup(switched.stop)
+        (self.databases / 'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_start
+def ready(api):
+    api.sysvar.set("Bench::Ready", 1)
+""")
+        window = main.MainWindow()
+        self.addCleanup(window.close)
+        window.selected_channel_config = {"interface": "virtual", "channel": 0}
+        self.assertIn("sysvars", window._toolbar_actions)
+        window.on_connect_clicked()
+        self.assertTrue(spin_until(lambda: window.sysvars.get("Bench::Ready") == 1))
+        self.assertTrue(spin_until(lambda: any(entry[1] == "Bench::Ready" for entry in window.sysvar_history)),
+                        "the change reaches the main window, queued from the script thread")
+        logger = window.open_can_logger()                          # opened later: filled from the history
+        self.assertIn("Bench::Ready", logger._items)
+        self.assertIsNotNone(window.open_sysvars())
+        window.on_disconnect_clicked()
 
     def test_every_page_of_the_database_is_a_window_of_its_own(self):
         two_pages = PANEL.replace("</page></pages>", '</page><page name="Body">'

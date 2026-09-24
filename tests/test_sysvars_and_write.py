@@ -13,6 +13,7 @@ import can
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication, QDialog
 
+from canexpert import features
 from canexpert.can_bus import ReceiveMailbox
 from canexpert.can_logger import CANLoggerWindow
 from canexpert.config import validate_config
@@ -177,6 +178,9 @@ class VariablesWindowTest(unittest.TestCase):
 
 class ScriptEventsTest(unittest.TestCase):
     def setUp(self):
+        switched = patch.object(features, "SYSTEM_VARIABLES", True)   # off for now; the code keeps working
+        switched.start()
+        self.addCleanup(switched.stop)
         channel = "sysvar-" + str(uuid.uuid4())
         self.bus = can.Bus(interface="virtual", channel=channel)
         self.addCleanup(self.bus.shutdown)

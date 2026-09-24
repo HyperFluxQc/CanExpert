@@ -64,6 +64,7 @@ from canexpert.paths import APP_DIR, CONFIG_DIR, DATABASES_DIR
 from canexpert.recording import LOG_FILE_FILTER, Recorder, ReplayDialog
 from canexpert.statistics_window import StatisticsWindow
 from canexpert.symbols import SymbolDatabaseDialog, SymbolDatabases
+from canexpert import features
 from canexpert.sysvars import SystemVariables, SystemVariablesWindow
 from canexpert.trace_window import TraceWindow
 from canexpert.transport_settings import apply_transport, load_transport
@@ -87,10 +88,15 @@ LAYOUT_STATE = "layout/state"
 LAYOUT_WORKSPACE = "layout/workspace"
 DESKTOPS = "layout/desktops"       # settings: name -> saved window arrangement (a "desktop")
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
-TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
-              "write", "sysvars")   # the windows with a switch on the toolbar
+ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
+                  "write", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 TOOL_AREAS = {"trace": "bottom", "transmit": "bottom", "write": "bottom"}   # the others: an area of their own
 PAGE_PANE = re.compile(r"pane_page_(\d+)$")
+
+
+def tool_panes() -> tuple:
+    """The tool windows the toolbar offers: those whose feature is switched on (features.py)."""
+    return tuple(name for name in ALL_TOOL_PANES if name != "sysvars" or features.SYSTEM_VARIABLES)
 WRITE_HISTORY = 5000               # Write window lines kept for when it is opened
 
 
@@ -133,9 +139,12 @@ class MainWindow(QMainWindow):
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
         # One clock for the Trace, the Logger, the Write window and the UDS Console (clock.py).
         self.clock = MeasurementClock()
-        # System variables (sysvars.py), the script's Write output, and the bus state scripts react to.
-        self.sysvars = SystemVariables(self._settings, self)
-        self.sysvars.changed.connect(self._on_sysvar_changed)
+        # System variables (sysvars.py) when they are switched on, the script's Write output, and the bus
+        # state scripts react to.
+        self.tool_names = tool_panes()
+        self.sysvars = SystemVariables(self._settings, self) if features.SYSTEM_VARIABLES else None
+        if self.sysvars is not None:
+            self.sysvars.changed.connect(self._on_sysvar_changed)
         self.sysvar_history = deque(maxlen=FRAME_HISTORY)      # (when, name, value) for a Logger opened later
         self.write_history = deque(maxlen=WRITE_HISTORY)       # (when, level, text) for a Write window opened later
         self._bus_state = None
@@ -205,11 +214,12 @@ class MainWindow(QMainWindow):
             ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",
              self.open_flashing),
         ]
+        entries = [entry for entry in entries if entry[0] not in ALL_TOOL_PANES or entry[0] in self.tool_names]
         for name, label, hint, callback in entries:
             if name == "trace":
                 toolbar.addSeparator()
             action = QAction(toolbar_icon(name), label, self)
-            if name in TOOL_PANES:
+            if name in self.tool_names:
                 # A tool button works as a switch: it stays pressed while its pane is open, pressing it
                 # again closes the pane, and closing the pane by its own button lets the toolbar go.
                 action.setCheckable(True)
@@ -311,7 +321,7 @@ class MainWindow(QMainWindow):
         self._tool_slots = {}
         self._settling = False     # a layout is being put right: the toolbar switches do not act
         for name, label, _hint, _callback in entries:
-            if name in TOOL_PANES:
+            if name in self.tool_names:
                 area = TOOL_AREAS.get(name, "center")
                 slot = make_pane(label, QWidget(), f"pane_{name}")
                 add_pane(self.workspace, slot, area, beside=self.database_pane if area != "center" else None)
@@ -578,7 +588,7 @@ class MainWindow(QMainWindow):
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
         tools_menu.addAction('Form Designer').triggered.connect(self.open_form_designer)
-        for name in TOOL_PANES:
+        for name in self.tool_names:
             tools_menu.addAction(self._toolbar_actions[name])   # checked while the pane is open
         tools_menu.addSeparator()
         tools_menu.addAction('Symbol databases...').triggered.connect(self.edit_symbol_databases)
@@ -1180,7 +1190,8 @@ class MainWindow(QMainWindow):
             worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
             worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
             self.worker = worker
-            self.sysvars.reset()                   # every variable back to its initial value
+            if self.sysvars is not None:
+                self.sysvars.reset()               # every variable back to its initial value
             runtime = ScriptRuntime(mailbox, config, self.panel.values(), self, sysvars=self.sysvars)
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
             runtime.message.connect(lambda level, text, g=generation: self.write_message(level, text)

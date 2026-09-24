@@ -32,13 +32,18 @@ def spin_until(predicate, timeout=3.0):
 
 class CompletionTest(unittest.TestCase):
     def test_completion_offers_the_current_api_and_not_the_deprecated_calls(self):
-        from canexpert.designer.code_editor import API_WORDS
-        for current in ("on_control", "on_message", "on_timer", "on_sysvar", "on_key", "api.write", "api.warn",
-                        "api.sysvar.set", "RDBI", "UDS"):
-            self.assertIn(current, API_WORDS)
+        from canexpert import features
+        from canexpert.designer.code_editor import api_words
+        for current in ("on_control", "on_message", "on_timer", "on_key", "api.write", "api.warn", "RDBI", "UDS"):
+            self.assertIn(current, api_words())
         for deprecated in ("api.on", "api.on_can", "api.every", "api.uds.rdbi", "api.uds.request",
                            "api.can.get_latest_messages", "api.uds.transfer_data_from_file"):
-            self.assertNotIn(deprecated, API_WORDS)
+            self.assertNotIn(deprecated, api_words())
+        with patch.object(features, "SYSTEM_VARIABLES", False):
+            self.assertFalse([word for word in api_words() if "sysvar" in word], "switched off: not offered")
+        with patch.object(features, "SYSTEM_VARIABLES", True):
+            self.assertIn("on_sysvar", api_words())
+            self.assertIn("api.sysvar.set", api_words())
 
 
 class FormDesignerTest(unittest.TestCase):

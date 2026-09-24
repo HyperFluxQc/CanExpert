@@ -197,7 +197,7 @@ class MeasurementTest(unittest.TestCase):
         self.assertEqual(len(trace.frames), 1)
 
     def test_every_pane_button_follows_its_pane(self):
-        for name in main.TOOL_PANES:
+        for name in self.window.tool_names:
             action = self.window._toolbar_actions[name]
             action.trigger()
             self.assertTrue(action.isChecked(), name)

@@ -20,6 +20,7 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 from canexpert.config import uds_transport
 from canexpert.flashing import load_firmware, parse_s19_s28_file
+from canexpert import features
 from canexpert.sysvars import SystemVariables
 from canexpert.uds.client import UdsFunctions, uds_request
 
@@ -34,12 +35,14 @@ class DatabaseAPI:
     - api.signal(name), api.set_signal(name, value), api.send_message(message, **signals)
     - api.can.send(id, data)
     - api.ui.get_value(name), api.ui.set_value(name, value)
-    - api.sysvar.get(name), api.sysvar.set(name, value), api.sysvar[name]: system variables
+    - api.sysvar.get(name), api.sysvar.set(name, value), api.sysvar[name]: system variables, when they are
+      switched on (features.SYSTEM_VARIABLES)
     - api.log(msg) / api.write(msg), api.warn(msg): the Write window
     - api.dll.load(path), api.dll.call(path, name, *args)
     - api.progress(done, total, message), api.flash_cancelled, api.sleep(seconds)
     The ISO 14229 services are plain functions in the script (RDBI, RD, TD, UDS("22 F1 90"), ...), and
-    events are decorators (@on_control, @on_message, @on_timer, @on_signal, @on_sysvar, @on_key, ...).
+    events are decorators (@on_control, @on_message, @on_timer, @on_signal, @on_key, ...; @on_sysvar with
+    the system variables).
 
     Deprecated, and kept working for the scripts that use them: api.on (use @on_control), api.on_can
     (@on_message), api.every (@on_timer), api.can.get_latest_messages (@on_message), and api.uds.request,
@@ -64,7 +67,8 @@ class DatabaseAPI:
         self.uds = _UDSApi(self)
         self.dll = _DLLApi(self)
         self.ui = _UIApi(self)
-        self.sysvar = _SysVarApi(self)
+        if features.SYSTEM_VARIABLES:
+            self.sysvar = _SysVarApi(self)
 
     def on(self, name, callback):
         """Deprecated: use @on_control(name). Register callback(value) for a named button/input event."""
@@ -348,7 +352,7 @@ UDS services are plain functions: RDBI(0xF190) sends 22 F1 90 and returns a resu
 positive; .data, .text, .int, .error). See the UDS functions panel beside the editor.
 Name a function's first parameter api to receive the script API: api.signal("Msg.Sig"),
 api.set_signal("Msg.Sig", value), api.send_message("Msg", Sig=value), api.can.send(id, data),
-api.ui.set_value(name, value), api.sysvar["Engine::Target"], api.log(text) - the Write window.
+api.ui.set_value(name, value), api.log(text) - the Write window.
 Callbacks run one at a time on a background thread and stop on disconnect.
 """
 
@@ -431,10 +435,13 @@ class ScriptRuntime(QObject):
         self.hidden_names = set()       # the names CAN Expert put there
         self._messages = None
         self._stop_done = threading.Event()
-        # The system variables the windows share; a private set when the runtime runs on its own.
-        self.sysvars = sysvars if sysvars is not None else SystemVariables()
+        # The system variables the windows share, when they are switched on; a private set when the
+        # runtime runs on its own.
+        self.sysvars = None
         self._sysvar_slot = lambda name, value, _when: self.post("sysvar", name, value)
-        self.sysvars.changed.connect(self._sysvar_slot)
+        if features.SYSTEM_VARIABLES:
+            self.sysvars = sysvars if sysvars is not None else SystemVariables()
+            self.sysvars.changed.connect(self._sysvar_slot)
         self.api = DatabaseAPI(bus, log_cb=lambda text: self.say("info", text))
         self.api._transport = uds_transport(config)
         self.api._runtime = self
@@ -559,10 +566,13 @@ class ScriptRuntime(QObject):
             return fn
 
         # ISO 14229 service functions (RDBI, WDBI, DSC, ...) over the session's UDS transport.
-        return {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start, "on_stop": on_stop,
-                "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal, "on_control": on_control,
-                "on_sysvar": on_sysvar, "on_key": on_key, "on_error_frame": on_error_frame,
-                "on_bus_state": on_bus_state, **self.api.uds.functions.namespace()}
+        namespace = {"__file__": str(path), "__name__": "canexpert_panel", "on_start": on_start,
+                     "on_stop": on_stop, "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal,
+                     "on_control": on_control, "on_key": on_key, "on_error_frame": on_error_frame,
+                     "on_bus_state": on_bus_state, **self.api.uds.functions.namespace()}
+        if self.sysvars is not None:
+            namespace["on_sysvar"] = on_sysvar
+        return namespace
 
     def _register_handlers(self, namespace):
         for control, name in self.handlers.items():
@@ -726,7 +736,8 @@ class ScriptRuntime(QObject):
             self._stop_done.wait(1.0)
         self.stop_event.set()
         try:
-            self.sysvars.changed.disconnect(self._sysvar_slot)
+            if self.sysvars is not None:
+                self.sysvars.changed.disconnect(self._sysvar_slot)
         except TypeError:                          # already disconnected
             pass
         self.api.set_bus(None)

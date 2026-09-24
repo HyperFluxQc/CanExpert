@@ -21,8 +21,8 @@ The main window has a toolbar and four panels:
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
 | **Log** | The application's messages, *Debug* or *Verbose*. The frames themselves are in the Trace window. |
 
-The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write, System
-Variables — open in the **workspace** in
+The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — open in
+the **workspace** in
 the middle, together with the Database panel, where they can be tabbed, split and floated (see
 *Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
 window is open, pressing it again closes the window, and closing the window with its own **×** lets the
@@ -319,18 +319,14 @@ def trouble(api, timestamp):
 @on_bus_state                              # error active, error passive or bus off
 def state(api, state):
     api.ui.set_value("bus", state)
-
-@on_sysvar("Engine::TargetSpeed")          # a system variable changed
-def target(api, value):
-    api.set_signal("EngineCommand.Speed", value)
 ```
 
 Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
 
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.
-`api` gives you `api.can.send`, `api.ui`, `api.signal/set_signal/send_message`, `api.sysvar`,
-`api.log` / `api.write` and `api.warn`, `api.sleep` and `api.dll`. Callbacks run one at a time on a
+`api` gives you `api.can.send`, `api.ui`, `api.signal/set_signal/send_message`, `api.log` /
+`api.write` and `api.warn`, `api.sleep` and `api.dll`. Callbacks run one at a time on a
 background thread and stop when you disconnect.
 
 Older scripts may use `api.on`, `api.on_can`, `api.every`, `api.can.get_latest_messages` and the
@@ -346,21 +342,6 @@ both.
 
 The full API is in [Requirements implementation](REQUIREMENTS_STATUS.md#panel-scripts), and
 `examples/` holds a runnable panel and script.
-
-## System variables
-
-**Tools → System Variables** lists values the script, the windows and you share, named
-`Namespace::Name` (`Engine::TargetSpeed`), as CANoe's system variables are.
-
-- The script sets and reads them — `api.sysvar.set("Engine::TargetSpeed", 1200)`,
-  `api.sysvar["Engine::TargetSpeed"]` — and reacts with `@on_sysvar`. Setting one that does not exist
-  yet creates it.
-- **Double-click a value** in the window to type a new one; the script hears it at once.
-- **New...** defines one with its type (float, int, bool, text), initial value, unit and comment;
-  **Edit...**, **Remove**, and **Load...** / **Save...** as a JSON file to share a set.
-- The CAN Logger plots the numeric ones from its **System variables** branch, next to the bus signals.
-
-Every variable starts again from its initial value when you connect.
 
 ## CAN Logger
 
@@ -539,8 +520,8 @@ you can study a recording made in a vehicle at your desk.
 ## Arranging the windows
 
 The middle of the main window is the **workspace**, where the pages of the loaded database and the
-analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write, System
-Variables — live. Configuration, CAN Channels and Log stay
+analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console and Write — live.
+Configuration, CAN Channels and Log stay
 as fixed panels around it.
 
 Workspace windows behave as they do in CANoe:
@@ -682,8 +663,8 @@ Recordings go wherever you save them; `.blf` is the most compact.
 
 The window arrangement and its saved desktops, the theme, the symbol databases, the transmit list, the
 simulated nodes' ticked messages, the flashing sequence settings, each configuration's ISO-TP settings, each
-channel's setup, the system variable definitions, the panel zooms, the time display and the receiver used
-last are all remembered between runs.
+channel's setup, the panel zooms, the time display and the receiver used last are all remembered
+between runs.
 
 ## If something does not work
 

@@ -105,7 +105,8 @@ flowchart LR
 | **channel_setup.py** | Per adapter channel, kept in the settings: `ChannelSetup` (sample point, SJW, listen-only, receive filter), `bit_timing()` (a python-can `BitTiming` on the driver's clock), `parse_filters()`/`range_masks()` (identifier ranges cut into aligned id/mask pairs), `open_configured()` (options, filters with the session's response IDs added, `ListenOnlyBus`), `detect_bitrate()` (listen-only at each common rate). `channel_setup_dialog.py` is the dialog and its `BitrateDetector` thread. |
 | **frame_filter.py** | The Trace's filter syntax: `parse_filter()` and `FrameFilter` (ranges, names, Pass/Stop, direction). |
 | **clock.py** | `MeasurementClock` (the start of the measurement, set at connect, ECU check or replay) and `absolute_text()` (a time of day, or seconds when the timestamp is not one), so every window shows a frame's own time against the same start. |
-| **sysvars.py** | System variables: `SystemVariables` (thread-safe values, definitions in the settings or a JSON file, `changed` signal, reset at each measurement) and `SystemVariablesWindow`. |
+| **features.py** | Features built but switched off for now - CAN Expert's `#if 0`. A feature that is off shows nowhere (toolbar, menus, windows, the script API, completion, the user manual); its code stays and its tests switch it on. Read while the application runs, so a test can patch it. Now: `SYSTEM_VARIABLES = False`. |
+| **sysvars.py** | System variables, **switched off** (`features.SYSTEM_VARIABLES`): `SystemVariables` (thread-safe values, definitions in the settings or a JSON file, `changed` signal, reset at each measurement) and `SystemVariablesWindow`. Switched on, the main window has a System Variables window and feeds the CAN Logger, and scripts get `api.sysvar` and `@on_sysvar`. |
 | **write_window.py** | The Write window: the script's output with its level and time (Absolute or Relative, as *View → Time display* says), level filter, search, save; and `watch_values()` for the Script variables tab. |
 | **ecu_scan.py** | `find_responders()` (TesterPresent over an 11-bit range or 29-bit normal fixed addresses), `probe()` (sessions, identification DIDs), `EcuScanner` (a thread; over a session mailbox it holds a transaction so the session's TesterPresent pauses) and `EcuScanDialog`. |
 | **mdf4.py** | `write_mdf4()`: a dependency-free ASAM MDF 4.10 writer (a data group with a master time channel per signal, units, the start time). |
@@ -114,7 +115,7 @@ flowchart LR
 | **panel/view.py** | `PanelView`: builds every page as a `PanelWindow` - in tabs, or handed out as `page_windows` for the main window to make each one a workspace window - decodes raw and DBC-bound values, emits `control_changed(name, value)`. |
 | **panel/page_window.py** | `PanelPage` (controls at their designed geometry and font, drawn at a zoom factor) and `PanelWindow` (Fit or 50-200 %, Ctrl + wheel). |
 | **panel/controls.py** | Control registry shared by the designer and running panels: per control its palette entry, properties, construction, value display and input events; painted controls (gauge, LED, multi-state indicator, toggle switch, knob, 7-segment display, trend); `format_value()` and appearance handling. |
-| **panel/runtime.py** | `DatabaseAPI` given to scripts (`api.signal/set_signal/send_message`, `api.can.send`, `api.dll`, `api.ui`, `api.sysvar`, `api.log/write/warn`, `api.progress`; the deprecated `api.on/on_can/every`, `api.can.get_latest_messages` and `api.uds.*` still work), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators - `on_start/stop/timer/message/signal/control/sysvar/key/error_frame/bus_state` - timers, flashing, cancellation; `message(level, text)` for the Write window). |
+| **panel/runtime.py** | `DatabaseAPI` given to scripts (`api.signal/set_signal/send_message`, `api.can.send`, `api.dll`, `api.ui`, `api.log/write/warn`, `api.progress`, and `api.sysvar` when system variables are switched on; the deprecated `api.on/on_can/every`, `api.can.get_latest_messages` and `api.uds.*` still work), `SCRIPT_TEMPLATE`, `ScriptRuntime` (script thread, handler functions, CAPL-style event decorators - `on_start/stop/timer/message/signal/control/key/error_frame/bus_state`, and `on_sysvar` when switched on - timers, flashing, cancellation; `message(level, text)` for the Write window). |
 | **uds/isotp.py** | ISO 15765-2 transport: single, first and consecutive frames, flow control (block size, STmin, WAIT, overflow) in both directions, the escape sequence beyond 4095 bytes. |
 | **uds/client.py** | `uds_request()` (one exchange, skipping unrelated replies - periodic `6A <id> <data>` frames too, while it waits for the answer to 0x2A - and extending the wait on NRC 0x78), `make_request()` (a request function bound to one mailbox, for the console and its ODX tab, the flash runner and the scan) and the ISO 14229-1 service functions for scripts (`RDBI`, `WDBI`, `DSC`, `SA`, `RC`, `RD`/`TD`/`RTE`, ... every service except 0x29 and 0x84) returning `UdsResult`; `NRC_NAMES`. `DSC()` learns the P2/P2* the ECU announces and every later request waits that long, never less than the configuration allows. |
 | **uds/observer.py** | Reading diagnostics out of plain frames: `assemble()` puts ISO 15765-2 single, first and consecutive frames back together into `TransportMessage`s (escape sequence and extended addressing included, flow control dropped), and `service_name()` names the service from the catalogue in `uds/client.py`. |
@@ -126,7 +127,7 @@ flowchart LR
 | **designer/canvas.py** | The page canvas: widgets to move, resize, select and order, the drop target for palette items and DBC signals, layout tools, clipboard and undo/redo. |
 | **designer/side_panels.py** | Control palette, DBC symbol list and the schema-driven property editor, with the designer's shared constants and naming helpers. |
 | **designer/code_editor.py** | Python editor for panel scripts: syntax highlighting, line numbers, auto-indent, completion (the current API without the deprecated calls, control names, DBC signals, UDS functions), syntax check; `UdsFunctionPanel` lists the UDS functions by ISO 14229 functional unit and inserts calls. |
-| **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, a System variables branch; the current values are the Data window's), samples capped per signal (`_Series` drops its oldest quarter), one strip chart per ticked signal on a shared time axis or several signals in one graph with a legend (`graph_groups()`/`set_graph_group()`), statistics between the cursors, `export()` as long or wide CSV, MDF 4 or PNG, a symbol toolbar (clear, pause/resume, follow, fit, Lock X / Lock Y for mouse zoom and pan, measurement cursors) whose icons follow the theme, two white dashed measurement cursors labelled #1 and #2 with per-signal values and Δ, a dotted hover crosshair with a time/value readout, Graph options (drawing style: step line, line with dots or dots; follow window; exact time and value ranges), CSV export of all decoded data. |
+| **can_logger.py** | CANoe-style graphics window: DBC signal tree (filter, a System variables branch while they are switched on; the current values are the Data window's), samples capped per signal (`_Series` drops its oldest quarter), one strip chart per ticked signal on a shared time axis or several signals in one graph with a legend (`graph_groups()`/`set_graph_group()`), statistics between the cursors, `export()` as long or wide CSV, MDF 4 or PNG, a symbol toolbar (clear, pause/resume, follow, fit, Lock X / Lock Y for mouse zoom and pan, measurement cursors) whose icons follow the theme, two white dashed measurement cursors labelled #1 and #2 with per-signal values and Δ, a dotted hover crosshair with a time/value readout, Graph options (drawing style: step line, line with dots or dots; follow window; exact time and value ranges), CSV export of all decoded data. |
 | **trace_window.py** | The Trace: frames buffered and flushed to a tree on a timer, symbolic names and lazily decoded signals from `symbols.py`, absolute/relative/delta time, pass and stop filters (`parse_filter()`), find, colour per identifier, CSV export; at most `MAX_ROWS` frames. **Transport** rebuilds the view from `uds/observer.py`, a row per diagnostic message instead of per frame. |
 | **statistics_window.py** | `Statistics`: frames per identifier with their rate, average/min/max cycle time and share of the bus (`frame_bits()` counts the overhead and worst-case stuffing), plus error frames and the controller state; `StatisticsWindow` shows them with freeze, filter, reset and CSV export (the bytes are the Trace's). Rates are measured against the newest frame while a file is replayed, so a recording keeps its own timing. |
 | **data_window.py** | `SignalValues`: the newest value of every signal, physical and raw (`decode(..., scaling=False)`), with its unit, age and count; `DataWindow` lists them beside the signals of the databases that have not arrived. |
@@ -177,7 +178,8 @@ CanExpert/
 │   ├── channel_setup_dialog.py # ... and its dialog
 │   ├── frame_filter.py         # The Trace's filter
 │   ├── clock.py                # One measurement clock for every window
-│   ├── sysvars.py              # System variables and their window
+│   ├── features.py             # Features switched off for now (system variables)
+│   ├── sysvars.py              # System variables and their window (switched off)
 │   ├── write_window.py         # The Write window: script output and variables
 │   ├── ecu_scan.py             # Scan for ECUs
 │   ├── mdf4.py                 # MDF 4 writer for the Logger's export
@@ -285,12 +287,12 @@ Script API summary (see [Requirements implementation](REQUIREMENTS_STATUS.md#pan
 
 | Call | Purpose |
 |------|---------|
-| Handler functions, `@on_control`, `@on_message`, `@on_signal`, `@on_timer`, `@on_sysvar`, `@on_key`, ... | React to events |
+| Handler functions, `@on_control`, `@on_message`, `@on_signal`, `@on_timer`, `@on_key`, ... | React to events |
 | `UDS(payload)`, `RDBI(did)`, `RD`, `TD`, `RTE`, ... | ISO 14229 services over ISO-TP, returning `UdsResult` |
 | `api.can.send(id, data)`, `api.signal`, `api.set_signal`, `api.send_message` | Raw CAN and DBC signals |
 | `api.progress(done, total, message)`, `api.flash_cancelled` | Flashing progress and cancellation |
 | `api.dll.load(path)`, `api.dll.call(path, name, *args)` | Native libraries |
-| `api.ui.get_value(name)`, `api.ui.set_value(name, value)`, `api.sysvar` | UI and system variables |
+| `api.ui.get_value(name)`, `api.ui.set_value(name, value)` | UI |
 | `api.log(text)` / `api.write(text)`, `api.warn(text)` | The Write window |
 
 **Deprecated**, kept working for existing scripts but no longer offered by completion: `api.on`
@@ -368,7 +370,7 @@ settings or a file of their own:
 | `flash_profile` | The built-in flashing sequence as JSON (`flash_sequence.FlashProfile`); **Save profile...** writes a file instead |
 | `transport/<configuration>` | ISO-TP padding and flow control of a configuration (`transport_settings.py`) |
 | `channel_setup/<channel key>` | Sample point, SJW, listen-only and receive filter of an adapter channel (`channel_setup.py`) |
-| `system_variables` | The system variable definitions (`sysvars.py`); **Save...** writes a JSON file instead |
+| `system_variables` | The system variable definitions (`sysvars.py`), while they are switched on; left as they are while off |
 | `panel_zoom/<family>/<page>` | The zoom of each panel page |
 | `time_display` | Absolute or Relative, for the Write window and the UDS Console |
 | `layout/geometry`, `layout/state`, `layout/desktops/<name>` | The window arrangement and the saved desktops |
@@ -447,7 +449,7 @@ python -B -m unittest discover -s tests -v
 - `tests/test_channel_setup.py`: identifier ranges cut into exact masks (checked against every 11-bit identifier), bit timing per adapter, listen-only refusing to send, receive filters with the session's answers let through, bit rate detection that never opens a channel in normal mode, and the dialog.
 - `tests/test_frame_filter.py`: Pass/Stop with the direction on top, the Trace's direction choice, the time of a timestamp that is not a time of day.
 - `tests/test_logger_exports.py`: the sample cap, statistics between the cursors, long and wide CSV, MDF 4 (walked block by block), PNG, and the export dialog.
-- `tests/test_sysvars_and_write.py`: system variables (types, names, changes, persistence, files), their window, the script events for system variables, keys, error frames and the bus state, the Write window's levels and watch, and the Logger plotting a variable.
+- `tests/test_sysvars_and_write.py`: system variables (types, names, changes, persistence, files), their window, the script events for system variables (switched on for the test), keys, error frames and the bus state, the Write window's levels and watch, and the Logger plotting a variable. `test_requirements.py` checks they show nowhere while switched off, and work in the main window switched on.
 - `tests/test_panel_windows.py`: pages keeping their designed geometry at any zoom, Fit following the window, Ctrl + wheel, pages in tabs or handed out as windows.
 - `tests/test_ecu_data.py`: the Dummy ECU's DID and DTC tables, snapshot and extended data, forced NRCs, profiles, two ECUs on one channel, and its Data tab.
 - `tests/test_ecu_scan.py`: the sweep over 11-bit and 29-bit addressing, padded probes, session and identification probing, and the scan dialog.

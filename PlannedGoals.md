@@ -339,7 +339,7 @@ with the script's `api.log` / `api.write` / `api.warn` and its errors, levels, s
 from the Debug log; and a **Script variables** tab watching the script's globals. Breakpoints and
 stepping are not done, nor `on preStart`.
 
-### 24. System variables — **DONE**
+### 24. System variables — **DONE, switched off for now**
 *Effort: medium*
 
 CANoe glues panels, CAPL and tests together with system variables. Here a control binds only to a
@@ -351,6 +351,10 @@ that part stays optional.
 set and read by scripts (`api.sysvar`, `@on_sysvar`), listed and typed into in the System Variables
 window, plotted by the CAN Logger, definitions kept in the settings or a JSON file, values reset at each
 measurement. As planned, controls are not bound to them in the panel XML; a script bridges the two.
+
+**Switched off** (`canexpert/features.py`, `SYSTEM_VARIABLES = False`): without controls bound to them or
+a link to bus signals they did little on their own, so they show nowhere until they can be bound. The
+code stays and its tests switch it on; turning them back on is setting the switch to True.
 
 ### 25. Filters everywhere — **DONE**
 *Effort: small to medium*

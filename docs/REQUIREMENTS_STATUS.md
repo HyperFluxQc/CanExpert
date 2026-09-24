@@ -55,8 +55,8 @@ in a file of its own.
   each ECU accepts and its identification DIDs, beside a running measurement.
 - **One measurement clock**: every window shows a frame's own timestamp, absolute or relative to the start
   of the measurement; the Trace also filters by direction.
-- **System variables** shared by the script, the windows and the user; a **Write window** for the script's
-  output and variables; script events for keys, error frames and the bus state.
+- A **Write window** for the script's output and variables; script events for keys, error frames and the
+  bus state.
 - **CAN Logger exports**: CSV with a row per sample or a column per signal, MDF 4, PNG, of everything, the
   screen or the cursor range; statistics between the cursors; a cap on the samples kept.
 - **Dummy ECU**: editable DIDs (live from a signal, or needing a session or a security level), DTCs whose
@@ -122,7 +122,7 @@ def tick(api):
 ```
 
 - **Handler property**: a control calls the script function named in its Handler (the Form Designer creates `def on_<name>_<event>(api, value):` when you double-click the control). A function whose first parameter is named `api` receives the script API; other parameters receive the event's values.
-- **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`, `@on_sysvar("Namespace::Name")` (a system variable changed; no name: any), `@on_key("a", "F5")` (a key pressed in CAN Expert while the measurement runs, not while typing into a field; `"*"`: any), `@on_error_frame` (argument: its timestamp) and `@on_bus_state` (argument: `error active`, `error passive` or `bus off`, on a change).
+- **Event decorators** (CAPL `on` procedures): `@on_start` and `@on_stop` (connect/disconnect; `@on_stop` runs while the bus is still open), `@on_timer(seconds)`, `@on_message(0x300)` or `@on_message("MessageName")` (argument `frame` with `id`, `data`, `signals`), `@on_signal("Message.Signal")` (called when the value changes; `every_update=True` for every frame), `@on_control("name")`, `@on_key("a", "F5")` (a key pressed in CAN Expert while the measurement runs, not while typing into a field; `"*"`: any), `@on_error_frame` (argument: its timestamp) and `@on_bus_state` (argument: `error active`, `error passive` or `bus off`, on a change).
 - **UDS service functions**: every ISO 14229-1 service except Authentication (0x29) and SecuredDataTransmission (0x84) is a script function, e.g. `RDBI(0xFF99)` sends `22 FF 99`, `WDBI(did, data)`, `DSC(session)`, `SA(sub_function, key)`, `RC(sub_function, routine_id, data)`, `RD/TD/RTE`, `RDTCI(sub_function, ...)`, plus `UDS("raw hex")` and helpers (`SecurityUnlock`, `ReadDTCs`, `StartRoutine`...). They use the session's UDS transport and return a result that is true for a positive response, with `data` (after the SID and echoed parameters), `text`, `int`, `raw`, `nrc`, `nrc_name` and `error`. Sub-function services accept `suppress=True` (suppressPosRspMsgIndicationBit; sent without waiting). The Form Designer's script tab lists them by ISO 14229 functional unit and inserts calls.
 - `api.signal("Message.Signal")`: latest received (or sent) physical value. `api.set_signal("Message.Signal", value)` and `api.send_message("Message", Signal=value, ...)`: encode with the panel's DBC and send; signals not given keep their last known values.
 - Control values: buttons pass `True`, checkboxes a Boolean, sliders an integer, combo boxes their selected text. Editable fields submit when editing finishes; their selected value type controls conversion.
@@ -130,7 +130,6 @@ def tick(api):
 - UDS requests use the configuration's request/response IDs, identifier size, extended-address byte and UDS response timeout, over ISO-TP (multi-frame requests and replies, flow control, NRC 0x78 response pending). Frames received before a request are discarded, and the connection's TesterPresent is deferred while an exchange is in progress.
 - `api.ui.get_value(name)` and `api.ui.set_value(name, value)`: read a cached value or enqueue a GUI update. Displays format numbers with their unit, decimals and DBC value-table text; an LED takes a Boolean; a multi-state indicator a state value; a trend graph appends a point; an output box appends a line (`None` clears it). Scripts must not access Qt widgets directly.
 - `api.log(text)` or `api.write(text)` (CAPL's `write`), and `api.warn(text)`: a line in the Write window, a warning in its colour. Script errors go there too, and to the application's Debug log.
-- `api.sysvar.get(name, default)`, `api.sysvar.set(name, value)` (defines a new variable), `api.sysvar[name]`, `api.sysvar.define(name, kind, initial, unit, comment)`: the system variables shared with the System Variables window and the CAN Logger. Values start from their initial ones at every connect.
 - `api.running` and `api.sleep(seconds)`: cooperative cancellation for older loop-based scripts. Prefer callbacks and return from `DatabaseMainFunction`; a startup loop prevents that script's queued callbacks from being processed.
 
 **Deprecated.** The first script API is still there, so existing scripts keep working, but the Form Designer's completion no longer offers it and its docstrings name the replacement:
