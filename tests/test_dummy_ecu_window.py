@@ -300,6 +300,24 @@ class SimulationTabsTest(unittest.TestCase):
         self.assertEqual(labels["Periodic data"].text(), "F201 fast")
         self.assertEqual(labels["Events"].text(), "DID 0101: set up, not started")
 
+    def test_the_j1939_settings(self):
+        window = self.window
+        self.assertFalse(window.j1939.isChecked())
+        self.assertEqual(window.j1939_name.text(), f"{window.ecu.config.j1939_name:016X}")
+        window.j1939.setChecked(True)
+        window.j1939_address.setValue(0x21)
+        window.j1939_name.setText("80000000FFE0CE02")
+        config = window.ecu.config
+        self.assertEqual((config.j1939, config.j1939_address, config.j1939_name), (True, 0x21, 0x80000000FFE0CE02))
+        window.j1939_name.setText("not hex")
+        self.assertIn("NAME", window.j1939_name.toolTip())
+        self.assertEqual(window.ecu.config.j1939_name, 0x80000000FFE0CE02, "a bad NAME changes nothing")
+        window.j1939_name.setText("80000000FFE0CE02")
+        self.assertTrue(window.choose_dbc(str(Path(__file__).resolve().parents[1] / "DBC" / "j1939_demo.dbc")))
+        kinds = {item["signal"]: item["kind"] for item in window.ecu.config.generators}
+        self.assertEqual((kinds["EEC1.EngineSpeed"], kinds["CCVS.WheelBasedVehicleSpeed"]), ("sine", "ramp"),
+                         "the demo DBC's signals move")
+
 
 if __name__ == "__main__":
     unittest.main()
