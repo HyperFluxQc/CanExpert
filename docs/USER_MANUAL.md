@@ -300,7 +300,9 @@ documentation; double-click one to insert a call.
   **New version (today)** keeps the family and takes today's date, so saving leaves the previous version as
   it was.
 - **Name** and **Description** — the description is shown at the top of the Database window.
-- **DBC**: the panel's own DBC, with **Browse...** and **Remove**; its signals are the Symbols list.
+- **DBC**: the panel's own DBC, with **Browse...** and **Remove**; its signals are the Symbols list. When it
+  lies near the panel — `DBC/` beside `Databases/`, say — it is saved relative to the panel, so the panel
+  keeps working when the whole folder is copied to another PC.
 - **Contents**: the pages with their controls, and handlers named on controls but missing from the script.
 - **Where it is used**: the configurations with this family, and whether a newer version in the folder is
   the one they actually load.

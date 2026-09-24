@@ -7,6 +7,7 @@ distribute, grid snap, resize handles and undo/redo, set their properties, and w
 Python script (per-control handlers and CAPL-style event decorators). Test mode runs the panel
 against the simulated ECU on a virtual CAN bus.
 """
+import os
 import re
 import tempfile
 import threading
@@ -39,6 +40,25 @@ from canexpert.panel.database import (DATABASES_DIR, parse_application_database,
 from canexpert.panel.runtime import SCRIPT_TEMPLATE
 from canexpert.paths import CONFIG_DIR, EXAMPLE_FIRMWARE_DIR
 from canexpert.ui_common import SplitterPanel, enable_maximize
+
+def portable_dbc_path(dbc_path: str, database_dir) -> str:
+    """The DBC path as the panel file keeps it. Near the panel - in its folder, or anywhere under the folder
+    that holds it, as Databases/ and DBC/ side by side - it is relative to the panel's folder (with /), so
+    the panel works wherever that folder is copied; elsewhere it stays absolute. A relative path given is
+    read against the panel's folder, as the running panel reads it."""
+    if not str(dbc_path or "").strip():
+        return ""
+    folder = Path(database_dir).resolve()
+    path = Path(str(dbc_path).strip())
+    if not path.is_absolute():
+        path = folder / path
+    path = path.resolve()
+    try:
+        path.relative_to(folder.parent)
+    except ValueError:
+        return str(path)
+    return Path(os.path.relpath(path, folder)).as_posix()
+
 
 # -----------------------------------------------------------------------------
 # Test mode
@@ -531,7 +551,9 @@ class FormDesigner(QDialog):
         remove.clicked.connect(self.remove_dbc)
         form.addRow("DBC", _row(self.dbc_path_edit, browse, remove))
         form.addRow(_hint("The panel's own DBC: controls bound to Message.Signal decode and send with it, and "
-                          "its signals are the Symbols list on the Form tab."))
+                          "its signals are the Symbols list on the Form tab. Near the panel (as DBC/ beside "
+                          "Databases/) it is saved relative to it, so the panel works wherever the folder is "
+                          "copied."))
 
         contents = QGroupBox("Contents")
         self.contents_label = QLabel()
@@ -811,7 +833,7 @@ class FormDesigner(QDialog):
             dbc_el = root.find("dbc_path")
             dbc_path = root.get("dbc_path", "") or (dbc_el.text.strip() if dbc_el is not None and dbc_el.text else "")
             if dbc_path and not Path(dbc_path).is_absolute():
-                dbc_path = str(self.database_dir / dbc_path)
+                dbc_path = str((self.database_dir / dbc_path).resolve())      # shown whole, saved relative
             if dbc_path and Path(dbc_path).exists():
                 self.dbc_path_edit.setText(dbc_path)
                 self.symbol_list.load_dbc_path(dbc_path)
@@ -844,7 +866,7 @@ class FormDesigner(QDialog):
 
     def _build_root(self, db_name, description):
         data = self.canvas.get_data()
-        dbc_path = self.dbc_path_edit.text().strip()
+        dbc_path = portable_dbc_path(self.dbc_path_edit.text(), self.database_dir)
         root = ET.Element("application_database", name=db_name)
         if dbc_path:
             root.set("dbc_path", dbc_path)
