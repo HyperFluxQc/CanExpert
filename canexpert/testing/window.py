@@ -41,6 +41,7 @@ class TestWindow(QWidget):
     (message name, {signal: value}) with the symbol databases."""
     run_event = pyqtSignal(str, object)       # from the run's thread: case, step, verdict
     run_finished = pyqtSignal(object)         # the TestReport
+    marker_requested = pyqtSignal(float, str)  # t.marker() in the running module: (when, comment)
 
     def __init__(self, parent=None, session=None, decode=None, settings=None, time_text=None):
         super().__init__(parent)
@@ -180,7 +181,7 @@ class TestWindow(QWidget):
         transport = uds_transport(config)
         self.runner = Runner(module, make_request(requests, transport), frames.messages, requests.send, self.decode,
                              transport["timeout"], lambda kind, data: self.run_event.emit(kind, data),
-                             config.get("name", ""))
+                             config.get("name", ""), self.marker_requested.emit)
         for name in names:
             item = self._items[name]
             item.takeChildren()

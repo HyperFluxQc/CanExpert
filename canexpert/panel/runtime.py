@@ -154,6 +154,12 @@ class DatabaseAPI:
         else:
             self.log(msg)
 
+    def marker(self, comment: str = ""):
+        """A marker at this moment of the measurement, as Ctrl+M inserts: in the Trace, on the Logger's graphs
+        and in the recording."""
+        if self._runtime is not None:
+            self._runtime.marker_requested.emit(time.time(), str(comment))
+
 
 class _SysVarApi:
     """api.sysvar: the system variables the windows share. Names are Namespace::Name."""
@@ -408,6 +414,7 @@ class ScriptRuntime(QObject):
     flashing_available = pyqtSignal(bool)
     flash_progress = pyqtSignal(int, int, str)
     flash_finished = pyqtSignal(bool, str)
+    marker_requested = pyqtSignal(float, str)   # api.marker(): (when, comment)
 
     def __init__(self, bus, config, values, parent=None, sysvars=None):
         super().__init__(parent)

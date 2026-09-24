@@ -60,6 +60,8 @@ _CURVE_COLORS_DARK = ["#5eb3f6", "#ff6b6b", "#51cf66", "#ffd43b", "#cc92e2", "#e
 
 CURVE_STYLES = ("Line", "Line + dots", "Dots")
 CURSOR_DASH = [30, 10]      # dash and gap of the measurement cursors, in pixels
+MARKER_COLOUR = "#d97706"   # the markers inserted during the measurement (Ctrl+M)
+MARKER_DASH = [6, 4]
 
 STRIP_MIN_HEIGHT = 110      # px per signal graph; more strips than fit make the graph area scroll
 REDRAW_INTERVAL_MS = 50     # curves; the cursor readout refreshes every READOUT_REFRESH_TICKS redraws
@@ -310,6 +312,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         self._hover = {}            # graph row -> (dotted vertical line, dotted horizontal line, readout)
         self._new_curve_data = set()     # signals whose graph needs redrawing
         self._t0 = None
+        self._markers = []                   # (graph time, comment): a line across every graph
         self._curve_style = CURVE_STYLES[0]
         self._x_range = None        # fixed time range from Graph options, else None
         self._y_range = None        # fixed value range for every graph, else None
@@ -711,6 +714,8 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
                 line.sigPositionChanged.connect(lambda ln, i=index: self._on_cursor_moved(i, ln.value()))
                 plot.addItem(line, ignoreBounds=True)
                 cursors.append(line)
+            for when, text in self._markers:
+                self._add_marker_line(plot, when, text, labelled=row == 0)
             if first is None:
                 first = plot
             else:
@@ -874,6 +879,23 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
             self.signal_tree.blockSignals(False)
         self._apply_filter()
 
+    def on_marker(self, timestamp, text):
+        """A marker of the measurement: a line at its time across every graph, its comment on the top one."""
+        when = self._graph_time(timestamp)
+        self._markers.append((when, str(text)))
+        for row, (plot, _first_cursor, _second_cursor) in enumerate(self._group_plots):
+            self._add_marker_line(plot, when, str(text), labelled=row == 0)
+
+    def _add_marker_line(self, plot, when, text, labelled):
+        if not HAS_PG:
+            return
+        pen = pg.mkPen(MARKER_COLOUR, width=1)
+        pen.setDashPattern(MARKER_DASH)
+        line = pg.InfiniteLine(when, angle=90, movable=False, pen=pen, label=text if labelled else None,
+                               labelOpts={"position": 0.85, "color": MARKER_COLOUR, "movable": False})
+        line.setToolTip(text)
+        plot.addItem(line, ignoreBounds=True)
+
     def on_frame(self, timestamp, direction, can_id, data, extended=False):
         """A frame of the measurement: only received ones carry signal values to plot."""
         if direction == "RX":
@@ -883,6 +905,8 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         self._series.clear()
         self._new_curve_data.clear()
         self._t0 = None
+        self._markers.clear()
+        self._rebuild_strips()
         for item in self._items.values():
             for column in CURSOR_COLUMNS:
                 item.setText(column, "")

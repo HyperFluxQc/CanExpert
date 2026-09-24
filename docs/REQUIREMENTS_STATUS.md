@@ -43,6 +43,8 @@ in a file of its own.
   honoured by the requests that follow.
 - **Test modules** (*Tools → Test*): Python test cases against the live bus with setup/teardown, a
   verdict per step, Stop, and an HTML and a JUnit XML report of every run.
+- **Markers** (Ctrl+M): a comment at a moment of the measurement, in the Trace, on the Logger's graphs and
+  in BLF/ASC/TRC recordings; scripts use `api.marker()`, test modules `t.marker()`.
 - **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
   windows offline and never touches a bus.
 - **Symbol databases**: one DBC list shared by the Trace, Data and Statistics windows, the CAN Logger and

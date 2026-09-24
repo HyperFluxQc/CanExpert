@@ -110,9 +110,11 @@ class ToolWindows:
         """Test window: a test module's test cases, run against the measurement's bus."""
         def decode(can_id, data):
             return self.symbols.name(can_id), self.symbols.decode(can_id, data)
-        window, _ = self.open_tool("tests", "Test", lambda: TestWindow(
+        window, created = self.open_tool("tests", "Test", lambda: TestWindow(
             self, self.active_session, decode, self._settings,
             time_text=lambda t: self.clock.text(t, self.time_display)))
+        if created:
+            window.marker_requested.connect(self.add_marker)          # t.marker() in a test module
         return window
 
     def open_sysvars(self):
@@ -166,6 +168,8 @@ class ToolWindows:
         if created:
             for frame in list(self.frame_history):
                 trace.add_frame(*frame)
+            for marker in list(self.marker_history):
+                trace.add_marker(*marker)
             trace.flush()
         self._update_diagnostic_ids()
         return trace
@@ -190,6 +194,8 @@ class ToolWindows:
                     logger.on_can_message(can_id, data, timestamp)
             for when, name, value, unit in list(self.sysvar_history):
                 logger.on_sysvar(name, value, when, unit)
+            for marker in list(self.marker_history):
+                logger.on_marker(*marker)
         return logger
 
     def open_data(self):

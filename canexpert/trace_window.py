@@ -2,7 +2,8 @@
 Trace window: every frame of the measurement as a row, decoded with the symbol databases.
 
 Columns are time, direction, identifier, symbolic message name, length and data; a row that a DBC
-decodes can be expanded to its signals. The view is fed from a buffer on a timer, because a busy bus
+decodes can be expanded to its signals. Markers inserted during the measurement are rows of their own, in
+time order among the frames, whatever the filter. The view is fed from a buffer on a timer, because a busy bus
 delivers far more frames than a widget can repaint, and keeps at most MAX_ROWS frames.
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ import csv
 from collections import deque
 
 from PyQt5.QtCore import QEvent, Qt, QTimer
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -31,6 +32,8 @@ from canexpert.uds.observer import assemble
 from canexpert.ui_common import ToolButtonsMixin, enable_maximize, is_dark_theme
 
 MAX_ROWS = 20000            # frames kept; the oldest are dropped
+MAX_MARKERS = 1000          # markers kept
+MARKER_BACKGROUND = ("#fff1c2", "#5c4a12")   # light and dark theme
 FLUSH_INTERVAL_MS = 80      # how often buffered frames reach the view
 TIME_MODES = ("Absolute", "Relative", "Delta")
 COL_TIME, COL_DIR, COL_ID, COL_NAME, COL_DLC, COL_DATA = range(6)
@@ -52,6 +55,8 @@ class TraceWindow(ToolButtonsMixin, QDialog):
         self.resize(1100, 620)
         self.symbols = symbols
         self.frames = deque(maxlen=MAX_ROWS)   # (timestamp, direction, can_id, data, extended)
+        self.markers = deque(maxlen=MAX_MARKERS)   # (timestamp, comment)
+        self._pending_markers = []
         self.diagnostic_ids = set()            # the identifiers the transport view assembles
         self.address_byte = None               # ISO-TP extended addressing, when the configuration uses it
         self._pending = []
@@ -160,6 +165,12 @@ class TraceWindow(ToolButtonsMixin, QDialog):
 
     on_frame = add_frame        # what the main window hands every window of the measurement
 
+    def add_marker(self, timestamp, text):
+        """A marker of the measurement: a row of its own at its time, shown at the next flush."""
+        self._pending_markers.append((float(timestamp), str(text)))
+
+    on_marker = add_marker
+
     def set_source(self, text: str):
         """Name what is being traced, e.g. a replayed file."""
         self.offline_label.setText(text)
@@ -167,19 +178,24 @@ class TraceWindow(ToolButtonsMixin, QDialog):
     def clear(self):
         self.frames.clear()
         self._pending.clear()
+        self.markers.clear()
+        self._pending_markers.clear()
         self.tree.clear()
         self._update_status()
 
     def flush(self):
         """Move buffered frames into the view (called by the timer, and directly by the tests)."""
-        if not self._pending:
+        if not self._pending and not self._pending_markers:
             return
         pending, self._pending = self._pending, []
+        markers, self._pending_markers = self._pending_markers, []
         dropped = max(0, len(self.frames) + len(pending) - MAX_ROWS)
         self.frames.extend(pending)
+        self.markers.extend(markers)
         if self.pause_btn.isChecked():
             return
-        if dropped or self.transport_btn.isChecked():   # the view is not a row per frame any more
+        # The view is not a row per new frame any more; a marker, rare, goes between the rows at its time.
+        if dropped or markers or self.transport_btn.isChecked():
             self.rebuild()
             return
         previous = self.frames[len(self.frames) - len(pending) - 1] if len(self.frames) > len(pending) else None
@@ -205,10 +221,15 @@ class TraceWindow(ToolButtonsMixin, QDialog):
             self._rebuild_transport()
         else:
             previous = None
+            markers = sorted(self.markers)
             for frame in self.frames:
+                while markers and markers[0][0] <= frame[0]:
+                    self._append_marker(markers.pop(0), previous)
                 if self._passes(frame):
                     self._append_row(frame, previous)
                 previous = frame
+            for marker in markers:
+                self._append_marker(marker, previous)
         if self.follow_btn.isChecked():
             self.tree.scrollToBottom()
         self._update_status()
@@ -226,7 +247,10 @@ class TraceWindow(ToolButtonsMixin, QDialog):
             self.tree.addTopLevelItem(item)
             return
         previous = None
+        markers = sorted(self.markers)
         for message in self.transport_messages():
+            while markers and markers[0][0] <= message.start:
+                self._append_marker(markers.pop(0), previous)
             if not self._passes((message.start, message.direction, message.can_id, message.payload,
                                  message.extended)):
                 continue
@@ -244,6 +268,8 @@ class TraceWindow(ToolButtonsMixin, QDialog):
                                                str(len(data)), bytes(data).hex(" ").upper()]))
             self.tree.addTopLevelItem(item)
             previous = frame
+        for marker in markers:
+            self._append_marker(marker, previous)
 
     def _on_filter_changed(self, text):
         self._filter = parse_filter(text)
@@ -294,6 +320,20 @@ class TraceWindow(ToolButtonsMixin, QDialog):
             item.setChildIndicatorPolicy(QTreeWidgetItem.ShowIndicator)
         self.tree.addTopLevelItem(item)
 
+    def _append_marker(self, marker, previous):
+        """A marker's row: its time, and its comment where a frame has its name, highlighted."""
+        timestamp, text = marker
+        item = QTreeWidgetItem([self._time_text((timestamp,), previous), "", "", f"Marker: {text}", "", ""])
+        item.setData(COL_NAME, Qt.UserRole, marker)
+        font = QFont(item.font(COL_NAME))
+        font.setBold(True)
+        background = QColor(MARKER_BACKGROUND[int(is_dark_theme(self))])
+        for column in range(self.tree.columnCount()):
+            item.setBackground(column, background)
+        item.setFont(COL_NAME, font)
+        item.setToolTip(COL_NAME, text)
+        self.tree.addTopLevelItem(item)
+
     def _colour(self, can_id: int) -> QColor:
         colours = _ID_COLORS_DARK if is_dark_theme(self) else _ID_COLORS_LIGHT
         return QColor(colours[can_id % len(colours)])
@@ -313,14 +353,15 @@ class TraceWindow(ToolButtonsMixin, QDialog):
             item.setChildIndicatorPolicy(QTreeWidgetItem.DontShowIndicator)
 
     def _update_status(self):
-        shown, total = self.tree.topLevelItemCount(), len(self.frames)
+        markers = f", {len(self.markers)} marker{'s' if len(self.markers) != 1 else ''}" if self.markers else ""
+        shown, total = self.tree.topLevelItemCount() - len(self.markers), len(self.frames)
         if self.transport_btn.isChecked():
             messages = self.transport_messages()
             unfinished = sum(1 for message in messages if not message.complete)
             self.status.setText(f"{shown} of {len(messages)} diagnostic message(s) from {total} frame(s)"
-                                + (f", {unfinished} unfinished" if unfinished else ""))
+                                + (f", {unfinished} unfinished" if unfinished else "") + markers)
             return
-        self.status.setText(f"{shown} of {total} frame(s)" if shown != total else f"{total} frame(s)")
+        self.status.setText((f"{shown} of {total} frame(s)" if shown != total else f"{total} frame(s)") + markers)
 
     # --- find and export ------------------------------------------------------------------
 

@@ -63,7 +63,7 @@ from canexpert.main_layouts import TOOL_AREAS
 from canexpert.main_tools import ToolWindows
 from canexpert.main_layouts import Layouts
 from canexpert.main_channels import Channels
-from canexpert.main_session import Session
+from canexpert.main_session import MARKER_HISTORY, Session
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
@@ -136,6 +136,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             self.sysvars.changed.connect(self._on_sysvar_changed)
         self.sysvar_history = deque(maxlen=FRAME_HISTORY)      # (when, name, value) for a Logger opened later
         self.write_history = deque(maxlen=WRITE_HISTORY)       # (when, level, text) for a Write window opened later
+        self.marker_history = deque(maxlen=MARKER_HISTORY)     # (when, comment) for a Trace or Logger opened later
+        self._marker_count = 0
         self._bus_state = None
         self._keys_watched = False
         self.time_display = self._settings.value(TIME_DISPLAY, TIME_DISPLAYS[0], type=str)
@@ -445,6 +447,17 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         replay_action.setShortcut(QKeySequence("Ctrl+O"))
         replay_action.triggered.connect(lambda: self.replay_log())
         self._shortcut_actions += [self._record_action, self._stop_record_action, replay_action]
+        measurement_menu.addSeparator()
+        marker_action = measurement_menu.addAction('Insert marker...')
+        marker_action.setShortcut(QKeySequence("Ctrl+M"))
+        marker_action.setToolTip("A marker with a comment at this moment: in the Trace, on the Logger's graphs "
+                                 "and in the recording")
+        marker_action.triggered.connect(lambda: self.insert_marker())
+        quick_marker_action = measurement_menu.addAction('Quick marker')
+        quick_marker_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        quick_marker_action.setToolTip("A numbered marker at once, without asking for a comment")
+        quick_marker_action.triggered.connect(lambda: self.quick_marker())
+        self._shortcut_actions += [marker_action, quick_marker_action]
         measurement_menu.addSeparator()
         measurement_menu.addAction('Scan for ECUs...').triggered.connect(lambda: self.open_ecu_scan())
 

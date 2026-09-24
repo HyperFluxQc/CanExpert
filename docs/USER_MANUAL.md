@@ -371,7 +371,7 @@ Keys reach the script while a measurement runs, but not while you type into a fi
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.
 `api` gives you `api.can.send`, `api.ui`, `api.signal/set_signal/send_message`, `api.log` /
-`api.write` and `api.warn`, `api.sleep` and `api.dll`. Callbacks run one at a time on a
+`api.write` and `api.warn`, `api.marker("comment")` (see *Markers*), `api.sleep` and `api.dll`. Callbacks run one at a time on a
 background thread and stop when you disconnect.
 
 Older scripts may use `api.on`, `api.on_can`, `api.every`, `api.can.get_latest_messages` and the
@@ -580,6 +580,7 @@ scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` of
 | `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
 | `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
 | `t.send(0x200, [1, 2])` | Send a frame |
+| `t.marker("before the reset")` | A marker in the measurement (Trace, Logger, recording) and a line in the report |
 | `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
 | `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
 
@@ -630,6 +631,21 @@ follows the name you give it — `.blf` (Vector binary), `.asc` (Vector ASCII), 
 the panels, with no bus involved at all: the Trace header shows **Offline**. Choose the speed — real
 time, 2x, 5x, 10x, or as fast as possible — then **Start**; **Stop** ends it. Nothing is transmitted, so
 you can study a recording made in a vehicle at your desk.
+
+### Markers
+
+**Connection → Insert marker...** (**Ctrl+M**) marks this moment of the measurement with a comment — "door
+opened", "engine started" — and **Quick marker** (**Ctrl+Shift+M**) marks it at once as *Marker 3*. A marker
+is a highlighted row in the Trace window at its time among the frames (whatever the filter, and **Find**
+finds it), a dashed line across every graph of the CAN Logger with its comment on the top one, and a line
+in the Log. A Trace or a Logger opened later shows the markers too.
+
+While recording, the marker goes into the file where the format has a place for it: a `.blf` gets a global
+marker, which CANoe shows on its time axis, and an `.asc` or `.trc` a comment line. `.csv` and `.log` keep
+the frames only. A replay in CAN Expert shows the frames, not the markers.
+
+A panel script marks with `api.marker("comment")`, a test module with `t.marker("comment")` (see *Test
+modules*).
 
 ## Arranging the windows
 
@@ -772,6 +788,7 @@ them break security access and flashing.
 | **Ctrl+E** | Form Designer |
 | **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
 | **Ctrl+O** | Replay a recorded file |
+| **Ctrl+M** / **Ctrl+Shift+M** | Insert a marker with a comment / a numbered marker at once |
 | **Ctrl+N** | New configuration |
 | **F1** | The manual, at the section of the window you are working in |
 | **Ctrl+Q** | Exit |

@@ -19,7 +19,7 @@ from canexpert.uds.client import EXCLUDED_SERVICES, FUNCTIONS, GROUPS
 # What completion offers. The deprecated calls (api.on, api.on_can, api.every, api.uds.rdbi, ...) still
 # work in scripts but are not suggested: the decorators and the service functions replace them.
 API_WORDS = [
-    "api", "api.sleep", "api.running", "api.log", "api.write", "api.warn", "api.progress",
+    "api", "api.sleep", "api.running", "api.log", "api.write", "api.warn", "api.marker", "api.progress",
     "api.flash_cancelled", "api.signal", "api.set_signal", "api.send_message", "api.can.send",
     "api.ui.get_value", "api.ui.set_value", "api.sysvar.get", "api.sysvar.set", "api.sysvar.define",
     "api.dll.load", "api.dll.call",
