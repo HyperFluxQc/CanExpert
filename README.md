@@ -221,7 +221,8 @@ addressing and P2 timing. Pre-test and post-test sequences run around the run, a
 reset after a test, an ignition frame before the run, a recovery reset after a failure — and a test plan keeps
 it all in one file, which also runs without the window for a CI server (exit code and JUnit report). An NRC
 policy says which codes pass where a specification differs from ISO, and failures agreed on are kept as
-accepted deviations. Each run
+accepted deviations. A coverage matrix shows where each service, DID and routine was checked, and what was not
+tested and why. Each run
 leaves an HTML and a JUnit report. `ODX/dummy_ecu.cdd` describes the Dummy ECU, which passes every test.
 
 ```bash

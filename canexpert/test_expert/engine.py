@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from canexpert.test_expert.coverage import coverage_html, summary
 from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.generator import Suite
 from canexpert.test_expert.plan import TestPlan
@@ -67,10 +68,17 @@ class PlanRun:
             facts.append(("NRC policy", "; ".join(f"{situation}: {', '.join(f'{nrc:02X}' for nrc in nrcs)}"
                                                   for situation, nrcs in sorted(self.plan.nrc_policy.nrcs.items()))))
         if self.plan.deviations:
-            facts.append(("Accepted deviations", str(len(self.plan.deviations))))
+            accepted = sum(len(case.accepted()) for case in self.report.cases) if self.report else 0
+            facts.append(("Accepted deviations", f"{len(self.plan.deviations)} in the plan, {accepted} steps accepted"))
+        facts.append(("Coverage", summary(self.suite.coverage, self.description)))
+        for did, (name, value) in sorted(self.suite.identification.items()):
+            facts.append((f"{did:04X} {name}", value))
         return facts
 
+    def coverage_html(self) -> str:
+        return coverage_html(self.suite.coverage, self.description, self.suite.o)
+
     def save(self, folder) -> list[Path]:
-        """Write the run's HTML and JUnit reports into folder; returns their paths."""
-        html_path, xml_path = save_reports(self.report, Path(folder), self.facts())
+        """Write the run's HTML report (with its coverage) and its JUnit report into folder; returns their paths."""
+        html_path, xml_path = save_reports(self.report, Path(folder), self.facts(), self.coverage_html())
         return [html_path, xml_path]

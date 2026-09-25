@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from canexpert.test_expert.coverage import Coverage
 from canexpert.test_expert.description import DEFAULT_SESSION, ISO_SERVICES, SUB_FUNCTION_SERVICES, EcuDescription
 from canexpert.test_expert.policy import NrcPolicy, nrc_text
 from canexpert.test_expert.sequences import LABELS, SequenceRunner, due
@@ -33,6 +34,17 @@ UNUSED_DTC_GROUP = 0xFFFFFE
 # Services whose minimal request only reads or asks: sent where the service is allowed, to see it answer.
 HARMLESS = {0x19, 0x22, 0x23, 0x27, 0x28, 0x2A, 0x3E, 0x85, 0x86}
 SESSION_ORDER = (0x01, 0x03, 0x02)        # default, extended, programming: the order sessions are tried in
+# ISO 14229-1 annex C: the identification DIDs read at the start of a run, for the report (and comparing runs).
+IDENTIFICATION = {
+    0xF180: "bootSoftwareIdentification", 0xF181: "applicationSoftwareIdentification",
+    0xF182: "applicationDataIdentification", 0xF187: "vehicleManufacturerSparePartNumber",
+    0xF188: "vehicleManufacturerECUSoftwareNumber", 0xF189: "vehicleManufacturerECUSoftwareVersionNumber",
+    0xF18A: "systemSupplierIdentifier", 0xF18B: "ECUManufacturingDate", 0xF18C: "ECUSerialNumber",
+    0xF190: "VIN", 0xF191: "vehicleManufacturerECUHardwareNumber", 0xF192: "systemSupplierECUHardwareNumber",
+    0xF193: "systemSupplierECUHardwareVersionNumber", 0xF194: "systemSupplierECUSoftwareNumber",
+    0xF195: "systemSupplierECUSoftwareVersionNumber", 0xF197: "systemNameOrEngineType", 0xF199: "programmingDate",
+    0xF19E: "ODXFile",
+}
 
 
 @dataclass
@@ -53,6 +65,14 @@ def _hex(data) -> str:
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def value_text(data: bytes) -> str:
+    """An identification value as text when it is printable (trailing padding dropped), else its hex."""
+    trimmed = bytes(data).rstrip(b"\x00\xff ")
+    if trimmed and all(0x20 <= byte < 0x7F for byte in trimmed):
+        return trimmed.decode("ascii")
+    return _hex(data) if data else "(empty)"
 
 
 class Suite:
@@ -107,6 +127,8 @@ class Suite:
     # --- the run and its sequences ------------------------------------------------------------------------
 
     def _start_run(self, names):
+        self.coverage = Coverage()
+        self.identification = {}           # DID -> (name, value as text): read at the start of the run
         chosen = [case.name for case in self.cases if names is None or case.name in names]
         self._last_in_group = {self.group_of[name]: name for name in chosen}
         self._group = None
@@ -161,6 +183,7 @@ class Suite:
             ok = False
             detail += f" - {len(raw)} bytes, {length} expected"
         t.check(ok, what, detail)
+        self._covered(t, answer)
         return raw if ok else None
 
     def negative(self, t, payload, situation, what, functional=False):
@@ -171,21 +194,34 @@ class Suite:
         got = answer.nrc
         good = answer.raw is not None and answer.raw[:2] == bytes([0x7F, payload[0]]) and got in accepted
         if good and got not in iso:
-            return t.check(True, what, f"{answer.text()} - accepted by the NRC policy; ISO 14229-1 asks for "
-                                       f"{' or '.join(nrc_text(code) for code in iso)}")
-        wanted = " or ".join(nrc_text(code) for code in accepted)
-        return t.check(good, what, answer.text() if good else f"{answer.text()} - expected NRC {wanted}")
+            verdict = t.check(True, what, f"{answer.text()} - accepted by the NRC policy; ISO 14229-1 asks for "
+                                          f"{' or '.join(nrc_text(code) for code in iso)}")
+        else:
+            wanted = " or ".join(nrc_text(code) for code in accepted)
+            verdict = t.check(good, what, answer.text() if good else f"{answer.text()} - expected NRC {wanted}")
+        self._covered(t, answer)
+        return verdict
 
     def silent(self, t, payload, what, functional=False):
         """A step: no answer at all."""
         answer = self.tester.quiet(payload, functional)
-        return t.check(answer.raw is None, what, answer.text())
+        verdict = t.check(answer.raw is None, what, answer.text())
+        self._covered(t, answer)
+        return verdict
 
     def available(self, t, payload, what):
         """A step: the service answers - positive, or refused for another reason than not being there."""
         answer = self.tester.ask(payload)
         ok = answer.raw is not None and answer.nrc not in (0x11, 0x7F)
-        return t.check(ok, what, answer.text())
+        verdict = t.check(ok, what, answer.text())
+        self._covered(t, answer)
+        return verdict
+
+    def _covered(self, t, answer, verdict=None):
+        """The step just checked (the last of t) counts for what answer asked, in the session it was sent in."""
+        if verdict is None:
+            verdict = t.result.steps[-1].verdict if t.result.steps else ""
+        self.coverage.record(answer.request, answer.session, verdict, t.result.name, answer.functional)
 
     def path_to(self, session) -> list[int]:
         if session == DEFAULT_SESSION:
@@ -202,7 +238,10 @@ class Suite:
         for step in self.path_to(session):
             answer = self.tester.ask(bytes([0x10, step]))
             if not answer.positive():
+                self._covered(t, answer, "fail")
                 t.require(False, f"enter {self.d.session_name(step)} (10 {step:02X})", answer.text())
+            else:
+                self._covered(t, answer, "pass")
 
     def unlock(self, t, level):
         """SecurityAccess for level with the key source; the case is skipped without one."""
@@ -230,6 +269,21 @@ class Suite:
             if 0 < p2 < 5:
                 self.p2 = p2
                 t.log(f"P2 {p2 * 1000:.0f} ms, as the ECU announces")
+        self._identify(t)
+
+    def _identify(self, t):
+        """Read the identification DIDs the description has (readable in the default session, locked): the
+        report shows them, and runs are compared with them."""
+        for did, iso_name in sorted(IDENTIFICATION.items()):
+            entry = self.d.dids.get(did)
+            if entry is None or entry.read is None or entry.read.levels or not entry.read.allows(DEFAULT_SESSION):
+                continue
+            answer = self.tester.ask(b"\x22" + did.to_bytes(2, "big"))
+            if not answer.positive() or answer.raw[1:3] != did.to_bytes(2, "big"):
+                continue
+            name = entry.name if entry.name and not entry.name.startswith("DID") else iso_name
+            self.identification[did] = (name, value_text(answer.raw[3:]))
+            t.log(f"ECU identification: {did:04X} {name} = {self.identification[did][1]}")
 
     def _teardown(self, t):
         self._default()
@@ -767,4 +821,5 @@ class Suite:
                 t.check(answer.positive() and first <= limit,
                         f"{_hex(request)} answered within P2 ({self.p2 * 1000:.0f} ms + {self.o.timing_margin_ms} ms)",
                         answer.text())
+                self._covered(t, answer)
         self._add("Timing", "Responses within P2", case)

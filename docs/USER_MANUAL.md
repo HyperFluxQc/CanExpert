@@ -784,6 +784,21 @@ A step that got another NRC than ISO 14229-1 asks for, but one the NRC policy ac
 the run after the current step. Every run leaves an HTML and a JUnit XML report in `TestExpert/reports`
 (**Open report**).
 
+### Coverage
+
+After a run the **Coverage** tab, beside the tests, shows where each service, DID and routine was checked: a
+matrix of the description's sessions, each cell with the number of steps that checked it there — green when
+they passed, red when one failed, blue when a failure was accepted, a dash where nothing checked it (paler
+where the description does not allow it). DIDs have a row for reading and one for writing (*refused* when the
+description says it cannot be done); the functional requests have their own table. **Not tested** lists what
+the description has but no test checked, with the reason — ECU reset and writing DIDs are destructive tests,
+routines are not started, TransferData needs a transfer in progress... The HTML report has the same section,
+hover a cell to see its tests.
+
+At the start of a run TestExpert reads the ECU's **identification** — the ISO 14229-1 identification DIDs the
+description has (F187 spare part number, F18C serial number, F190 VIN, F195 software version...): the log shows
+them, and the report lists them beside the plan and the description.
+
 ### Pre-test and post-test sequences
 
 A sequence is a list of steps TestExpert runs around the tests: a **hard reset** after a test that leaves the

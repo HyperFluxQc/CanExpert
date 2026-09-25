@@ -35,6 +35,7 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QSplitter,
     QTabWidget,
+    QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -214,7 +215,12 @@ class TestExpertWindow(QMainWindow):
         self.tree.setColumnWidth(COL_TIME, 70)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
-        tests.addWidget(self.tree)
+        self.results = QTabWidget()
+        self.results.addTab(self.tree, "Tests")
+        self.coverage_view = QTextBrowser()
+        self.coverage_view.setPlaceholderText("After a run: where each service, DID and routine was checked")
+        self.results.addTab(self.coverage_view, "Coverage")
+        tests.addWidget(self.results)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(5000)
@@ -904,6 +910,9 @@ class TestExpertWindow(QMainWindow):
         if report is None:
             self.status.setText("The run failed; see the log.")
             return
+        self.coverage_view.setHtml(run.coverage_html())
+        for did, (name, value) in sorted(run.suite.identification.items()):
+            self._write(f"ECU: {did:04X} {name} = {value}")
         try:
             self.report_paths = run.save(self._report_folder)
             self.report_btn.setEnabled(True)

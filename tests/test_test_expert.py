@@ -1,7 +1,7 @@
 """TestExpert: descriptions (JSON, how states become sessions and levels, CDD, ODX), the tests generated from
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
-post-test sequences around them, the NRC policy and accepted deviations, test plans and their run from the
-command line, and the window."""
+post-test sequences around them, the NRC policy and accepted deviations, what a run covered, test plans and
+their run from the command line, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -26,6 +26,7 @@ from canexpert.test_expert import cli
 from canexpert.test_expert import odx as odx_loader
 from canexpert.test_expert import window as window_module
 from canexpert.test_expert.cdd import CddError, load_cdd
+from canexpert.test_expert.coverage import Coverage, coverage_html, untested
 from canexpert.test_expert.description import (Access, EcuDescription, RawService, RawState, build_description)
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.generator import Options, Suite
@@ -404,6 +405,51 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual({item.verdict for item in report.cases[0].steps}, {"accepted"})
 
 
+class CoverageTest(unittest.TestCase):
+    def test_counting(self):
+        coverage = Coverage()
+        coverage.record(b"\x22\xf1\x90\xf1\x86", 0x03, "pass", "data_identifiers.read")
+        coverage.record(b"\x2e\xf1\x90\x00", 0x03, "fail", "data_identifiers.write")
+        coverage.record(b"\x31\x01\xff\x00", 0x02, "accepted", "routines.erase")
+        coverage.record(b"\x3e\x00", None, "pass", "tester_present", functional=True)
+        coverage.record(b"\x10\x01", 0x01, "info")                      # a log line: not a check
+        self.assertEqual(coverage.services[(0x22, 0x03)].verdict(), "passed")
+        self.assertEqual(coverage.dids[(0xF186, 0x03, "read")].count, 1, "each DID of the request")
+        self.assertEqual(coverage.dids[(0xF190, 0x03, "write")].verdict(), "failed")
+        self.assertEqual(coverage.routines[(0xFF00, 0x02)].verdict(), "accepted")
+        self.assertEqual(coverage.services[(0x3E, -1)].count, 1, "before the session was known")
+        self.assertEqual(coverage.functional[0x3E].count, 1)
+        self.assertEqual(coverage.services[(0x10, 0x01)].count, 0)
+        again = Coverage.from_dict(json.loads(json.dumps(coverage.to_dict())))
+        self.assertEqual(again.to_dict(), coverage.to_dict())
+        described = dummy_description()
+        missing = dict(untested(coverage, described, Options()))
+        self.assertEqual(missing["Service 11 ECUReset"], "ECU reset is a destructive test: tick Destructive tests")
+        self.assertEqual(missing["Routine FF00 EraseMemory: started"],
+                         "routines are not started (only refused where they may not run)")
+        self.assertIn("DID F187 DID 0xF187: read", missing)
+        page = coverage_html(coverage, described, Options())
+        self.assertIn("<h2>Coverage</h2>", page)
+        self.assertIn("F190 DID 0xF190</td><td>write</td>", page)
+
+    def test_a_run_counts_what_it_checked(self):
+        bench = Bench(self)
+        names = ["testerpresent.testerpresent_3e", "data_identifiers.read_did_0xf190_f190",
+                 "service_availability.securityaccess_27_by_session"]
+        suite, report = bench.run(dummy_description(bench.ecu.config), names)
+        self.assertEqual(report.verdict, "passed", failures(report))
+        coverage = suite.coverage
+        self.assertEqual(coverage.services[(0x3E, 0x01)].verdict(), "passed")
+        self.assertEqual(coverage.services[(0x27, 0x01)].verdict(), "passed", "refused in the default session: 0x7F")
+        self.assertIn("service_availability.securityaccess_27_by_session", coverage.services[(0x27, 0x03)].tests)
+        self.assertEqual({key[1] for key in coverage.dids if key[0] == 0xF190}, {0x01, 0x02, 0x03})
+        self.assertEqual(suite.identification[0xF195], ("systemSupplierECUSoftwareVersionNumber", "APP-1.0.0"),
+                         "read at the start, with ISO's name where the description has none")
+        self.assertEqual(suite.identification[0xF190][1], "WVWZZZ1KZAW000001")
+        self.assertIn("ECU identification: F195 systemSupplierECUSoftwareVersionNumber = APP-1.0.0",
+                      [step.description for step in report.setup.steps])
+
+
 class PlanTest(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -485,6 +531,8 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(root.find("testsuite").get("tests"), "2")
         page = next(reports.glob("*.html")).read_text(encoding="utf-8")
         self.assertIn("<th>Test plan</th>", page)
+        self.assertIn("<h2>Coverage</h2>", page)
+        self.assertIn("<th>F195 systemSupplierECUSoftwareVersionNumber</th><td>APP-1.0.0</td>", page)
         self.assertIn("Post-run &#x27;Hard reset&#x27;", page)
 
         plan.sequences = [Sequence("Unknown DID", [SequenceStep("request", "22 12 34", "positive")],
@@ -549,6 +597,8 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(xml.exists())
         self.assertTrue(list((self.folder / "reports").glob("traffic_*.blf")), "the traffic was recorded")
         self.assertIn("PASSED", self.window.status.text())
+        self.assertIn("Services", self.window.coverage_view.toPlainText())
+        self.assertIn("ECU: F195 systemSupplierECUSoftwareVersionNumber = APP-1.0.0", self.window.log.toPlainText())
 
     def test_sequences_in_the_window(self):
         window = self.window

@@ -28,6 +28,7 @@ class Answer:
     pending: list = field(default_factory=list)    # seconds to each response pending (NRC 0x78)
     retries: int = 0                               # busyRepeatRequest (0x21) answers the request was sent again for
     error: str = ""                                # a transport error: the answer could not be read
+    session: int | None = None                     # the session the ECU was in when the request went out
 
     @property
     def nrc(self) -> int | None:
@@ -116,7 +117,8 @@ class Tester:
                     # anything else - an event's response, periodic data - is not the answer
             except IsoTpError as exc:
                 error = f"ISO-TP error: {exc}"
-        answer = Answer(payload, raw, time.monotonic() - started, functional, first, pending, retries, error)
+        answer = Answer(payload, raw, time.monotonic() - started, functional, first, pending, retries, error,
+                        self.session)
         self._follow(answer)
         self.log.append(answer)
         for listener in self.listeners:
