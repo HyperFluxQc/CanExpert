@@ -45,6 +45,10 @@ in a file of its own.
   verdict per step, Stop, and an HTML and a JUnit XML report of every run.
 - **TestExpert** (`test_expert.py`, TestExpert.exe): UDS conformance tests generated from a CDD, ODX or PDX
   description, as Vector DiVa does, run against the ECU with HTML and JUnit reports; the Dummy ECU passes them.
+  Pre-test and post-test sequences (a hard reset after a test, an ignition frame before the run...), test plans
+  run from the window or the command line (exit code, JUnit), an NRC policy and accepted deviations, a coverage
+  matrix, discovery of what the ECU really has, DID values against their limits and text tables, routines, S3
+  and response pending checks, and runs compared with each other.
 - **J1939** (*Tools → J1939*): address claims and NAMEs, DM1/DM2 faults with DM11/DM3 clear, any PGN
   requested or sent with the transport protocol (BAM, RTS/CTS); the Trace's J1939 view; J1939 DBC messages
   from any source address; `j1939` and `@on_pgn` in scripts; the Dummy ECU as a J1939 node.

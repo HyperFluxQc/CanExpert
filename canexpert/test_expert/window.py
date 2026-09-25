@@ -48,6 +48,8 @@ from canexpert.paths import APP_DIR, CONFIG_DIR, ODX_DIR
 from canexpert.recording import Recorder
 from canexpert.simulator.ecu import parse_channel
 from canexpert.simulator.widgets import HexSpinBox
+from canexpert.test_expert.compare import (ResultsError, compare_runs, comparison_html, comparison_page,
+                                           load_results, previous_results)
 from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.discovery import Discovery, compare, discovery_html, discovery_page
 from canexpert.test_expert.discovery_view import DiscoveryDialog, DiscoveryView
@@ -118,6 +120,7 @@ class TestExpertWindow(QMainWindow):
         self.runner = self.thread = self.report = self.report_paths = self.recorder = None
         self.plan_path: Path | None = None           # the plan file the window's plan was read from or saved to
         self.discovery_options = TestPlan().discovery
+        self.comparison = None
         self.discovery_result = None
         self._discovery_stop = threading.Event()
         self._report_folder = TEST_EXPERT_DIR / "reports"
@@ -179,6 +182,8 @@ class TestExpertWindow(QMainWindow):
                       ("Open &plan...", lambda: self.open_plan(), QKeySequence("Ctrl+Shift+O")),
                       ("&Save plan", self.save_plan, QKeySequence.Save),
                       ("Save plan &as...", lambda: self.save_plan_as(), QKeySequence("Ctrl+Shift+S")),
+                      None,
+                      ("&Compare two runs...", lambda: self.compare_runs(), None),
                       None,
                       ("E&xit", self.close, QKeySequence("Ctrl+Q"))):
             if entry is None:
@@ -251,6 +256,25 @@ class TestExpertWindow(QMainWindow):
         self.discovery_view.use_requested.connect(lambda: self.use_discovered())
         self.discovery_view.save_requested.connect(lambda: self.save_discovery())
         self.results.addTab(self.discovery_view, "Discovery")
+        comparison = QWidget()
+        comparison_layout = QVBoxLayout(comparison)
+        comparison_layout.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        choose = QPushButton("Compare two runs...")
+        choose.clicked.connect(lambda: self.compare_runs())
+        self.save_comparison_btn = QPushButton("Save...")
+        self.save_comparison_btn.setEnabled(False)
+        self.save_comparison_btn.clicked.connect(lambda: self.save_comparison())
+        row.addWidget(choose)
+        row.addWidget(self.save_comparison_btn)
+        row.addStretch()
+        comparison_layout.addLayout(row)
+        self.comparison_view = QTextBrowser()
+        self.comparison_view.setPlaceholderText("After a run: what changed since the last run of the same "
+                                                "description - or compare any two runs")
+        comparison_layout.addWidget(self.comparison_view, 1)
+        self.comparison_tab = comparison
+        self.results.addTab(comparison, "Comparison")
         tests.addWidget(self.results)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -1094,9 +1118,64 @@ class TestExpertWindow(QMainWindow):
             where = f"   Report: {self.report_paths[0]}"
         except OSError as exc:
             self.report_paths, where = None, f"   The report could not be written: {exc}"
+        if self.report_paths:
+            self._compare_with_previous(self.report_paths[2])
         summary = summary_text(report)
         self.status.setText(f"<b style='color:{COLOURS.get(report.verdict, '#6b7280')}'>{summary}</b>")
         self._write(summary + where)
+
+    # --- comparing runs ---------------------------------------------------------------------------------------
+
+    def _compare_with_previous(self, results_path):
+        """What changed since the last run of the same description, in the same folder."""
+        try:
+            after = load_results(results_path)
+            previous = previous_results(Path(results_path).parent, after)
+            if previous is None:
+                return None
+            return self.show_comparison(load_results(previous), after, quiet=True)
+        except ResultsError:
+            return None
+
+    def compare_runs(self, before=None, after=None):
+        """Compare two runs' results files (asked for when not given; the earlier one is "before")."""
+        if before is None or after is None:
+            TEST_EXPERT_DIR.mkdir(parents=True, exist_ok=True)
+            paths, _ = QFileDialog.getOpenFileNames(self, "Two runs to compare (their .json results)",
+                                                    str(self._report_folder), "TestExpert results (*.json)")
+            if len(paths) != 2:
+                if paths:
+                    self._write("Choose two results files: the .json beside two reports.")
+                return None
+            before, after = paths
+        try:
+            runs = sorted((load_results(before), load_results(after)), key=lambda run: run.get("started", 0))
+        except ResultsError as exc:
+            self._write(str(exc))
+            return None
+        return self.show_comparison(*runs)
+
+    def show_comparison(self, before, after, quiet=False):
+        self.comparison = compare_runs(before, after)
+        self.comparison_view.setHtml(comparison_html(self.comparison))
+        self.save_comparison_btn.setEnabled(True)
+        summary = self.comparison.summary()
+        self._write(f"Since the last run: {summary}" if quiet else f"Comparison: {summary}")
+        if not quiet or self.comparison.regressions:
+            self.results.setCurrentWidget(self.comparison_tab)
+        return self.comparison
+
+    def save_comparison(self, path=None):
+        if self.comparison is None:
+            return None
+        if path is None:
+            suggested = self._report_folder / f"comparison_{datetime.now().strftime('%Y%m%d-%H%M%S')}.html"
+            path, _ = QFileDialog.getSaveFileName(self, "Save the comparison", str(suggested), "HTML (*.html)")
+            if not path:
+                return None
+        Path(path).write_text(comparison_page(self.comparison), encoding="utf-8")
+        self._write(f"Comparison saved: {path}")
+        return Path(path)
 
     def open_report(self):
         if self.report_paths:

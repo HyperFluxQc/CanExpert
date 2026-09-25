@@ -227,7 +227,8 @@ writes at and beyond its limits, routines started and asked out of order (0x24),
 response pending (0x78) within P2 and P2*. **Discover** asks the ECU what it really has and compares it with the
 description:
 undocumented services and DIDs, missing ones, other lengths or sessions - and what it found can be tested as a
-description of its own. Each run
+description of its own. Two runs - two software versions, two ECUs - are compared: regressions, fixes, other
+answers and the ECU's identification. Each run
 leaves an HTML and a JUnit report. `ODX/dummy_ecu.cdd` describes the Dummy ECU, which passes every test.
 
 ```bash

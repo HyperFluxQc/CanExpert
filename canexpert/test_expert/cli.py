@@ -11,6 +11,7 @@ for a bench script or a CI server, which read the exit code and the JUnit report
     python test_expert.py nightly.json --discover            ask the ECU what it has; exit code 0 when it matches
                                                              the description, 1 when it does not
     python test_expert.py ecu.cdd --discover --save-description found.json --dids F100-F1FF
+    python test_expert.py --compare before.json after.json  two runs' results; exit code 1 when a test regressed
 """
 from __future__ import annotations
 
@@ -45,12 +46,19 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--dids", help="with --discover: the DID ranges to read, e.g. 0100-02FF,F100-F2FF")
     parser.add_argument("--rids", help="with --discover: the routine ranges whose results are asked")
     parser.add_argument("--save-description", help="with --discover: what was found, as a JSON description")
+    parser.add_argument("--compare", nargs=2, metavar=("BEFORE", "AFTER"),
+                        help="compare two runs' results (the .json beside their reports); exit code 1 when a test "
+                             "that passed before does not now")
+    parser.add_argument("--output", help="with --compare: the comparison as an HTML page")
     parser.add_argument("--smoke-test", action="store_true", help="build the window and exit (the Windows build)")
     return parser
 
 
 def main(argv=None) -> int:
     arguments = parser().parse_args(argv)
+    if arguments.compare:
+        _console()
+        return compare(arguments)
     if arguments.run or arguments.discover:
         _console()
         return discover(arguments) if arguments.discover else run(arguments)
@@ -130,6 +138,25 @@ def _open_bus(arguments, plan):
         return bench.tester_bus, bench
     connection = plan.connection
     return create_can_bus(connection.interface, parse_channel(connection.channel), connection.bitrate), None
+
+
+def compare(arguments) -> int:
+    from canexpert.test_expert.compare import ResultsError, compare_runs, comparison_page, load_results
+    try:
+        before, after = (load_results(path) for path in arguments.compare)
+    except ResultsError as exc:
+        _say(f"TestExpert: {exc}")
+        return EXIT_NOT_RUN
+    comparison = compare_runs(before, after)
+    for did, name, old, new in comparison.identification:
+        _say(f"  {did} {name}: {old or '-'} -> {new or '-'}")
+    for change in comparison.changes:
+        _say(f"  {change.kind.upper():10} {change.title}: {change.before or '-'} -> {change.after or '-'}")
+    _say(comparison.summary())
+    if arguments.output:
+        Path(arguments.output).write_text(comparison_page(comparison), encoding="utf-8")
+        _say(f"  {arguments.output}")
+    return EXIT_FAILED if comparison.regressions else EXIT_PASSED
 
 
 def discover(arguments) -> int:

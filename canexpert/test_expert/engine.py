@@ -4,9 +4,11 @@ run leaves. The window runs it on its own thread; test_expert.py plan.json --run
 """
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
+from canexpert.test_expert.compare import results_dict
 from canexpert.test_expert.coverage import coverage_html, summary
 from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.generator import Suite
@@ -78,7 +80,15 @@ class PlanRun:
     def coverage_html(self) -> str:
         return coverage_html(self.suite.coverage, self.description, self.suite.o)
 
+    def results(self) -> dict:
+        """The run's results as JSON values, for comparing it with another run (compare.py)."""
+        return results_dict(self.report, self.description, self.suite.identification, self.suite.coverage,
+                            self.plan.path)
+
     def save(self, folder) -> list[Path]:
-        """Write the run's HTML report (with its coverage) and its JUnit report into folder; returns their paths."""
+        """Write the run's HTML report (with its coverage), its JUnit report and its results (JSON) into
+        folder; returns their paths."""
         html_path, xml_path = save_reports(self.report, Path(folder), self.facts(), self.coverage_html())
-        return [html_path, xml_path]
+        results_path = html_path.with_suffix(".json")
+        results_path.write_text(json.dumps(self.results(), indent=1), encoding="utf-8")
+        return [html_path, xml_path, results_path]

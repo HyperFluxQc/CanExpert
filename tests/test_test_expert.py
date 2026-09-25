@@ -1,7 +1,7 @@
 """TestExpert: descriptions (JSON, how states become sessions and levels, CDD, ODX), the tests generated from
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
 post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
-the ECU has, test plans and their run from the command line, and the window."""
+the ECU has, comparing two runs, test plans and their run from the command line, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -26,6 +26,8 @@ from canexpert.test_expert import cli
 from canexpert.test_expert import odx as odx_loader
 from canexpert.test_expert import window as window_module
 from canexpert.test_expert.cdd import CddError, load_cdd
+from canexpert.test_expert.compare import (answer_of, compare_runs, comparison_page, load_results, previous_results,
+                                           results_dict)
 from canexpert.test_expert.coverage import Coverage, coverage_html, untested
 from canexpert.test_expert.description import (Access, DataField, EcuDescription, RawService, RawState,
                                                build_description)
@@ -582,6 +584,68 @@ class DiscoveryTest(unittest.TestCase):
         self.assertIn("Stopped before the end", result.notes[0])
 
 
+class CompareTest(unittest.TestCase):
+    def test_what_differs_from_run_to_run_is_left_out(self):
+        self.assertEqual(answer_of("22 F1 90 -> 62 F1 90 57 ... (4 ms)"), "62 F1 90 ...", "not its data")
+        self.assertEqual(answer_of("27 01 -> 67 01 0F 1D 61 52 (0 ms)"), "67 01 ...", "not a seed")
+        self.assertEqual(answer_of("3E 00 -> 7E 00 (125 ms, after 2 response pending (first at 0 ms))"), "7E 00")
+        self.assertEqual(answer_of("2E 01 10 -> 7F 2E 31 requestOutOfRange (0 ms) - expected NRC 0x13"),
+                         "7F 2E 31 requestOutOfRange")
+
+    def run_once(self, config, description, names):
+        bench = Bench(self, config)
+        suite, report = bench.run(description, names)
+        return results_dict(report, description, suite.identification, suite.coverage)
+
+    def test_two_runs(self):
+        names = ["communication.controldtcsetting_85", "data_identifiers.read_vin_f190",
+                 "testerpresent.testerpresent_3e"]
+        before = self.run_once(EcuConfig(broadcast_interval=0), dummy_description(), names)
+        changed = EcuConfig(broadcast_interval=0, forced_nrcs=[{"sid": 0x85, "nrc": 0x22}], response_delay_ms=120)
+        for item in changed.dids:
+            if item["did"] == 0xF195:
+                item["data"] = b"APP-2.0.0".hex()
+        description = dummy_description()
+        del description.dids[0xF190]                          # its test is gone
+        after = self.run_once(changed, description, names)
+        comparison = compare_runs(before, after)
+        kinds = {change.title: change.kind for change in comparison.changes}
+        self.assertEqual(kinds, {"Communication: ControlDTCSetting (85)": "regression",
+                                 "TesterPresent: TesterPresent (3E)": "steps",
+                                 "Data identifiers: Read VIN (F190)": "gone"}, kinds)
+        self.assertEqual(comparison.identification,
+                         [("F190", "VIN", "WVWZZZ1KZAW000001", ""),        # no longer described: not read
+                          ("F195", "systemSupplierECUSoftwareVersionNumber", "APP-1.0.0", "APP-2.0.0")])
+        steps = {step.description: (step.before, step.after)
+                 for step in next(change for change in comparison.changes if change.kind == "steps").steps}
+        self.assertEqual(steps["3E 80: the suppress bit set, no answer"], ("pass: no answer", "pass: 7E 00"),
+                         "answered after a response pending, now")
+        self.assertEqual(steps["3E 00: response pending within P2, then P2*"][0], "", "a new step")
+        self.assertEqual(compare_runs(after, before).of("fixed")[0].title, "Communication: ControlDTCSetting (85)")
+        self.assertIn("1 regression", comparison.summary())
+        page = comparison_page(comparison)
+        self.assertIn("Regressions (1)", page)
+        self.assertIn("APP-2.0.0", page)
+        folder = Path(tempfile.mkdtemp())
+        for name, run in (("before.json", before), ("after.json", after)):
+            (folder / name).write_text(json.dumps(run), encoding="utf-8")
+        self.assertEqual(previous_results(folder, load_results(folder / "after.json")), folder / "before.json")
+        with patch("sys.stdout") as out:
+            code = cli.main(["--compare", str(folder / "before.json"), str(folder / "after.json"), "--output",
+                             str(folder / "comparison.html")])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_FAILED, printed)
+        self.assertIn("REGRESSION Communication: ControlDTCSetting (85): passed -> failed", printed)
+        self.assertIn("F195 systemSupplierECUSoftwareVersionNumber: APP-1.0.0 -> APP-2.0.0", printed)
+        self.assertTrue((folder / "comparison.html").exists())
+        with patch("sys.stdout"):
+            self.assertEqual(cli.main(["--compare", str(folder / "after.json"), str(folder / "before.json")]),
+                             cli.EXIT_PASSED, "a fix is no regression")
+            (folder / "other.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(cli.main(["--compare", str(folder / "other.json"), str(folder / "before.json")]),
+                             cli.EXIT_NOT_RUN)
+
+
 class PlanTest(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -660,6 +724,7 @@ class PlanTest(unittest.TestCase):
         self.assertIn("PASSED   Sessions: Default session (10 01)", printed)
         self.assertIn("PASSED: 2 passed, 0 failed", printed)
         self.assertTrue(junit.exists())
+        self.assertEqual(load_results(next(reports.glob("*.json")))["counts"]["passed"], 2, "the results, as JSON")
         root = ElementTree.parse(junit).getroot()
         self.assertEqual(root.find("testsuite").get("tests"), "2")
         page = next(reports.glob("*.html")).read_text(encoding="utf-8")
@@ -796,7 +861,8 @@ class WindowTest(unittest.TestCase):
         report = self.window.report
         self.assertEqual(report.verdict, "passed", failures(report))
         self.assertNotIn(first, [case.name for case in report.cases])
-        html, xml = self.window.report_paths
+        html, xml, results = self.window.report_paths
+        self.assertEqual(results.suffix, ".json", "the results, for comparing runs")
         self.assertEqual(html.parent, self.folder / "reports")
         self.assertTrue(xml.exists())
         self.assertTrue(list((self.folder / "reports").glob("traffic_*.blf")), "the traffic was recorded")
@@ -942,6 +1008,27 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(found.name, "Dummy ECU (discovered)")
         self.assertEqual(window.description.dids[0xF190].length, 17)
         self.assertEqual(window.plan().description, str((self.folder / "found.json").resolve()))
+
+    def test_each_run_compared_with_the_last(self):
+        window = self.window
+        bench = Bench(self)
+        self.assertTrue(window.connect_ecu(can.Bus(interface="virtual", channel=bench.channel)))
+        self.addCleanup(window.disconnect_ecu)
+        names = ["communication.controldtcsetting_85", "testerpresent.testerpresent_3e"]
+        for forced in ([], [{"sid": 0x85, "nrc": 0x22}]):
+            bench.ecu.config.forced_nrcs = forced
+            window.report = None
+            window.run(names)
+            self.assertTrue(spin_until(lambda: window.report is not None and window.run_btn.isEnabled()))
+            time.sleep(1.1)                                   # the next report gets its own second
+        self.assertIn("Since the last run: 1 regression", window.log.toPlainText())
+        self.assertIs(window.results.currentWidget(), window.comparison_tab, "shown: something regressed")
+        self.assertIn("Regressions (1)", window.comparison_view.toPlainText())
+        results = sorted((self.folder / "reports").glob("*.json"))
+        self.assertEqual(len(results), 2)
+        self.assertEqual(window.compare_runs(str(results[1]), str(results[0])).regressions[0].title,
+                         "Communication: ControlDTCSetting (85)", "the earlier run is the first")
+        self.assertTrue(window.save_comparison(self.folder / "comparison.html").exists())
 
     def test_main_smoke_test(self):
         self.assertEqual(window_module.main(["--smoke-test"]), 0)

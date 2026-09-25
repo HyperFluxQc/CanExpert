@@ -794,7 +794,30 @@ and then the answer, so a step expecting no answer accepts an answer that follow
 **Run** runs the ticked tests; each shows its verdict and, opened, every step with the request and the answer.
 A step that got another NRC than ISO 14229-1 asks for, but one the NRC policy accepts, passes with a note. **Stop** ends
 the run after the current step. Every run leaves an HTML and a JUnit XML report in `TestExpert/reports`
-(**Open report**).
+(**Open report**), and its results as JSON for comparing runs.
+
+### Comparing runs
+
+Every run leaves, beside its HTML and JUnit reports, its **results** as JSON (same name). After a run TestExpert
+compares it with the last run of the same description in the same folder; the log says what changed, and the
+**Comparison** tab shows it — at once when a test regressed:
+
+- **Regressions** — tests that passed before and do not now; **Fixed** — the other way round;
+- other verdict changes (skipped, blocked...), **new** tests and tests **gone**;
+- **other answers** — the same verdict, but steps that answered otherwise (a new software version's DIDs...);
+- the ECU's **identification** before and after (F195 software version, F18C serial number...).
+
+**File → Compare two runs...** compares any two results files — two software versions, two ECUs, a bench and
+a vehicle — and **Save...** keeps the comparison as a page. Times are left out, since they differ from run to
+run, and a positive answer is compared by what it echoes (the service, the DID): its data — a seed, a counter —
+differ by nature, and the values that matter are compared by the steps that check them and by the
+identification. On the command line:
+
+```bash
+python test_expert.py --compare reports/ecu_20260901-1030.json reports/ecu_20260915-1415.json --output diff.html
+```
+
+prints the changes; its exit code is 1 when a test regressed, 0 otherwise.
 
 ### Discovering what the ECU has
 
