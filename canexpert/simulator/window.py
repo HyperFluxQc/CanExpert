@@ -215,6 +215,8 @@ class DummyEcuWindow(Pages, Tables, QMainWindow):
             self.erase_routine.setValue(config.erase_routine)
             self.erase_seconds.setValue(config.erase_seconds)
             self.check_routine.setValue(config.check_routine)
+            self.self_test_routine.setValue(config.self_test_routine)
+            self.self_test_seconds.setValue(config.self_test_seconds)
             self.image_crc.setCurrentIndex(max(0, self.image_crc.findData(config.image_crc)))
             self.version_from_image.setChecked(config.version_address is not None)
             self.version_address.setValue(0x20000 if config.version_address is None else config.version_address)
@@ -285,6 +287,7 @@ class DummyEcuWindow(Pages, Tables, QMainWindow):
             full_blocks=self.full_blocks.isChecked(), memory_ranges=memory_ranges,
             require_erase=self.require_erase.isChecked(), erase_routine=self.erase_routine.value(),
             check_routine=self.check_routine.value(), erase_seconds=self.erase_seconds.value(),
+            self_test_routine=self.self_test_routine.value(), self_test_seconds=self.self_test_seconds.value(),
             allow_upload=self.allow_upload.isChecked(), image_crc=self.image_crc.currentData(),
             version_address=self.version_address.value() if self.version_from_image.isChecked() else None,
             version_length=self.version_length.value(),

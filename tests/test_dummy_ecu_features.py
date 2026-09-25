@@ -17,7 +17,7 @@ from canexpert.flashing import Firmware
 from canexpert.simulator import ecu as ecu_module
 from canexpert.simulator.dtc import (CONFIRMED, FAILED_SINCE_CLEAR, PENDING, TEST_FAILED, TEST_FAILED_THIS_CYCLE,
                                      WARNING_INDICATOR, DtcMemory, status_text)
-from canexpert.simulator.ecu import DummyEcu, EcuConfig, application_ids, config_from_dict
+from canexpert.simulator.ecu import DummyEcu, EcuConfig, application_ids, config_from_dict, data_tables
 from canexpert.simulator.signals import DEFAULT_GENERATORS, SignalSimulation
 from canexpert.uds.client import UdsFunctions, uds_request
 from canexpert.uds.isotp import IsoTpError, isotp_recv
@@ -443,6 +443,56 @@ class AccessTest(unittest.TestCase):
                        {"image_crc": "md5"}, {"error_refuse": 150}):
             with self.subTest(broken), self.assertRaises(ValueError):
                 config_from_dict(broken)
+
+
+class ValidValuesTest(unittest.TestCase):
+    def test_a_did_takes_only_its_values(self):
+        bench = Bench(self, quiet())
+        bench.request([0x10, 0x03])
+        seed = bench.request([0x27, 0x01])[2:]
+        bench.request([0x27, 0x02, *(byte ^ 0xA5 for byte in seed)])
+        self.assertEqual(bench.request([0x2E, 0x01, 0x10, 0x04, 0xB0]), b"\x6e\x01\x10", "1200 rpm")
+        self.assertEqual(bench.request([0x2E, 0x01, 0x10, 0x04, 0xB1]), b"\x7f\x2e\x31", "1201 rpm")
+        self.assertEqual(bench.request([0x2E, 0x01, 0x10, 0x02, 0x57]), b"\x7f\x2e\x31", "599 rpm")
+        self.assertEqual(bench.request([0x22, 0x01, 0x10]), b"\x62\x01\x10\x04\xb0", "the last good value")
+        with self.assertRaises(ValueError):
+            data_tables(quiet(dids=[{"did": 0x0110, "data": "0320", "valid": [[0x04B0, 0x0258]]}]))
+
+    def test_a_response_pending_lifts_the_suppression(self):
+        bench = Bench(self, quiet(response_delay_ms=120))
+        self.assertEqual(bench.request([0x3E, 0x80]), b"\x7e\x00", "after 7F 3E 78, the answer is sent")
+        bench = Bench(self, quiet(response_delay_ms=20))
+        self.assertIsNone(bench.request([0x3E, 0x80], timeout=0.3), "within P2: suppressed")
+
+
+class RoutineTest(unittest.TestCase):
+    def test_start_stop_and_results(self):
+        bench = Bench(self, quiet(self_test_seconds=0.3, erase_seconds=0.01))
+        self_test = [0x02, 0x01]
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x7f\x31\x7f", "not in the default session")
+        bench.request([0x10, 0x03])
+        self.assertEqual(bench.request([0x31, 0x03, *self_test]), b"\x7f\x31\x24", "results before a start")
+        self.assertEqual(bench.request([0x31, 0x02, *self_test]), b"\x7f\x31\x24", "a stop before a start")
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x71\x01\x02\x01\x01", "running")
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x7f\x31\x24", "already running")
+        self.assertEqual(bench.request([0x31, 0x03, *self_test]), b"\x71\x03\x02\x01\x01")
+        self.assertEqual(bench.request([0x31, 0x02, *self_test]), b"\x71\x02\x02\x01\x02", "stopped")
+        self.assertEqual(bench.request([0x31, 0x02, *self_test]), b"\x7f\x31\x24", "nothing running")
+        bench.request([0x31, 0x01, *self_test])
+        time.sleep(0.4)
+        self.assertEqual(bench.request([0x31, 0x03, *self_test]), b"\x71\x03\x02\x01\x00", "done")
+        self.assertEqual(bench.request([0x31, 0x03, *self_test, 0x00]), b"\x7f\x31\x13")
+        self.assertEqual(bench.request([0x31, 0x04, *self_test]), b"\x7f\x31\x12")
+        self.assertEqual(bench.request([0x31, 0x01, 0xFF, 0x00, 0x44, 0, 1, 0, 0, 0, 0, 0, 4]), b"\x7f\x31\x31",
+                         "erasing: in the programming session")
+        bench.request([0x10, 0x02])
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x7f\x31\x31", "the self test: extended only")
+        seed = bench.request([0x27, 0x01])[2:]
+        bench.request([0x27, 0x02, *(byte ^ 0xA5 for byte in seed)])
+        self.assertEqual(bench.request([0x31, 0x03, 0xFF, 0x00]), b"\x7f\x31\x24")
+        bench.request([0x31, 0x01, 0xFF, 0x00, 0x44, 0, 1, 0, 0, 0, 0, 0, 4])
+        self.assertEqual(bench.request([0x31, 0x03, 0xFF, 0x00]), b"\x71\x03\xff\x00\x00", "erased")
+        self.assertEqual(bench.request([0x31, 0x02, 0xFF, 0x00]), b"\x7f\x31\x12", "erasing is not stopped")
 
 
 class BootloaderTest(unittest.TestCase):

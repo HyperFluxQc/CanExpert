@@ -16,11 +16,16 @@ Test modules, as CANoe has them, in Python: a file of test cases run against the
         DSC(0x01)
 
 before_each(t) and after_each(t) run around every test case. The UDS service functions (RDBI, DSC, ...) are
-there as in panel scripts. t is a TestContext: check, check_equal, expect_nrc, require, fail, skip, log, wait,
-send, wait_for_frame, wait_for_signal.
+there as in panel scripts. t is a TestContext: check, check_equal, expect_nrc, require, fail, skip, block, warn,
+log, wait, send, wait_for_frame, wait_for_signal.
+
+A test case whose preconditions could not be set up - t.block() in before_each - is blocked: not run, and
+counted with the failures. t.warn() notes what went wrong without failing the case (a clean-up that did not
+work). A Runner given accept(case name, step description) turns a failed step it knows into an accepted one.
 
 run_module() runs the chosen test cases on the calling thread and returns a TestReport; report.py writes it
-as HTML and JUnit XML.
+as HTML and JUnit XML. call_hook() runs a module's hook with another test case's t - TestExpert runs modules
+among its own tests that way.
 """
 from __future__ import annotations
 
@@ -29,6 +34,7 @@ import queue
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,8 +44,8 @@ from canexpert.can_bus import ReceiveMailbox
 from canexpert.j1939.transport import J1939Link
 from canexpert.uds.client import UdsFunctions, UdsResult
 
-PASS, FAIL, INFO = "pass", "fail", "info"
-PASSED, FAILED, ERROR, SKIPPED = "passed", "failed", "error", "skipped"
+PASS, FAIL, INFO, WARN, ACCEPTED = "pass", "fail", "info", "warn", "accepted"      # a step's verdict
+PASSED, FAILED, ERROR, SKIPPED, BLOCKED = "passed", "failed", "error", "skipped", "blocked"   # a test case's
 HOOKS = ("setup", "teardown", "before_each", "after_each")
 
 
@@ -53,6 +59,10 @@ class _Abort(Exception):
 
 class _Skip(Exception):
     """skip() was called."""
+
+
+class _Block(Exception):
+    """block() was called: what the test case needs could not be set up."""
 
 
 @dataclass
@@ -75,6 +85,13 @@ class CaseResult:
     def failures(self) -> list[Step]:
         return [step for step in self.steps if step.verdict == FAIL]
 
+    def accepted(self) -> list[Step]:
+        """The failed steps an accepted deviation covers."""
+        return [step for step in self.steps if step.verdict == ACCEPTED]
+
+    def warnings(self) -> list[Step]:
+        return [step for step in self.steps if step.verdict == WARN]
+
 
 @dataclass
 class TestReport:
@@ -89,16 +106,16 @@ class TestReport:
     stopped: bool = False
 
     def counts(self) -> dict:
-        counts = {PASSED: 0, FAILED: 0, ERROR: 0, SKIPPED: 0}
+        counts = {PASSED: 0, FAILED: 0, ERROR: 0, SKIPPED: 0, BLOCKED: 0}
         for case in self.cases:
             counts[case.verdict] += 1
         return counts
 
     @property
     def verdict(self) -> str:
-        """failed if anything failed or broke (setup and teardown included), else passed."""
+        """failed if anything failed, broke or was blocked (setup and teardown included), else passed."""
         results = self.cases + [hook for hook in (self.setup, self.teardown) if hook is not None]
-        if any(result.verdict in (FAILED, ERROR) for result in results):
+        if any(result.verdict in (FAILED, ERROR, BLOCKED) for result in results):
             return FAILED
         return PASSED if any(case.verdict == PASSED for case in self.cases) else SKIPPED
 
@@ -177,8 +194,9 @@ class TestContext:
     """What a test case gets as t: steps with verdicts, waits, frames and signals."""
 
     def __init__(self, result: CaseResult, frames: queue.Queue | None, send, decode, stop: threading.Event,
-                 report_step=None, marker=None):
+                 report_step=None, marker=None, accept=None):
         self.result = result
+        self._accept = accept           # accept(case name, step description) -> comment, or None: still a failure
         self._frames = frames           # (arrival time, frame) for every received frame: FrameMailbox.messages
         self._send = send               # send(can.Message)
         self._decode = decode           # decode(can_id, data) -> (message name, {signal name: value})
@@ -187,15 +205,35 @@ class TestContext:
         self._marker = marker or (lambda when, text: None)   # marker(when, comment): into the measurement
         self._start = time.monotonic()
         self._since = None              # when the last send() went out: a wait after it takes the answer too
+        self._lenient = 0               # inside lenient(): failed steps are recorded as warnings
 
     # --- steps --------------------------------------------------------------------------------
 
     def _step(self, description, verdict, detail=""):
         self._check_stop()
-        step = Step(round(time.monotonic() - self._start, 4), str(description), verdict, str(detail))
+        description, detail = str(description), str(detail)
+        if verdict == FAIL and self._accept is not None:
+            comment = self._accept(self.result.name, description)
+            if comment is not None:
+                verdict = ACCEPTED
+                detail = f"{detail} - accepted deviation" + (f": {comment}" if comment else "")
+        passed = verdict != FAIL
+        if not passed and self._lenient:
+            verdict = WARN
+        step = Step(round(time.monotonic() - self._start, 4), description, verdict, detail)
         self.result.steps.append(step)
         self._report_step(step)
-        return verdict != FAIL
+        return passed
+
+    @contextmanager
+    def lenient(self):
+        """Meanwhile, failed steps are warnings: a clean-up that did not work does not fail the test case.
+        require() still ends what it is in."""
+        self._lenient += 1
+        try:
+            yield self
+        finally:
+            self._lenient -= 1
 
     def check(self, condition, description="check", detail=None) -> bool:
         """A step that passes when condition is true - a positive UdsResult is. Returns the verdict."""
@@ -227,6 +265,14 @@ class TestContext:
 
     def skip(self, reason="skipped"):
         raise _Skip(reason)
+
+    def block(self, reason="blocked"):
+        """End the test case as blocked: what it needs could not be set up, so it is not run (before_each)."""
+        raise _Block(reason)
+
+    def warn(self, description, detail=""):
+        """A step that did not go as it should, without failing the test case."""
+        self._step(description, WARN, detail)
 
     def log(self, text):
         """A line in the report, without a verdict."""
@@ -323,8 +369,9 @@ class Runner:
     """
 
     def __init__(self, module: TestModule, request=None, frames=None, send=None, decode=None, timeout=None,
-                 on_event=None, configuration="", marker=None, j1939=None):
+                 on_event=None, configuration="", marker=None, j1939=None, accept=None):
         self.module = module
+        self.accept = accept                     # accept(case name, step description) -> comment or None
         self.frames, self.configuration = frames, configuration
         self.send = send or _not_connected
         self.decode = decode or (lambda can_id, data: ("", {}))
@@ -342,7 +389,7 @@ class Runner:
 
     def _context(self, result):
         return TestContext(result, self.frames, self.send, self.decode, self.stop_event,
-                           lambda step: self.on_event("step", step), self.marker)
+                           lambda step: self.on_event("step", step), self.marker, self.accept)
 
     def _call(self, function, result) -> None:
         """Run one function as (part of) result's body and set its verdict."""
@@ -354,6 +401,8 @@ class Runner:
             result.verdict = FAILED
         except _Skip as reason:
             result.verdict, result.error = SKIPPED, str(reason)
+        except _Block as reason:
+            result.verdict, result.error = BLOCKED, str(reason)
         except TestStopped:
             result.verdict, result.error = SKIPPED, "stopped"
             raise
@@ -412,8 +461,8 @@ class Runner:
         return report
 
     def _run_case(self, case, result):
-        """before_each, the case, after_each; a failing before_each fails the case without running it. The
-        case keeps the worst verdict of the three."""
+        """before_each, the case, after_each; a failing before_each fails the case without running it (one
+        that blocks it: blocked). The case keeps the worst verdict of the three."""
         hooks = self.module.hooks
         start = time.monotonic()
         try:
@@ -432,6 +481,26 @@ class Runner:
 
 def _not_connected(_message):
     raise RuntimeError("No measurement is running: connect first")
+
+
+def call_hook(function, t) -> tuple[str, str]:
+    """Run function(t) - a module's setup, before_each... - with another test case's context, as a Runner runs
+    its own: (verdict, why) - passed; failed (a failed step, require() or fail()), skipped, blocked, or error
+    (the traceback). Stopping the run goes through."""
+    failures = len(t.result.failures())
+    try:
+        function(t)
+    except _Abort as reason:
+        return FAILED, str(reason)
+    except _Skip as reason:
+        return SKIPPED, str(reason)
+    except _Block as reason:
+        return BLOCKED, str(reason)
+    except TestStopped:
+        raise
+    except Exception:
+        return ERROR, traceback.format_exc(limit=8)
+    return (FAILED, "a step failed") if len(t.result.failures()) > failures else (PASSED, "")
 
 
 def run_module(path, request=None, frames=None, send=None, decode=None, names=None, **options) -> TestReport:

@@ -5,3 +5,5 @@ build/
 dist/
 # the Test window's reports
 TestModules/reports/
+# the reports and recordings of TestExpert runs
+TestExpert/

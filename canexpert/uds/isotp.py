@@ -15,7 +15,12 @@ FC_CONTINUE, FC_WAIT, FC_OVERFLOW = 0x0, 0x1, 0x2   # FlowStatus of a flow contr
 
 
 class IsoTpError(Exception):
-    """Transport-level failure (no flow control, overflow, sequence error, ...)."""
+    """Transport-level failure (no flow control, overflow, sequence error, ...). reason names what the receiver
+    did to a sender, for a log of the sending side: no_flow_control, too_many_waits, overflow, invalid_status."""
+
+    def __init__(self, message, reason=""):
+        super().__init__(message)
+        self.reason = reason
 
 
 def _frame(body: bytes, address_byte: int | None, padding: int | None) -> bytes:
@@ -97,7 +102,7 @@ def _wait_flow_control(bus, response_id, extended, address_byte):
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise IsoTpError("No flow control frame from ECU")
+            raise IsoTpError("No flow control frame from ECU", "no_flow_control")
         data = _recv_payload(bus, response_id, extended, address_byte, min(0.1, remaining))
         if not data or data[0] >> 4 != 0x3 or len(data) < 3:
             continue
@@ -107,12 +112,12 @@ def _wait_flow_control(bus, response_id, extended, address_byte):
         if status == FC_WAIT:  # the receiver is not ready yet: N_Bs starts again
             waits += 1
             if waits > MAX_FC_WAITS:
-                raise IsoTpError("ECU kept sending flow control WAIT")
+                raise IsoTpError("ECU kept sending flow control WAIT", "too_many_waits")
             deadline = time.monotonic() + N_BS_TIMEOUT
             continue
         if status == FC_OVERFLOW:
-            raise IsoTpError("ECU reported buffer overflow: the message is longer than it accepts")
-        raise IsoTpError(f"Invalid flow status 0x{status:X} from ECU")
+            raise IsoTpError("ECU reported buffer overflow: the message is longer than it accepts", "overflow")
+        raise IsoTpError(f"Invalid flow status 0x{status:X} from ECU", "invalid_status")
 
 
 def isotp_send(bus, request_id: int, payload: bytes, response_id: int, extended: bool = False,

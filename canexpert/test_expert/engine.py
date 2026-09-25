@@ -1,0 +1,106 @@
+"""
+A TestExpert run, with or without its window: a plan's suite, tester and runner on a bus, and the reports the
+run leaves. The window runs it on its own thread; test_expert.py plan.json --run on the command line.
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from canexpert.test_expert.compare import results_dict
+from canexpert.test_expert.coverage import coverage_html, summary
+from canexpert.test_expert.description import EcuDescription
+from canexpert.test_expert.generator import Suite
+from canexpert.test_expert.modules import BusFrames, Symbols, load_modules
+from canexpert.test_expert.plan import TestPlan
+from canexpert.test_expert.policy import accept_function
+from canexpert.test_expert.tester import Tester
+from canexpert.testing.report import report_stem, save_reports
+from canexpert.testing.runner import Runner, TestReport
+
+
+class RecordingBus:
+    """A bus whose frames, both ways, go into a Recorder (canexpert.recording) as they pass."""
+
+    def __init__(self, bus, recorder):
+        self.bus, self.recorder = bus, recorder
+
+    def send(self, message, timeout=None):
+        self.bus.send(message, timeout)
+        self.recorder.write(time.time(), "TX", message.arbitration_id, bytes(message.data), message.is_extended_id)
+
+    def recv(self, timeout=None):
+        message = self.bus.recv(timeout)
+        if message is not None and not message.is_error_frame:
+            self.recorder.write(message.timestamp or time.time(), "RX", message.arbitration_id, bytes(message.data),
+                                message.is_extended_id)
+        return message
+
+
+class PlanRun:
+    """One run of a plan against the ECU on bus (a bus, or the mailbox of a CAN worker): names, the tests to
+    run (None: the plan's - every test it does not leave out); on_event as canexpert.testing.runner's."""
+
+    def __init__(self, plan: TestPlan, description: EcuDescription, bus, names=None, on_event=None):
+        self.plan, self.description = plan, description
+        self.modules = load_modules(plan.module_paths())          # the files as they are now
+        self.symbols = Symbols(plan.symbol_paths())
+        self.suite = Suite(description, plan.make_options(), plan.sequences, plan.folder(), plan.nrc_policy,
+                           self.modules)
+        excluded = set(plan.excluded)
+        self.names = [case.name for case in self.suite.cases if case.name not in excluded] if names is None \
+            else [case.name for case in self.suite.cases if case.name in set(names)]
+        self.suite.tester = Tester(bus, plan.connection.transport(), plan.connection.functional_id)
+        self.runner = Runner(self.suite.module(self.names), frames=BusFrames(self.suite.tester),
+                             send=self.suite.tester.send_frame, decode=self.symbols.decode, on_event=on_event,
+                             configuration=plan.connection.text(), accept=accept_function(plan.deviations))
+        self.report: TestReport | None = None
+
+    def run(self) -> TestReport:
+        """Run the tests on the calling thread."""
+        self.report = self.runner.run(self.names)
+        return self.report
+
+    def stop(self):
+        self.runner.stop()
+
+    def facts(self) -> list[tuple[str, str]]:
+        """What the report's first table says besides the run itself."""
+        facts = [("Description", f"{self.description.name} - {self.description.source or 'built in'}"),
+                 ("Described", self.description.summary())]
+        if self.plan.path is not None:
+            facts.insert(0, ("Test plan", str(self.plan.path)))
+        if self.plan.nrc_policy.nrcs:
+            facts.append(("NRC policy", "; ".join(f"{situation}: {', '.join(f'{nrc:02X}' for nrc in nrcs)}"
+                                                  for situation, nrcs in sorted(self.plan.nrc_policy.nrcs.items()))))
+        if self.plan.deviations:
+            accepted = sum(len(case.accepted()) for case in self.report.cases) if self.report else 0
+            facts.append(("Accepted deviations", f"{len(self.plan.deviations)} in the plan, {accepted} steps accepted"))
+        if self.modules:
+            facts.append(("Test modules", ", ".join(loaded.path.name + ("" if loaded.module else " (not read)")
+                                                    for loaded in self.modules)))
+        if self.plan.symbols:
+            facts.append(("Symbol databases", "; ".join([Path(path).name for path in self.plan.symbols] +
+                                                        self.symbols.errors)))
+        facts.append(("Coverage", summary(self.suite.coverage, self.description)))
+        for did, (name, value) in sorted(self.suite.identification.items()):
+            facts.append((f"{did:04X} {name}", value))
+        return facts
+
+    def coverage_html(self) -> str:
+        return coverage_html(self.suite.coverage, self.description, self.suite.o)
+
+    def results(self) -> dict:
+        """The run's results as JSON values, for comparing it with another run (compare.py)."""
+        return results_dict(self.report, self.description, self.suite.identification, self.suite.coverage,
+                            self.plan.path)
+
+    def save(self, folder, suffix: str = "") -> list[Path]:
+        """Write the run's HTML report (with its coverage), its JUnit report and its results (JSON) into
+        folder; returns their paths. suffix follows the name (the run's number, when a run is repeated)."""
+        html_path, xml_path = save_reports(self.report, Path(folder), self.facts(), self.coverage_html(),
+                                           report_stem(self.report) + suffix)
+        results_path = html_path.with_suffix(".json")
+        results_path.write_text(json.dumps(self.results(), indent=1), encoding="utf-8")
+        return [html_path, xml_path, results_path]

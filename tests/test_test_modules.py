@@ -27,7 +27,7 @@ from canexpert.config import validate_config
 from canexpert.paths import DBC_DIR, TEST_MODULES_DIR
 from canexpert.simulator.ecu import DummyEcu, EcuConfig
 from canexpert.testing.report import html_report, junit_report, save_reports
-from canexpert.testing.runner import Runner, load_module, run_module, uds_names
+from canexpert.testing.runner import CaseResult, Runner, TestContext, call_hook, load_module, run_module, uds_names
 from canexpert.testing.window import MemorySettings, TestWindow
 
 APP = QApplication.instance() or QApplication([])
@@ -141,7 +141,7 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(report.setup.verdict, "passed")
         self.assertEqual(report.setup.steps[0].verdict, "info")
         self.assertEqual(report.verdict, "failed")
-        self.assertEqual(report.counts(), {"passed": 1, "failed": 3, "error": 1, "skipped": 1})
+        self.assertEqual(report.counts(), {"passed": 1, "failed": 3, "error": 1, "skipped": 1, "blocked": 0})
         hooks = self.module.namespace["events"]
         self.assertEqual(hooks[0], "setup")
         self.assertEqual(hooks[-1], "teardown")
@@ -204,6 +204,72 @@ def frames(t):
         (case,) = report.cases
         self.assertEqual(case.verdict, "passed", case.steps)
         self.assertEqual((sent[0].arbitration_id, bytes(sent[0].data), sent[0].is_extended_id), (0x123, b"\x01\x02", False))
+
+    def test_blocked_warned_and_accepted(self):
+        path = write_module(self, '''
+def before_each(t):
+    if t.result.name == "needs_power":
+        t.check(False, "power supply on")
+        t.block("the power supply did not answer")
+
+def after_each(t):
+    if t.result.name == "cleans_up":
+        t.warn("the ECU reset was not answered", "11 01 -> no answer")
+
+@testcase
+def needs_power(t):
+    t.check(True, "never reached")
+
+@testcase
+def cleans_up(t):
+    t.check(True, "done")
+
+@testcase
+def known_deviation(t):
+    t.check(False, "NRC 0x31 expected", "7F 22 7F")
+    t.check(False, "something else")
+''')
+        module = load_module(path, uds_names())
+        accepted = {("known_deviation", "NRC 0x31 expected"): "the supplier answers 0x7F here (ticket 42)"}
+        report = Runner(module, fake_ecu, accept=lambda name, step: accepted.get((name, step))).run()
+        cases = {case.name: case for case in report.cases}
+        self.assertEqual(cases["needs_power"].verdict, "blocked")
+        self.assertEqual(cases["needs_power"].error, "the power supply did not answer")
+        self.assertEqual([step.description for step in cases["needs_power"].steps], ["power supply on"])
+        self.assertEqual(cases["cleans_up"].verdict, "passed", "a warning does not fail the case")
+        self.assertEqual([step.verdict for step in cases["cleans_up"].steps], ["pass", "warn"])
+        deviation = cases["known_deviation"]
+        self.assertEqual([step.verdict for step in deviation.steps], ["accepted", "fail"])
+        self.assertIn("accepted deviation: the supplier answers 0x7F here", deviation.steps[0].detail)
+        self.assertEqual(deviation.verdict, "failed", "the other failure still counts")
+        self.assertEqual(report.counts()["blocked"], 1)
+        self.assertEqual(report.verdict, "failed", "a blocked case fails the run")
+        page = html_report(report)
+        self.assertIn("1 blocked", page)
+        self.assertIn("1 with a warning", page)
+        self.assertIn("1 accepted", page)
+        root = ElementTree.fromstring(junit_report(report))
+        blocked = next(case for case in root.iter("testcase") if case.get("name") == "needs power")
+        self.assertEqual(blocked.find("error").get("type"), "Blocked")
+
+    def test_a_hook_run_with_another_cases_context(self):
+        result = CaseResult("case", "A case")
+        t = TestContext(result, None, None, None, threading.Event())
+        self.assertEqual(call_hook(lambda t: t.check(True, "fine"), t), ("passed", ""))
+        self.assertEqual(call_hook(lambda t: t.check(False, "not fine"), t), ("failed", "a step failed"))
+        self.assertEqual(call_hook(lambda t: t.require(False, "needed"), t), ("failed", "needed"))
+        self.assertEqual(call_hook(lambda t: t.skip("not here"), t), ("skipped", "not here"))
+        self.assertEqual(call_hook(lambda t: t.block("no power"), t), ("blocked", "no power"))
+        verdict, why = call_hook(lambda t: {}["missing"], t)
+        self.assertEqual(verdict, "error")
+        self.assertIn("KeyError", why)
+        with t.lenient():
+            self.assertTrue(t.check(False, "a clean-up that did not work") is False, "the check still says so")
+            verdict, _ = call_hook(lambda t: t.require(False, "required in a clean-up"), t)
+        self.assertEqual(verdict, "failed", "require() still ends it")
+        self.assertEqual([step.verdict for step in result.steps[-2:]], ["warn", "warn"], "recorded as warnings")
+        self.assertFalse(t.check(False, "after it"))
+        self.assertEqual(result.steps[-1].verdict, "fail")
 
     def test_without_a_bus_uds_calls_fail_as_errors(self):
         report = run_module(self.path, names=["uds_answers"])

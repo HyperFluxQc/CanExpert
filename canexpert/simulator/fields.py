@@ -66,6 +66,26 @@ def format_ranges(ranges) -> str:
     return ", ".join(f"{first:08X}-{last:08X}" for first, last in ranges)
 
 
+def parse_value_ranges(text: str) -> list:
+    """A DID's valid values: '0258-04B0, 0600' -> [[0x258, 0x4B0], [0x600, 0x600]]; empty -> [] (any)."""
+    ranges = []
+    for part in text.replace(";", ",").split(","):
+        if not part.strip():
+            continue
+        first, _, last = part.partition("-")
+        first, last = int(first, 16), int(last or first, 16)
+        if last < first:
+            raise ValueError(f"{part.strip()} ends before it starts")
+        ranges.append([first, last])
+    return ranges
+
+
+def format_value_ranges(ranges) -> str:
+    def text(value):
+        return f"{value:0{2 * max(1, (value.bit_length() + 7) // 8)}X}"          # whole bytes: 0258
+    return ", ".join(text(first) if first == last else f"{text(first)}-{text(last)}" for first, last in ranges or ())
+
+
 SESSION_WORDS = {"default": 0x01, "d": 0x01, "programming": 0x02, "p": 0x02, "extended": 0x03, "e": 0x03}
 
 

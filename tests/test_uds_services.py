@@ -260,12 +260,14 @@ class FlowControlTest(unittest.TestCase):
         self.assertEqual([self.ecu.recv(1).data[0] for _ in range(2)], [0x21, 0x22])
         sending.join(1)
         self.assertIsNone(sending.error)
-        for status, message in ((0x32, "overflow"), (0x37, "Invalid flow status 0x7")):
+        for status, message, reason in ((0x32, "overflow", "overflow"),
+                                        (0x37, "Invalid flow status 0x7", "invalid_status")):
             sending = self.send_first_frame(bytes(20))
             self.from_ecu(status, 0, 0)
             sending.join(1)
             self.assertIsInstance(sending.error, IsoTpError)
             self.assertIn(message, str(sending.error))
+            self.assertEqual(sending.error.reason, reason, "for the sending side's log")
             self.assertIsNone(self.ecu.recv(0.1))                        # nothing more after an abort
         with patch.object(uds_services, "MAX_FC_WAITS", 2):
             sending = self.send_first_frame(bytes(20))

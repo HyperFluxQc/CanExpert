@@ -50,6 +50,9 @@ def program(script, name, icon, description):
 
 main_analysis, main_exe = program("main.py", "CanExpert", "canexpert.ico", "CAN Expert - CAN and UDS tool")
 ecu_analysis, ecu_exe = program("dummy_ecu.py", "DummyECU", "dummy_ecu.ico", "CAN Expert Dummy ECU")
+test_analysis, test_exe = program("test_expert.py", "TestExpert", "test_expert.ico",
+                                  "TestExpert - UDS conformance tests from a CDD, ODX or PDX file")
 
 coll = COLLECT(main_exe, main_analysis.binaries, main_analysis.datas,
-               ecu_exe, ecu_analysis.binaries, ecu_analysis.datas, name="CanExpert")
+               ecu_exe, ecu_analysis.binaries, ecu_analysis.datas,
+               test_exe, test_analysis.binaries, test_analysis.datas, name="CanExpert")

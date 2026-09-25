@@ -77,6 +77,21 @@ _PATHS = {
     "sysvars": '<path d="M7 5c-2 0-2 2-2 3.5S4 11 3 12c1 1 2 1.5 2 3.5S5 19 7 19"/>'
                '<path d="M17 5c2 0 2 2 2 3.5s1 2.5 2 3.5c-1 1-2 1.5-2 3.5S19 19 17 19"/>'
                '<path d="M9 9l6 6M15 9l-6 6"/>',
+    # TestExpert's toolbar
+    "open": '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
+            '<path d="M12 10.5v5.5M9.5 13l2.5-2.5 2.5 2.5"/>',
+    "plan": '<rect x="5" y="4.5" width="14" height="17" rx="2"/><path d="M9 3h6v3H9z"/>'
+            '<path d="m8 11 1.2 1.2L11.5 10M13.5 11.2H16M8 16l1.2 1.2 2.3-2.2M13.5 16.2H16"/>',
+    "save": '<path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M8 3v5h7V3M8 21v-6.5h8V21"/>',
+    "run": '<path d="M7.5 4.5v15l12-7.5z"/>',
+    "stop": '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    "rerun": '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 3.5v4h-4"/><path d="M10 9v6l5-3z"/>',
+    "discover": '<circle cx="10" cy="10" r="6.5"/><path d="m15 15 6 6"/><rect x="7.5" y="7.5" width="5" height="5" rx="1"/>'
+                '<path d="M8.5 5.5v2M11.5 5.5v2M8.5 12.5v2M11.5 12.5v2"/>',
+    "compare": '<path d="M4 7.5h14M15 4.5l3 3-3 3"/><path d="M20 16.5H6M9 13.5l-3 3 3 3"/>',
+    "report": '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6M9 15.5h6M9 19h3"/>',
+    "manual": '<path d="M12 6.5C10.5 5 8 4.5 4 4.5v14c4 0 6.5.5 8 2 1.5-1.5 4-2 8-2v-14c-4 0-6.5.5-8 2z"/>'
+              '<path d="M12 6.5v14"/>',
 }
 _COLORS = {
     "connect": ("#15803d", "#6ee7a0"),
@@ -94,6 +109,16 @@ _COLORS = {
     "tests": ("#047857", "#6ee7b7"),
     "j1939": ("#9a3412", "#fdba74"),
     "sysvars": ("#9d174d", "#f9a8d4"),
+    "open": ("#b45309", "#fbbf24"),
+    "plan": ("#4338ca", "#a5b4fc"),
+    "save": ("#1d4ed8", "#93c5fd"),
+    "run": ("#15803d", "#6ee7a0"),
+    "stop": ("#c43c3c", "#ff9696"),
+    "rerun": ("#c2410c", "#fdba74"),
+    "discover": ("#0e7490", "#67e8f9"),
+    "compare": ("#7c3aed", "#c4b5fd"),
+    "report": ("#475569", "#cbd5e1"),
+    "manual": ("#4b5563", "#d1d5db"),
 }
 
 

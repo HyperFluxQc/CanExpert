@@ -17,6 +17,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions each ECU accepts and its VIN, part and serial numbers and versions - beside a running measurement - with a configuration made from any ECU found
 - **One measurement clock**: the Trace, the Logger, the Write window and the UDS Console show each frame's own time, absolute or relative to the start of the measurement; the Trace also filters by direction
 - **Write window** for the script's output and its variables; scripts react to keys, error frames and the bus state
+- **TestExpert**, a program of its own: UDS conformance tests generated from a CDD, ODX or PDX file, as Vector DiVa does, with pre-test and post-test sequences, test plans that also run from the command line, and HTML and JUnit reports
 - **J1939**: the Trace names 29-bit frames by parameter group, source and destination and joins BAM and RTS/CTS messages; a **J1939 window** lists the nodes and their NAMEs, each node's DM1 faults (DM2, DM11/DM3 clear) and requests or sends any PGN; J1939 DBC messages decode from any source address; scripts and test modules use `j1939.request()` / `j1939.send()` and `@on_pgn`; the Dummy ECU can be a J1939 node (address claim, DM1, SOFT/VI/CI, `DBC/j1939_demo.dbc`)
 - **Test modules**: test cases in Python against the live bus (`@testcase`, `setup`/`teardown`, `t.check`, `t.require`, `t.expect_nrc`, `t.wait_for_frame`, `t.wait_for_signal` and the UDS functions), with a verdict per step as it runs, Stop, and an HTML and a JUnit XML report of every run; an example module checks the Dummy ECU
 - **Status bar** with the bus state, the diagnostic session and security state read off the ECU's answers, and the last error; **keyboard shortcuts** (F9 connect, Ctrl+1...7 tool windows, F1 help at the window you are in) and an **About** box listing every library and adapter driver version
@@ -47,9 +48,9 @@ pip install -r requirements.txt
 
 ### Windows programs
 
-`python tools/build_windows.py` (after `pip install -r requirements-build.txt`) builds **CanExpert.exe** and
-**DummyECU.exe** into `dist/CanExpert`, with their icons and version, beside the `Configurations`,
-`Databases`, `DBC`, `ODX`, `examples` and `docs` folders they use. It checks that both start and zips the
+`python tools/build_windows.py` (after `pip install -r requirements-build.txt`) builds **CanExpert.exe**,
+**DummyECU.exe** and **TestExpert.exe** into `dist/CanExpert`, with their icons and version, beside the
+`Configurations`, `Databases`, `DBC`, `ODX`, `examples` and `docs` folders they use. It checks that each starts and zips the
 folder as `dist/CanExpert-<version>-windows.zip`: unzip it anywhere and run `CanExpert.exe`, no Python
 needed. The adapter drivers (Kvaser, Vector, IXXAT) are still installed separately. CI builds the same zip
 for every push to `main` and every `v*` tag (the *Windows programs* job's artifact).
@@ -170,6 +171,7 @@ CanExpert/
 ├── main.py                     # Start CAN Expert (--smoke-test: only check that it can start)
 ├── CanExpert.spec              # PyInstaller: the Windows programs (tools/build_windows.py runs it)
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
+├── test_expert.py              # Start TestExpert: UDS conformance tests from a CDD, ODX or PDX file (--run: no window)
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
 │   ├── main_tools.py, main_layouts.py, main_channels.py, main_session.py   # its parts (mixins)
@@ -185,6 +187,7 @@ CanExpert/
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service, ODX services, the fault memory
 │   ├── testing/                # Test modules: runner, HTML/JUnit reports, the Test window
 │   ├── j1939/, j1939_window.py # J1939: identifiers, NAME, DM1/DM2, transport protocol; the J1939 window
+│   ├── test_expert/            # TestExpert: descriptions (CDD, ODX, JSON, Dummy ECU), generated tests, window
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
 │   ├── symbols.py              # The DBC files every window shares
 │   ├── workspace.py            # The workspace: the docking system the windows live in
@@ -206,6 +209,38 @@ CanExpert/
 └── requirements.txt
 ```
 
+## TestExpert (UDS conformance tests)
+
+`test_expert.py` (**TestExpert.exe**) checks that an ECU keeps the UDS rules of ISO 14229-1, as Vector DiVa
+does. It reads the ECU's description — a **CDD** from CANdelaStudio, an **ODX/PDX** file, or its own JSON; of a file
+with several variants, the one chosen or the one the ECU says it is — and generates the tests: sessions and their transitions, TesterPresent, unsupported services (0x11),
+availability per session (0x7F) and the NRC order, message length (0x13), sub-functions (0x12), every DID read
+and written per session and security level (0x31, 0x33), security access (0x24, 0x35, the lockout's 0x36 and
+0x37), routines, the fault memory, CommunicationControl and ControlDTCSetting, ECU reset, functional
+addressing and P2 timing, and the ISO-TP transport layer (flow control, sequence numbers, N_Cr and N_Bs, WAIT and
+overflow, frames to ignore). Download, memory, periodic data, ResponseOnEvent and IO control are taken further than
+their availability, CommunicationControl must really stop the ECU's frames, and the ECU's DTCs must be the
+description's. CAN Expert's own test modules run in the same run, as groups after the generated tests.
+Pre-test and post-test sequences run around the run, a group or a test — a hard
+reset after a test, an ignition frame before the run, a recovery reset after a failure — and a test plan keeps
+it all in one file, which also runs without the window for a CI server (exit code and JUnit report). An NRC
+policy says which codes pass where a specification differs from ISO, and failures agreed on are kept as
+accepted deviations. A coverage matrix shows where each service, DID and routine was checked, and what was not
+tested and why. Deeper tests use the description's detail: each DID's values against its limits and text table,
+writes at and beyond its limits, routines started and asked out of order (0x24), the S3 timeout, and every
+response pending (0x78) within P2 and P2*. **Discover** asks the ECU what it really has and compares it with the
+description:
+undocumented services and DIDs, missing ones, other lengths or sessions - and what it found can be tested as a
+description of its own. Two runs - two software versions, two ECUs - are compared: regressions, fixes, other
+answers and the ECU's identification. Each run
+leaves an HTML and a JUnit report. `ODX/dummy_ecu.cdd` describes the Dummy ECU, which passes every test.
+
+```bash
+python test_expert.py ODX/dummy_ecu.cdd
+python test_expert.py nightly.json --run --junit results.xml
+python test_expert.py nightly.json --run --test sessions --repeat 20 --until-failure
+```
+
 ## Dummy ECU (no vehicle needed)
 
 `dummy_ecu.py` simulates a UDS ECU on any python-can interface. With the Kvaser Virtual CAN Driver, channels 0 and 1 are connected to each other, so run the ECU on one channel and CAN Expert on the other. Double-click `dummy_ecu.py` (or run it without options) to open the **Dummy ECU** window:
@@ -224,9 +259,9 @@ Every setting applies at once, even while connected, and is remembered for the n
 | Flow control | Block size (BS), STmin (ms or 100-900 µs), WAIT frames before each ContinueToSend and their interval, receive buffer (longer requests get flow control overflow) |
 | UDS | P2 and P2* announced by DiagnosticSessionControl, response delay (NRC 0x78 beyond P2) and pending interval, S3 timeout, programming session only from extended, the slow/medium/fast rates of periodic data (0x2A) and whether it goes out as `6A` frames or on an ID of its own |
 | Access | SecurityAccess levels - the main one and more - each with its seed length and key (seed XOR a mask, or a `GenerateKeyEx` seed & key DLL), wrong keys allowed and lockout delay; rules allowing a service only in some sessions or after unlocking a level |
-| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, RequestUpload, file for the flashed image; the bootloader's image check (none, CRC-32 as the check routine's option record, or in the image's last four bytes) and where the software version is read from the image |
+| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, the self test routine and its time, RequestUpload, file for the flashed image; the bootloader's image check (none, CRC-32 as the check routine's option record, or in the image's last four bytes) and where the software version is read from the image |
 | Signals | The DBC whose messages are sent (built-in: `DBC/dummy_ecu.dbc`), each message on or off with its period, and a generator per signal: constant, ramp, sine, square, random, counter, the engine running, logging, the session |
-| Data | DIDs (writable or not, following a signal, readable in some sessions or after unlocking a level), DTCs with their status, faults, snapshot and extended data, the fault memory's confirmation and aging cycles and snapshot DIDs, forced negative responses |
+| Data | DIDs (writable or not, following a signal, readable in some sessions or after unlocking a level, the values they may be written with), DTCs with their status, faults, snapshot and extended data, the fault memory's confirmation and aging cycles and snapshot DIDs, forced negative responses |
 | Errors | The chance of each transport error on purpose: refused, not answered, answered on another ID, a consecutive frame dropped, out of sequence or late |
 
 **How big are the TransferData blocks?** The ECU decides: it announces maxNumberOfBlockLength (data + the `0x36` SID + the block counter) in its RequestDownload response, and the tester sends blocks of that size minus 2. Set **Data per TransferData** to 256 or 512 to get `74 20 01 02` or `74 20 02 02`; CAN Expert's `Flashing()` follows it.

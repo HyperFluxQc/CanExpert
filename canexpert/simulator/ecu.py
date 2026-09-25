@@ -13,7 +13,8 @@ What it simulates (each value is a setting in the window, or in a profile saved 
 - Sessions (0x10, announcing P2/P2*), TesterPresent (0x3E), ECUReset (0x11), S3 session timeout,
   a processing delay answered with response pending (NRC 0x78) beyond P2
 - ReadDataByIdentifier (0x22) / WriteDataByIdentifier (0x2E) on a table of DIDs, each writable or not,
-  each readable in some sessions only or after unlocking a security level; a DID can follow a signal
+  each readable in some sessions only or after unlocking a security level, each with the values it accepts
+  (others written get NRC 0x31); a DID can follow a signal
 - ReadDataByPeriodicIdentifier (0x2A): F2xx DIDs sent slow, medium or fast, as 6A frames on the response
   ID or as frames of their own ID; ResponseOnEvent (0x86) on a DID change or a DTC status change
 - InputOutputControlByIdentifier (0x2F): a DID that follows a signal takes it over, and the application
@@ -26,12 +27,15 @@ What it simulates (each value is a setting in the window, or in a profile saved 
   whose status bits follow faults switched on and off, through operation cycles (dtc.py)
 - A forced negative response per service, and transport errors on purpose: refusals, missing answers,
   answers on another ID, a consecutive frame dropped, out of sequence or late
+- RoutineControl (0x31): start, stop and results; a self test in the extended session that runs for a while
+  and can be stopped
 - Flashing: RoutineControl erase / checkProgrammingDependencies (0x31, optionally checking the image's
   CRC-32), RequestDownload (0x34), RequestUpload (0x35), TransferData (0x36), RequestTransferExit (0x37),
   with the accepted data and address/length formats, maxNumberOfBlockLength, full blocks and memory
   ranges; an application left invalid by a failed flash keeps the ECU in its bootloader after a reset
 - ISO-TP flow control on segmented requests: block size and STmin, optional WAIT frames, overflow for
-  requests longer than the receive buffer
+  requests longer than the receive buffer; a single frame in the middle of a segmented request replaces it,
+  and a segmented response stops on the tester's overflow, a reserved flow status or no flow control
 - Application frames: the messages of a DBC, each signal driven by a generator (signals.py) - by default
   0x300 temperature/pressure and 0x301 status; commands on 0x200/0x201
 """
@@ -71,6 +75,17 @@ SERVICE_NAMES = {
     0x34: "RequestDownload", 0x35: "RequestUpload", 0x36: "TransferData", 0x37: "RequestTransferExit",
     0x3D: "WriteMemoryByAddress", 0x3E: "TesterPresent", 0x85: "ControlDTCSetting", 0x86: "ResponseOnEvent",
 }
+# The sessions each service may be used in (NRC 0x7F in the others); a service not listed: in every session.
+SERVICE_SESSIONS = {0x27: (EXTENDED_SESSION, PROGRAMMING_SESSION), 0x28: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x2A: (DEFAULT_SESSION, EXTENDED_SESSION), 0x2E: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x2F: (EXTENDED_SESSION,), 0x31: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x34: (PROGRAMMING_SESSION,),
+                    0x35: (PROGRAMMING_SESSION, EXTENDED_SESSION), 0x3D: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x85: (EXTENDED_SESSION, PROGRAMMING_SESSION), 0x86: (DEFAULT_SESSION, EXTENDED_SESSION)}
+# Sub-functions each service has (NRC 0x12 for the others).
+SUB_FUNCTIONS = {0x10: (0x01, 0x02, 0x03), 0x11: (0x01, 0x03), 0x19: (0x01, 0x02, 0x04, 0x06, 0x0A),
+                 0x28: (0x00, 0x01, 0x02, 0x03), 0x31: (0x01, 0x02, 0x03), 0x3E: (0x00,), 0x85: (0x01, 0x02),
+                 0x86: (0x00, 0x01, 0x03, 0x04, 0x05, 0x06)}
 # What a bootloader answers; the application's services get NRC 0x11 while it runs.
 BOOT_SERVICES = {0x10, 0x11, 0x22, 0x23, 0x27, 0x28, 0x2E, 0x31, 0x34, 0x35, 0x36, 0x37, 0x3D, 0x3E, 0x85}
 BOOT_VERSION = b"BOOTLOADER"
@@ -87,6 +102,7 @@ DEFAULT_DIDS = (
     {"did": 0xF201, "data": "00d7", "writable": False, "signal": "EngineData.Temperature"},   # periodic (2A 01)
     {"did": 0xF202, "data": "0064", "writable": False, "signal": "EngineData.Pressure"},      # periodic (2A 02)
     {"did": 0x0200, "data": b"CAL-0042".hex(), "writable": False, "sessions": [EXTENDED_SESSION], "level": 0x01},
+    {"did": 0x0110, "data": "0320", "writable": True, "valid": [[0x0258, 0x04B0]]},   # idle speed, 600-1200 rpm
 )
 # snapshot: what follows the record number in 59 04 (number of identifiers, then DID and data - here
 # one identifier, F40D vehicle speed, 50 km/h); extended: what follows it in 59 06 (occurrence counter).
@@ -95,14 +111,23 @@ DEFAULT_DTCS = (
     {"dtc": 0xC10000, "status": 0x08, "snapshot": "", "extended": ""},             # U0100
 )
 IMAGE_CHECKS = ("off", "option", "trailer")
+# RoutineControl results: the routine is running, has run to its end, or was stopped.
+ROUTINE_RUNNING, ROUTINE_DONE, ROUTINE_STOPPED = 0x01, 0x00, 0x02
 PERIODIC_MODES = {0x01: "slow", 0x02: "medium", 0x03: "fast"}
 STOP_SENDING = 0x04
 MAX_PERIODIC = 16                     # periodic identifiers scheduled at once
 MAX_EVENTS = 8                        # ResponseOnEvent events set up at once
 EVENT_CHECK_INTERVAL = 0.1            # how often DIDs are compared for onChangeOfDataIdentifier
 STALL_SECONDS = N_CR_TIMEOUT + 0.2    # a consecutive frame held back past the tester's N_Cr
+# Why a segmented response stops, as the ECU says it (ISO 15765-2: the sender aborts).
+RESPONSE_STOPPED = {"no_flow_control": "no flow control from the tester within N_Bs",
+                    "too_many_waits": "the tester kept sending flow control WAIT",
+                    "overflow": "the tester's flow control says overflow",
+                    "invalid_status": "the tester's flow control has a reserved flow status"}
 ERROR_KINDS = ("error_refuse", "error_no_answer", "error_wrong_id", "error_drop_frame", "error_wrong_sequence",
                "error_stall")
+# Services whose sub-function byte carries suppressPosRspMsgIndicationBit.
+SUPPRESSIBLE = {0x10, 0x11, 0x19, 0x27, 0x28, 0x31, 0x3E, 0x85, 0x86}
 
 
 class NegativeResponse(Exception):
@@ -158,6 +183,8 @@ class EcuConfig:
     require_erase: bool = True
     erase_routine: int = 0xFF00
     check_routine: int = 0xFF01
+    self_test_routine: int = 0x0201    # runs self_test_seconds in the extended session; stop and results
+    self_test_seconds: float = 2.0
     erase_seconds: float = 1.0
     allow_upload: bool = True          # RequestUpload (0x35) reads the memory back
     image_crc: str = "off"             # the check routine: "off"; "option": the CRC-32 of the image is its
@@ -203,6 +230,7 @@ class DataTables(NamedTuple):
     dids: dict        # DID -> bytes (for a DID that follows a signal: its length, and its value without one)
     writable: set
     access: dict      # DID -> (signal "Message.Signal" or "", sessions it is read in (empty: any), level or 0)
+    valid: dict       # DID -> [(low, high)]: the values (its data as a number) it may be written with
     statuses: dict    # DTC -> status byte at power-on
     records: dict     # DTC -> (snapshot record 01, extended data record 01)
     forced: dict      # SID -> forced NRC
@@ -217,18 +245,23 @@ def _sessions(value, what: str) -> tuple:
 
 def data_tables(config: EcuConfig) -> DataTables:
     """The tables of a configuration; ValueError naming the entry that is wrong."""
-    dids, writable, access = {}, set(), {}
+    dids, writable, access, valid = {}, set(), {}, {}
     for item in config.dids:
         try:
             did, data = int(item["did"]), bytes.fromhex(str(item.get("data", "")))
             level = int(item.get("level", 0) or 0)
+            ranges = [(int(low), int(high)) for low, high in item.get("valid", ()) or ()]
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"DID entry {item}: needs a DID and its data as hex bytes") from None
         if not 0 <= did <= 0xFFFF or not data:
             raise ValueError(f"DID {did:04X}: a DID is 0000-FFFF and has at least one byte of data")
         if not 0 <= level <= 0x7F:
             raise ValueError(f"DID {did:04X}: the security level is 01-7F, or none")
+        if any(low > high for low, high in ranges):
+            raise ValueError(f"DID {did:04X}: a range of valid values ends before it starts")
         dids[did] = data
+        if ranges:
+            valid[did] = ranges
         if item.get("writable"):
             writable.add(did)
         access[did] = (str(item.get("signal", "") or ""), _sessions(item.get("sessions"), f"DID {did:04X}"), level)
@@ -252,7 +285,7 @@ def data_tables(config: EcuConfig) -> DataTables:
         if not 0 <= sid <= 0xFF or not 0 <= nrc <= 0xFF:
             raise ValueError(f"Forced NRC {sid:X}/{nrc:X}: service and NRC are one byte each")
         forced[sid] = nrc
-    return DataTables(dids, writable, access, statuses, records, forced)
+    return DataTables(dids, writable, access, valid, statuses, records, forced)
 
 
 def security_levels(config: EcuConfig) -> dict:
@@ -360,6 +393,7 @@ class EcuState:
     events: list = field(default_factory=list)            # ResponseOnEvent: {"type", "window", "record", "service", "last"}
     events_active: bool = False
     io_controls: dict = field(default_factory=dict)       # DID -> the control parameter in force
+    routines: dict = field(default_factory=dict)          # RID -> {"status", "until"}: what was started
 
     @property
     def unlocked(self) -> bool:
@@ -447,6 +481,7 @@ class DummyEcu:
         are edited). What WriteDataByIdentifier wrote, ClearDTC cleared and the faults did is forgotten."""
         tables = data_tables(self.config)
         self.dids, self.writable, self.did_access = tables.dids, tables.writable, tables.access
+        self.did_valid = tables.valid
         self.dtc_memory = DtcMemory(tables.statuses, tables.records, self.config.confirm_cycles,
                                     self.config.aging_cycles, capture=self._capture_snapshot)
         self.dtc_memory.set_frozen(not self.state.dtc_setting_on)
@@ -538,9 +573,12 @@ class DummyEcu:
             isotp_send(io, self.config.response_id, payload, self.config.request_id,
                        self.config.extended_ids, self.config.address_byte, self.config.padding)
         except IsoTpError as exc:
-            if io is self._io:
+            if io is not self._io:
+                self.log(f"The tester did not take the response that went wrong on purpose: {exc}")
+            elif exc.reason in RESPONSE_STOPPED:
+                self.log(f"ISO-TP: response stopped: {RESPONSE_STOPPED[exc.reason]}")
+            else:
                 raise
-            self.log(f"The tester did not take the response that went wrong on purpose: {exc}")
 
     def on_message(self, message: can.Message):
         if message.is_error_frame or message.is_remote_frame:
@@ -559,6 +597,9 @@ class DummyEcu:
         if kind == 0x0:
             length = data[0] & 0x0F
             if 0 < length <= len(data) - 1:
+                if not functional and self._rx is not None:     # ISO 15765-2: N_UNEXP_PDU, the new one counts
+                    self.log("ISO-TP: a single frame during a segmented request; that request dropped")
+                    self._rx = None
                 self._handle(data[1:1 + length], functional)
         elif kind == 0x1 and not functional:  # segmented requests are physical only
             first = parse_first_frame(data, 7 - (self.config.address_byte is not None))
@@ -610,10 +651,13 @@ class DummyEcu:
         forced = next((int(item["nrc"]) for item in self.config.forced_nrcs if int(item["sid"]) == sid), None)
         if forced is not None:                       # the user asked for this service to be refused
             raise NegativeResponse(forced)
-        if getattr(self, f"_service_{sid:02x}", None) is None:
+        upload_off = sid == 0x35 and not self.config.allow_upload
+        if getattr(self, f"_service_{sid:02x}", None) is None or upload_off:
             raise NegativeResponse(0x11)
         if self.state.bootloader and sid not in BOOT_SERVICES:
             raise NegativeResponse(0x11)
+        if sid in SERVICE_SESSIONS and self.state.session not in SERVICE_SESSIONS[sid]:
+            raise NegativeResponse(0x7F)             # before the request's length or sub-function
         rule = service_rules(self.config).get(sid)
         if rule:
             sessions, level = rule
@@ -638,7 +682,11 @@ class DummyEcu:
                 self.log(f"<- {name} {shown}  => NRC 0x{self.config.error_refuse_nrc:02X} (error on purpose)")
                 self.respond(bytes([0x7F, sid, self.config.error_refuse_nrc]), errors=True)
                 return
-            self._busy(self.config.response_delay_ms / 1000, sid)
+            delay = self.config.response_delay_ms / 1000
+            if delay > self.config.p2_ms / 1000 and sid in SUPPRESSIBLE and len(request) > 1 and request[1] & 0x80:
+                # ISO 14229-1: a response pending lifts suppressPosRspMsgIndicationBit - the answer follows it
+                request = bytes([sid, request[1] & 0x7F]) + request[2:]
+            self._busy(delay, sid)
             reply = getattr(self, f"_service_{sid:02x}")(request)
         except NegativeResponse as exc:
             self.log(f"<- {name} {shown}  => NRC 0x{exc.nrc:02X}")
@@ -706,6 +754,7 @@ class DummyEcu:
         self.state.seed = None
         self.state.transfer = None
         self.state.erased.clear()
+        self.state.routines.clear()
         self.state.dtc_setting_on = True
         self.dtc_memory.set_frozen(False)
         self.state.communication_enabled = True
@@ -714,6 +763,8 @@ class DummyEcu:
         session, suppress = self._subfunction(request)
         if session not in SESSION_NAMES:
             raise NegativeResponse(0x12)
+        if len(request) != 2:
+            raise NegativeResponse(0x13)
         if (session == PROGRAMMING_SESSION and self.state.session == DEFAULT_SESSION
                 and self.config.programming_needs_extended and not self.state.bootloader):
             raise NegativeResponse(0x22)  # enter the extended session first
@@ -731,8 +782,10 @@ class DummyEcu:
 
     def _service_11(self, request):
         reset_type, suppress = self._subfunction(request)
-        if reset_type not in (0x01, 0x03):
+        if reset_type not in SUB_FUNCTIONS[0x11]:
             raise NegativeResponse(0x12)
+        if len(request) != 2:
+            raise NegativeResponse(0x13)
         return None if suppress else bytes([0x51, reset_type])
 
     def _reset(self):
@@ -807,7 +860,6 @@ class DummyEcu:
 
     def _service_85(self, request):
         setting, suppress = self._subfunction(request)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         if setting not in (0x01, 0x02):
             raise NegativeResponse(0x12)
         self.state.dtc_setting_on = setting == 0x01
@@ -875,12 +927,15 @@ class DummyEcu:
         signal, _sessions, level = self.did_access.get(did, ("", (), 0))
         if did not in self.dids or did not in self.writable or signal:   # a signal's DID: see 0x2F
             raise NegativeResponse(0x31)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         self._check_did_access(did)
         if not level:
             self._require_unlocked()
         if len(request) - 3 != len(self.dids[did]):        # a DID keeps its length, as the VIN its 17 bytes
             raise NegativeResponse(0x13)
+        ranges = self.did_valid.get(did)
+        value = int.from_bytes(request[3:], "big")
+        if ranges and not any(low <= value <= high for low, high in ranges):
+            raise NegativeResponse(0x31)                   # a value the DID does not take
         self.dids[did] = bytes(request[3:])
         return b"\x6E" + request[1:3]
 
@@ -892,7 +947,6 @@ class DummyEcu:
         return 8 - address - (1 if self.config.periodic_id is not None else 3)
 
     def _service_2a(self, request):
-        self._require_session(DEFAULT_SESSION, EXTENDED_SESSION)
         if len(request) < 2:
             raise NegativeResponse(0x13)
         mode, identifiers = request[1], bytes(request[2:])
@@ -932,7 +986,6 @@ class DummyEcu:
                 self._send_frame(bytes([identifier]) + data, self.config.periodic_id)
 
     def _service_86(self, request):
-        self._require_session(DEFAULT_SESSION, EXTENDED_SESSION)
         sub, suppress = self._subfunction(request)
         event_type = sub & 0x3F                     # bit 6: storeEvent, kept as it is
         state = self.state
@@ -1022,7 +1075,6 @@ class DummyEcu:
     # --- input/output control ---------------------------------------------------------------
 
     def _service_2f(self, request):
-        self._require_session(EXTENDED_SESSION)
         if len(request) < 4:
             raise NegativeResponse(0x13)
         did, parameter, control_state = int.from_bytes(request[1:3], "big"), request[3], bytes(request[4:])
@@ -1079,7 +1131,6 @@ class DummyEcu:
             level, send_key = sub - 1, True
         else:
             raise NegativeResponse(0x12)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         if time.monotonic() < self.state.locked_until:
             raise NegativeResponse(0x37)
         settings = levels[level]
@@ -1099,6 +1150,8 @@ class DummyEcu:
         except SeedKeyError as exc:
             self.log(f"SecurityAccess level {level:02X}: {exc}")
             raise NegativeResponse(0x22) from None
+        if len(request) - 2 != len(expected):
+            raise NegativeResponse(0x13)          # a key of another length: the message is wrong, not the key
         if request[2:] != expected:
             self.state.failed_attempts += 1
             if self.state.failed_attempts >= self.config.max_attempts:
@@ -1111,10 +1164,11 @@ class DummyEcu:
         return bytes([0x67, sub])
 
     def _service_28(self, request):
-        control, suppress = self._subfunction(request, 3)
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
-        if control not in (0x00, 0x01, 0x02, 0x03):
+        control, suppress = self._subfunction(request)
+        if control not in SUB_FUNCTIONS[0x28]:
             raise NegativeResponse(0x12)
+        if len(request) != 3:                        # controlType and communicationType, no more
+            raise NegativeResponse(0x13)
         self.state.communication_enabled = control == 0x00
         return None if suppress else bytes([0x68, control])
 
@@ -1122,6 +1176,8 @@ class DummyEcu:
         zero, suppress = self._subfunction(request)
         if zero != 0x00:
             raise NegativeResponse(0x12)
+        if len(request) != 2:
+            raise NegativeResponse(0x13)
         return None if suppress else b"\x7E\x00"
 
     # --- memory and flashing ----------------------------------------------------------------
@@ -1181,7 +1237,6 @@ class DummyEcu:
         return b"\x63" + bytes(self.read_memory(address, size))
 
     def _service_3d(self, request):
-        self._require_session(EXTENDED_SESSION, PROGRAMMING_SESSION)
         if len(request) < 2:
             raise NegativeResponse(0x13)
         fmt = request[1]
@@ -1234,25 +1289,57 @@ class DummyEcu:
                 return text
         return f"APP-FLASHED-{zlib.crc32(image):08X}".encode()
 
+    def _routine_status(self, routine: int) -> int:
+        entry = self.state.routines[routine]
+        if entry["status"] == ROUTINE_RUNNING and entry["until"] is not None and time.monotonic() >= entry["until"]:
+            entry["status"] = ROUTINE_DONE
+        return entry["status"]
+
     def _service_31(self, request):
         control, suppress = self._subfunction(request, 4)
         routine = int.from_bytes(request[2:4], "big")
-        if control != 0x01:
+        if control not in SUB_FUNCTIONS[0x31]:
             raise NegativeResponse(0x12)
-        if routine == self.config.erase_routine:
-            self._require_session(PROGRAMMING_SESSION)
+        flashing = routine in (self.config.erase_routine, self.config.check_routine)
+        if not flashing and routine != self.config.self_test_routine:
+            raise NegativeResponse(0x31)
+        needed = PROGRAMMING_SESSION if flashing else EXTENDED_SESSION
+        if self.state.session != needed:
+            raise NegativeResponse(0x31)         # not a routine of this session
+        if flashing:
             self._require_unlocked()
+        if control != 0x01:                      # stop, results: of a routine started before
+            if flashing and control == 0x02:
+                raise NegativeResponse(0x12)     # erasing and checking run to their end
+            if len(request) != 4:
+                raise NegativeResponse(0x13)
+            if routine not in self.state.routines:
+                raise NegativeResponse(0x24)     # not started
+            status = self._routine_status(routine)
+            if control == 0x02:
+                if status != ROUTINE_RUNNING:
+                    raise NegativeResponse(0x24)     # nothing running to stop
+                self.state.routines[routine]["status"] = status = ROUTINE_STOPPED
+            return None if suppress else bytes([0x71, control, *request[2:4], status])
+        if routine == self.config.self_test_routine:
+            if len(request) != 4:
+                raise NegativeResponse(0x13)
+            if routine in self.state.routines and self._routine_status(routine) == ROUTINE_RUNNING:
+                raise NegativeResponse(0x24)     # already running
+            self.state.routines[routine] = {"status": ROUTINE_RUNNING,
+                                            "until": time.monotonic() + max(0.0, self.config.self_test_seconds)}
+            return None if suppress else bytes([0x71, 0x01, *request[2:4], ROUTINE_RUNNING])
+        if routine == self.config.erase_routine:
             address, size = self._memory_range(request, 4)
             self._check_range(address, size)
             self._busy(self.config.erase_seconds, 0x31, pending=True)  # erasing takes longer than P2
+            suppress = suppress and self.config.erase_seconds <= 0     # after a response pending, the answer
             self._invalidate_application()
             self.state.erased.append((address, address + size))
             for start in [a for a in self.state.memory if address <= a < address + size]:
                 del self.state.memory[start]
             status = 0x00
-        elif routine == self.config.check_routine:
-            self._require_session(PROGRAMMING_SESSION)
-            self._require_unlocked()
+        else:
             ok, why = self._check_image(bytes(request[4:]))
             status = 0x00 if ok else 0x01
             if ok:
@@ -1264,8 +1351,7 @@ class DummyEcu:
                     self.write_image(self.config.dump_path)
             else:
                 self.log(f"checkProgrammingDependencies failed: {why}")
-        else:
-            raise NegativeResponse(0x31)
+        self.state.routines[routine] = {"status": status, "until": None}
         return None if suppress else bytes([0x71, 0x01, *request[2:4], status])
 
     def _start_transfer(self, request: bytes, direction: str) -> bytes:
@@ -1296,13 +1382,9 @@ class DummyEcu:
         return bytes([rsid, length << 4]) + maximum.to_bytes(length, "big")
 
     def _service_34(self, request):
-        self._require_session(PROGRAMMING_SESSION)
         return self._start_transfer(request, "download")
 
     def _service_35(self, request):
-        if not self.config.allow_upload:
-            raise NegativeResponse(0x11)
-        self._require_session(PROGRAMMING_SESSION, EXTENDED_SESSION)
         return self._start_transfer(request, "upload")
 
     def _service_36(self, request):

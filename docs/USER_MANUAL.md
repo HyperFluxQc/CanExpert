@@ -555,10 +555,13 @@ writes a report of every run. It opens `TestModules/dummy_ecu_checks.py`, the ex
 another module with **Open...**; the one used last is opened again.
 
 Connect first. Tick the test cases to run and press **Run**: each one appears with its verdict — *passed*,
-*failed*, *error* (the test itself broke) or *skipped* — and under it every step with its own verdict, as
-it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
+*failed*, *error* (the test itself broke), *skipped* or *blocked* (what it needs could not be set up, so it
+did not run; it counts with the failures) — and under it every step with its own verdict, as it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
 still runs. The module is read again before every run, so you can edit it in any editor and run it again
 straight away (**Reload** shows the new list without running).
+
+TestExpert runs test modules too, after the tests it generates (see **TestExpert → CAN Expert's test
+modules**).
 
 Every run writes two reports into `reports/` beside the module, named after it and the time:
 an **HTML** page (**Open report**) with the verdict, the counts, and each test case's steps — the ones that
@@ -596,6 +599,8 @@ scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` of
 | `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
 | `t.require(condition, "step")` | A check that ends the test case when it fails |
 | `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
+| `t.block("why")` | In `before_each`: the test case cannot run — it is *blocked* |
+| `t.warn("step", detail)` | A step that went wrong without failing the test case (a clean-up that did not work) |
 | `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
 | `t.send(0x200, [1, 2])` | Send a frame |
 | `t.marker("before the reset")` | A marker in the measurement (Trace, Logger, recording) and a line in the report |
@@ -717,6 +722,322 @@ The arrangement, including the window size, is saved when you close CAN Expert a
 diagnostics, one for testing — and **View → Desktops** switches between them. A desktop stores both the
 fixed panels and the workspace windows. **Reset layout** goes back to how the window starts.
 
+## TestExpert
+
+**TestExpert** (`python test_expert.py`, or **TestExpert.exe** beside CAN Expert) checks that an ECU keeps
+the UDS rules of ISO 14229-1, as Vector DiVa does: it reads the ECU's diagnostic description, generates the
+tests the description calls for, runs them against the ECU and writes a report. It is a program of its own,
+on CAN Expert's bus access, UDS client and reports; CAN Expert's window stays as it is.
+
+The **toolbar** holds what you use most, as CAN Expert's does: **Description** (open one), **Open plan**,
+**Save plan**, **Connect**/**Disconnect**, **Run**, **Stop**, **Run failed** (the tests that did not pass in
+the last run, again), **Discover**, **Compare** (two runs), **Report** (the last run's) and **Manual**. The
+**Run** menu has the same actions; each button's tooltip says its key.
+
+| Key | Does |
+|---|---|
+| **F5** / **Shift+F5** | Run the ticked tests / Stop |
+| **Ctrl+F5** | Run the failed tests again |
+| **Ctrl+O** / **Ctrl+Shift+O** | Open a description / a test plan |
+| **Ctrl+S** / **Ctrl+Shift+S** / **Ctrl+N** | Save the plan / Save it as / New plan |
+| **F1** | TestExpert in the manual |
+
+### The description
+
+**Open...** (Ctrl+O) reads a **CDD** (CANdelaStudio), an **ODX** or **PDX** file, or a description TestExpert
+saved as **JSON**; **Dummy ECU** describes the Dummy ECU from its settings. The Description tab lists what
+was read: the sessions and where each may be entered from, the security levels, every service with its
+sub-functions and the sessions and security level it needs, every DID with its length, where it may be read
+and written and — opened — the fields of its data (a text table, the valid values, a scale and unit, text),
+and the routines, and the DTCs the file lists. What the file did not say clearly is listed under **Warnings**.
+
+From a CDD, TestExpert follows the chain CANdelaStudio writes — each variant's diagnostic instances, their
+services, the protocol services they are built from, and the state groups: where a service may be executed
+(the sessions, and whether the ECU must be unlocked) and which session or security state it leads to. A DID's
+fields come from its data container — not the one of its response codes' texts
+— and the data types of its data objects: a text table's entries and ranges, a linear type's factor, divisor,
+offset, limits and unit, BCD and ASCII values, gaps, structures and unions. Older documents that say nothing of
+the states a service may be executed in are read with every service allowed everywhere, and a warning says so;
+a KWP2000 document (sessions 81, 85..., data by local identifier) is read with a warning that TestExpert's
+tests are UDS's. From ODX, a DID's fields come from the value parameters of its ReadDataByIdentifier response:
+their place, coded type, text table or linear scale, internal limits and unit. A DID's InputOutputControl comes
+from its 2F services, and an ODX file's DTC-DOPs give the ECU's DTCs (a CDD's are not read).
+
+The readers were checked against real files: a CANdelaStudio export (the example CDD of the cantools project)
+and odxtools' example PDX. `ODX/dummy_ecu.cdd` and `ODX/dummy_ecu_services.odx-d` describe the Dummy ECU in
+those structures — generated by `tools/make_dummy_cdd.py` and `tools/make_dummy_odx.py`, not exported by
+CANdelaStudio or an ODX tool; the ODX has two variants, **Application** and **Bootloader**. If a file of yours
+is read wrongly, **Save as JSON...** gives the description as text: correct it and open it again.
+
+### Variants
+
+A file may describe several variants of an ECU — a CDD's variants, an ODX file's ECU variants (and their base
+variant): an application and its bootloader, a high and a low version. The first one is read; when there are
+more, the Description tab shows a **Variant** list to choose the one to test, and the tests are generated for
+it (the bootloader's are fewer: it has fewer services).
+
+**Identify** asks the connected ECU which one it is. An ODX file says it itself: each ECU variant's
+ECU-VARIANT-PATTERN names the answers that tell it — the Dummy ECU's say which software version (F195) it
+answers. A CDD does not: **Told apart by...** gives the DID to read (a variant code, a hardware or software
+number) and the value each variant answers, as text or as bytes in hex. Tick **Identify it when connecting**
+to ask each time TestExpert connects. The variant and how it is told apart are kept in the test plan.
+
+### Connecting
+
+On the **ECU** tab, choose the interface, the channel (**Detect**) and the bit rate, and the request, response
+and functional identifiers — or take them from one of CAN Expert's configurations — and press **Connect**
+(on the tab or the toolbar).
+TestExpert sends no TesterPresent of its own: every test starts from the default session.
+
+### The tests
+
+The tests are grouped as DiVa groups them; untick any you do not want.
+
+| Group | What is checked |
+|---|---|
+| Sessions | each session entered (by the sessions it must be entered from) and answered with its P2 and P2*, a session that does not exist (0x12, also with the suppress bit), the message length (0x13), the suppress bit, sessions refused from the default session |
+| TesterPresent | 3E 00 answered, 3E 80 not, 3E 01 refused with 0x12, lengths |
+| Services | every ISO 14229-1 service the description does not list gets 0x11 |
+| Service availability | in each session, a service not allowed gets 0x7F; one allowed answers |
+| NRC order | a service not allowed in the session gets 0x7F before its length or sub-function is looked at |
+| Message length | requests too short or too long get 0x13 |
+| Sub-functions | a sub-function the service does not have gets 0x12 |
+| Data identifiers | every DID read in every session — positive with its length where allowed, 0x31 where not, 0x33 while locked and positive once unlocked; a DID that does not exist; writing a read-only DID (0x31); the **values** of each DID the description gives fields for — each within its limits, in its text table, text that is text |
+| Security access | sendKey before requestSeed (0x24), a seed, a wrong key (0x35), unlocking, the zero seed once unlocked, locked again by a new session; a level that does not exist; **seeds that do not repeat** — four, each in a new session; with the key source, **a key of the wrong length** (a byte too many, a byte too few: 0x13, or 0x35 with a note) then the right key; with two levels or more, **levels apart** — unlocking one leaves the other locked (its seed, and what it alone opens: 0x33); with the lockout and destructive tests, **the lockout outlasting an ECU reset** (0x37 after it, a seed after the delay) |
+| Routines | each routine refused where it may not run (0x31) and while locked (0x33); a routine that does not exist; its stop and results asked before a start (0x24); the routines you allow **started**, their results asked and stopped |
+| Fault memory | 19 01, 19 02 and 19 0A answered in their format; a group of DTCs that does not exist (0x31); when the description lists the ECU's DTCs, **the ECU's DTCs are the description's** — every DTC it supports (19 0A) is listed, every listed one is supported, every one it reports (19 02 FF) is listed |
+| Input/output control | for the DIDs the description gives InputOutputControlByIdentifier: returnControlToECU (00) answered; with destructive tests, shortTermAdjustment (03) to the value read first, then control given back; a DID that has none (0x31) |
+| Communication | CommunicationControl and ControlDTCSetting answered, silent with the suppress bit, put back; CommunicationControl **stopping the ECU's own frames** — the frames it sends besides diagnostics stop while their transmission is disabled and come back once enabled (only this ECU should be on the bus; without frames of its own the test is skipped) |
+| Download and upload | TransferData and RequestTransferExit before a RequestDownload (0x24), RequestDownload while locked (0x33) and of a format the ECU does not take (0x31); with **Download** set and destructive tests, that download started — maxNumberOfBlockLength given — then a second RequestDownload (0x22), a wrong block counter (0x73) and RequestTransferExit before the data (0x24), and the default session to end it |
+| Memory by address | ReadMemoryByAddress of a format the ECU does not take (0x31); with **Memory** set, that memory read; with destructive tests too, written while locked (0x33) and written back with its own bytes |
+| Periodic data | for a DID of the periodic range (F2xx): sent at the fast rate, then stopped; an unknown periodic identifier and transmission mode (0x31) |
+| ResponseOnEvent | starting it with no event set up (0x24); an event on a DID that changes by itself — found by reading the DIDs twice — sends its answer unasked, then stopped and cleared |
+| Functional addressing | functional requests answered; 0x11, 0x12 and 0x31 not sent to them (ISO 14229-1 7.5) |
+| Timing | responses within the P2 the ECU announces, plus the margin; **S3** — a session ends after S3 without requests, and TesterPresent keeps it; with every step, a **response pending** (0x78) within P2, the next ones within P2*, the answer within P2* of the last |
+| Transport layer (ISO 15765-2) | a segmented request: the ECU's flow control within N_Bs (ContinueToSend, a valid STmin) and the whole request answered; a consecutive frame out of sequence or after N_Cr ends the request; a single frame in the middle of a segmented request replaces it; frames to ignore — consecutive frames and flow controls out of the blue, single frames of length 0 or longer than their frame, a first frame of a length a single frame carries, a functional first frame; a first frame of 4095 bytes gets ContinueToSend or Overflow. When a DID is answered in several frames, the ECU as the sender: it keeps to a block size of 1 and an STmin of 50 ms, waits after a flow control WAIT, stops on Overflow, on a reserved flow status and without a flow control |
+
+On the **Settings** tab:
+
+- **Destructive tests** adds what changes the ECU: ECU reset (and the default session after it), clearing
+  every DTC, and writing each writable DID — its own value, read first, written back; and for a DID whose
+  field has limits, its lowest and highest values written and read back, a value out of them refused (0x31)
+  and nothing written, then its value put back.
+- **Security lockout** sends wrong keys until the ECU locks out (0x36), checks 0x37, waits the delay and
+  checks that a seed comes again. Set the number of wrong keys and the delay.
+- **SecurityAccess key**: *key = seed XOR mask* (the Dummy ECU's rule, mask A5) or the ECU's **seed & key DLL**
+  (`GenerateKeyEx`). Without one, the tests that need an unlocked ECU are skipped.
+- **Functional requests**, **Record the traffic** (a `.blf` of the run), the **ECU reset time** and the
+  **margin over P2** (and P2*).
+- **S3 session timeout**: the two S3 tests, with **S3** (5 s by ISO 14229-2) — they take a few seconds.
+- **Transport layer (ISO 15765-2)**: its tests send their own frames on the request identifier, with the
+  plan's padding; waiting past N_Cr and N_Bs, they take a few seconds.
+- **Download** and **Memory**: an address and a size in hex (`10000:300`) — a RequestDownload the ECU accepts,
+  and memory ReadMemoryByAddress may read — sent with the format 44 (four bytes each). Empty: those tests are
+  left out. A download is only started, and memory only written (with its own bytes), with destructive tests.
+- **Routines to start**: the routines a run may start — `0201`, or with an option record `FF00: 44 00 01 00 00
+  00 00 00 04` — separated by `;`. A routine is never started otherwise.
+
+A request with the suppress bit whose answer the ECU needs time for: ISO 14229-1 asks for a response pending
+and then the answer, so a step expecting no answer accepts an answer that follows a 0x78.
+
+**Run** runs the ticked tests; each shows its verdict and, opened, every step with the request and the answer.
+A step that got another NRC than ISO 14229-1 asks for, but one the NRC policy accepts, passes with a note. **Stop** ends
+the run after the current step. Every run leaves an HTML and a JUnit XML report in `TestExpert/reports`
+(**Open report**), and its results as JSON for comparing runs. The bar beside the status counts the tests done.
+
+- Right-click a test — or a group — for **Run this test** (**Run this group**), ticked or not.
+- **Run failed** (Ctrl+F5) runs again only the tests that failed, broke or were blocked in the last run.
+- **Run** on the Settings tab repeats the run: *N times*, one run after the other — each with its reports, each
+  compared with the one before, so a test that fails now and then shows up — and, ticked, *until a run fails*.
+  The status then gives how many runs passed.
+- The box above the tests **filters** them: type words of a test's name or group (`security`, `22 f190`); tick
+  **Not passed only** to see what the last run did not pass.
+
+### Comparing runs
+
+Every run leaves, beside its HTML and JUnit reports, its **results** as JSON (same name). After a run TestExpert
+compares it with the last run of the same description in the same folder; the log says what changed, and the
+**Comparison** tab shows it — at once when a test regressed:
+
+- **Regressions** — tests that passed before and do not now; **Fixed** — the other way round;
+- other verdict changes (skipped, blocked...), **new** tests and tests **gone**;
+- **other answers** — the same verdict, but steps that answered otherwise (a new software version's DIDs...);
+- the ECU's **identification** before and after (F195 software version, F18C serial number...).
+
+**File → Compare two runs...** compares any two results files — two software versions, two ECUs, a bench and
+a vehicle — and **Save...** keeps the comparison as a page. Times are left out, since they differ from run to
+run, and a positive answer is compared by what it echoes (the service, the DID): its data — a seed, a counter —
+differ by nature, and the values that matter are compared by the steps that check them and by the
+identification. On the command line:
+
+```bash
+python test_expert.py --compare reports/ecu_20260901-1030.json reports/ecu_20260915-1415.json --output diff.html
+```
+
+prints the changes; its exit code is 1 when a test regressed, 0 otherwise.
+
+### Discovering what the ECU has
+
+**Discover...** asks the ECU what it really has, session by session, and compares it with the description.
+Choose the sessions (the programming session is left out unless you tick it: entering it may start the
+ECU's bootloader), the DID and routine ranges (every DID and routine of the description is asked as well),
+and whether to ask for the services and the security levels. Every question is harmless: each service's SID
+alone (none is complete, or changes anything, in one byte), each DID read, each routine's *results* (`31 03` —
+no routine is started), each level's seed.
+
+The **Discovery** tab then shows, against the description:
+
+- **found, not described** — a service, DID, routine or security level the ECU has and the description does
+  not say (an undocumented DID is also a question of security);
+- **described, not found** — the ECU answers 0x11 or 0x31 for it in every session asked;
+- **different** — a DID of another length, a service or a DID answering in other sessions than described;
+
+and what was found, session by session. **Save...** keeps it as an HTML page, with the result as JSON beside
+it. **Use as the description** saves what was found as a JSON description and tests the ECU with it — for an
+ECU without a CDD. Discovery cannot find what asking harmlessly cannot tell — sub-functions, which DIDs may
+be written, how routines start — so the tests that need them are left out; add them to the JSON where you
+know them. The discovery's sessions and ranges are part of the test plan, and it runs without the window
+too:
+
+```bash
+python test_expert.py nightly.json --discover                     # exit code 0: the ECU matches its description
+python test_expert.py ODX/ecu.cdd --discover --dids F100-F1FF --save-description found.json
+```
+
+### Coverage
+
+After a run the **Coverage** tab, beside the tests, shows where each service, DID and routine was checked: a
+matrix of the description's sessions, each cell with the number of steps that checked it there — green when
+they passed, red when one failed, blue when a failure was accepted, a dash where nothing checked it (paler
+where the description does not allow it). DIDs have a row for reading and one for writing (*refused* when the
+description says it cannot be done); the functional requests have their own table. **Not tested** lists what
+the description has but no test checked, with the reason — ECU reset and writing DIDs are destructive tests,
+routines are not started, TransferData needs a transfer in progress... The HTML report has the same section,
+hover a cell to see its tests.
+
+At the start of a run TestExpert reads the ECU's **identification** — the ISO 14229-1 identification DIDs the
+description has (F187 spare part number, F18C serial number, F190 VIN, F195 software version...): the log shows
+them, and the report lists them beside the plan and the description.
+
+### Pre-test and post-test sequences
+
+A sequence is a list of steps TestExpert runs around the tests: a **hard reset** after a test that leaves the
+ECU changed, an ignition frame and a wait before the run, the DTCs cleared before the fault memory is read, a
+recovery reset after any test that failed. Make them on the **Sequences** tab — **New**, or one of the
+ready-made ones from its arrow (hard, key off/on and soft reset, default or extended session, clear DTCs, keep
+the session) — or right-click a test or a group in the tests list: **Before this test**, **After this test**,
+**After this test, if it did not pass**, then a sequence or **New: Hard reset**. The **Sequences** column shows
+what runs around each test and group.
+
+| Step | Value | What it does |
+|---|---|---|
+| Request | `11 01` | Sends it (physical, or functional when ticked) and checks the answer: *positive*, *NRC 22*, *any answer*, *no answer*, or *not checked* |
+| Wait | `2.5` | Waits, in seconds |
+| Keep alive | `10` | Waits, sending TesterPresent `3E 80` every 2 s so the session stays |
+| Session | `03` | Enters the session, through the sessions it must be entered from |
+| Unlock | `01` | SecurityAccess for that level, with the key source of the Settings tab |
+| ECU reset | `01` | `11 01` answered, the **ECU reset time** waited, then `10 01` answered again (01 hard, 02 key off/on, 03 soft) |
+| CAN frame | `12F 01 02` | Sends a frame (an identifier above 7FF, or written with more than three digits, is extended) |
+| Python | `power.py:cycle` | Calls `cycle(t, tester)` in that file — to switch a power supply or a relay card; `False` or an exception fails the step. `t.log()`, `t.wait()`, `t.send()` and `tester.ask(bytes)` are there to use |
+
+Under **Runs**, say where the sequence runs: *before* or *after* **the run**, **every test**, **the group**
+or **the test** you choose; an *after* sequence **always**, or only **if it did not pass** (failed, error or
+blocked) or **if it passed**. Around a group, *before* runs ahead of its first ticked test and *after* behind
+its last. Untick a sequence to keep it without running it. The sequences are kept for the next start.
+
+A sequence stops at its first step that goes wrong. What that means depends on where it ran:
+
+- **before the run**: the run stops — every test is skipped, and the run fails;
+- **before a test**: the test is **blocked**: it does not run, and it counts with the failures (the failed
+  step is shown under it). Before a group, every test of the group is blocked;
+- **after** anything: the step is a **warning** (orange); the test keeps its verdict.
+
+Before every test TestExpert still puts the ECU in the default session (`10 01`), and after it again; the
+sequences run in between — around a test in the order group, every test, the test, and back out.
+
+### The NRC policy and accepted deviations
+
+ISO 14229-1 leaves some choices open, and vehicle manufacturers' specifications make them differently — a DID
+read in a session where it may not be read gets 0x31 for one, 0x7F for another. The **Deviations** tab has the
+**NRC policy**: for each situation the tests meet (a service not allowed in the session, a DID that does not
+exist, writing a read-only DID, a wrong key...), ISO's code and the codes that pass. Type the ones your
+specification allows (`31, 7F`), or put its own in their place (`22` alone: ISO's 0x31 then fails too). An
+answer that passes by the policy but not by ISO shows a note saying so. **Back to ISO 14229-1** puts every
+situation back.
+
+An **accepted deviation** is a failure agreed on — with the supplier, in a ticket — that should stop showing
+as a failure. After a run, right-click the failed step in the results: **Accept this deviation...** asks why
+(the comment is kept with it). Right-click a test to accept **every failure of this test**. From then on that
+step is *accepted* (blue) instead of *failed*, and a test whose failures are all accepted passes; a new
+failure still fails. The **Accepted deviations** list shows them all with their comment and date — edit a
+comment there, or **Remove** one. The NRC policy and the deviations are part of the test plan, and a report
+says how many deviations the run accepted. The steps before and after the tests (the pre-run and post-run
+sequences) appear in the results as **Before the tests** and **After the tests**.
+
+### CAN Expert's test modules
+
+The checks the description cannot give — a signal that must follow a request, a sequence your specification
+prescribes — can be written as CAN Expert test modules (see **Test modules**) and run in the same run as the
+generated tests. On the **Modules** tab, **Add...** the module files: each one becomes a group of the tests
+tree, after the generated groups, named after its title, and its test cases can be ticked, attached to
+sequences and accepted as deviations like any other. **Read again** reads the files again after you edited
+them (a run always reads them as they are).
+
+A module runs as in CAN Expert's Test window: its `setup` before its first test case — a failure there
+**blocks** its test cases — its `before_each` and `after_each` around each one, its `teardown` after the last
+(a failure there is a warning). TestExpert puts the ECU in the default session before the module, not between
+its test cases, so they go on from where its setup left the ECU. The UDS functions (`RDBI`, `DSC`,
+`SecurityUnlock`...) go through TestExpert's connection, and what they ask counts in the coverage.
+`t.wait_for_frame()` reads the bus; add **Symbol databases** (DBC...) for `t.wait_for_signal()` and the
+frames' signals. A module that cannot be read is a test that fails, saying why.
+
+### Test plans
+
+A **test plan** keeps everything a run needs in one file: the description, the ECU connection, the settings
+and the key source, the tests left out (unticked), the sequences, the NRC policy and the accepted deviations,
+the variant and how it is told apart, the test modules and symbol databases. **File → Save plan** (Ctrl+S) or **Save
+plan as...** writes it; **Open plan...** (Ctrl+Shift+O) reads it back, and **New plan** (Ctrl+N) starts
+afresh. Give it a **Plan name** and a **Reports folder** on the Settings tab if you like (the reports go to
+`TestExpert/reports` otherwise). Paths are written relative to the plan's folder, so a plan and its CDD can be
+moved or put under version control together; the plan is JSON, and can be edited by hand.
+
+TestExpert keeps what the window holds — saved or not — for its next start, and opens the plan it was using.
+
+### Running without the window
+
+A plan runs without the window, for a bench script or a CI server (Jenkins, GitLab, Azure DevOps...):
+
+```bash
+python test_expert.py nightly.json --run
+python test_expert.py nightly.json --run --junit results/testexpert.xml --report-dir results
+python test_expert.py nightly.json --run --channel 1          # the plan, on another channel
+python test_expert.py ODX/ecu.cdd --run --interface vector --channel 0 --bitrate 500000
+python test_expert.py nightly.json --run --dummy-ecu          # against a Dummy ECU in the same process
+python test_expert.py ODX/ecu.pdx --run --identify            # ask the ECU which variant it is, test that one
+python test_expert.py ODX/ecu.cdd --run --variant BOOT        # the file's variant BOOT
+python test_expert.py ODX/ecu.cdd --run --module TestModules/checks.py --symbols DBC/ecu.dbc   # a module too
+python test_expert.py nightly.json --run --test sessions --test security_access.level_0x01_27_01_02
+python test_expert.py nightly.json --run --repeat 50 --until-failure      # hunting a test that fails now and then
+```
+
+Each test's verdict is printed as it ends, then the totals and the report files. The **exit code** says how it
+went: **0** every test passed, **1** one did not (failed, error or blocked), **2** the run could not start
+(the plan or its description cannot be read, the channel cannot be opened, the ECU's variant cannot be
+told). `--junit` also copies the JUnit
+report to a fixed file for the CI server; `--quiet` prints only the totals. `--test` runs only that test or group
+(the first part of its tests' names, as the results show them), even one the plan leaves out; `--repeat N` runs the
+tests N times, with `--until-failure` stopping at the first run that fails — the exit code is 1 when any run did
+not pass, and `--junit` copies the first such run's report. A description instead of a plan
+runs every test with the default settings. **TestExpert.exe** takes the same options; it prints into the
+console it was started from — in a batch file use `start /wait TestExpert.exe plan.json --run` to wait for its
+exit code.
+
+### Trying it with the Dummy ECU
+
+Start the Dummy ECU on one virtual channel, TestExpert on the other, open `ODX/dummy_ecu.cdd` (or keep
+**Dummy ECU**) and **Run**: every test passes. Force a negative response on the Dummy ECU's **Data** tab, or
+give it errors on purpose, and the tests that meet them fail.
+
 ## Trying it without a vehicle
 
 `dummy_ecu.py` is a simulated ECU. With the Kvaser virtual driver its two channels are connected, so the
@@ -778,7 +1099,9 @@ on DID `0101`, `86 01 02 08 19 02 08` one on DTCs becoming confirmed, `86 05 02`
 
 The **Access** tab has the main security level and as many more as needed, each with its own seed length
 and key: seed XOR a mask, or what a **seed & key DLL** (`GenerateKeyEx`) computes — give the UDS Console
-the same DLL and it unlocks. Each level unlocks on its own, until the session changes. A DID can be
+the same DLL and it unlocks. Each level unlocks on its own, until the session changes. A key of another
+length than the level's is a message of the wrong length (NRC `0x13`, not counted as a wrong key); wrong keys
+lock the ECU out (`0x36`, then `0x37` until the delay is over — an ECU reset does not end it). A DID can be
 readable only in some **Sessions** (elsewhere NRC `0x31`) or after unlocking a **Level** (NRC `0x33`) —
 DID `0200` shows both — and a **service rule** does the same for a whole service, with NRC `0x7F` and
 `0x33`.
@@ -802,6 +1125,21 @@ frames carry it, `2F 01 01 00` hands it back; *freezeCurrentState* and *resetToD
 ReadMemoryByAddress (`23`) and WriteMemoryByAddress (`3D`, extended session and unlocked) read and write
 the ECU's memory — the flashed image included.
 
+### Valid values and slow answers
+
+A DID's **Valid (hex)** on the **Data** tab lists the values it may be written with — its data as one number,
+`0258-04B0` — and a write with another gets NRC 0x31 (`0110`, the idle speed target, takes 600-1200 rpm).
+A **processing delay** beyond P2 makes every answer come after a response pending (0x78); a request with the
+suppress bit then gets its answer too, as ISO 14229-1 asks.
+
+### Routines
+
+Besides erasing and the dependency check (programming session, unlocked; their results, `31 03`, give their
+status), the Dummy ECU has a **self test** routine (`0201`, extended session): started with `31 01 02 01`, it
+runs for the **Self test time** (2 s) — its results answer `01` while it runs and `00` once done — and
+`31 02 02 01` stops it (`02`). Stopping it, or asking its results, before it was started gets NRC 0x24
+(requestSequenceError); a routine of another session gets 0x31. Set both on the **Flashing** tab.
+
 ### The bootloader
 
 An erase or a download leaves the application invalid until checkProgrammingDependencies passes. An
@@ -822,6 +1160,10 @@ lighting the amber lamp while a fault is active. It answers requests for Address
 (its software version), VI (its VIN), CI and the PGNs it broadcasts, clears its faults on DM11 and DM3, and
 sends a NACK for anything else asked of it alone. Choose `DBC/j1939_demo.dbc` on the Signals tab and it
 sends EEC1, CCVS and ET1 from its address, with an engine speed, a vehicle speed and temperatures that move.
+
+The Dummy ECU answers in ISO 14229-1's order: a service not allowed in the active session gets NRC 0x7F
+before its request's length or sub-function is looked at, and a request with bytes too many gets 0x13 —
+what TestExpert checks.
 
 ### Errors on purpose
 
@@ -860,7 +1202,8 @@ do not reach the script.
 | `Configurations/` | `config_<name>.json`, one per configuration |
 | `Databases/` | Panels: `family_YYYY-MM-DD.xml` and `family_YYYY-MM-DD_script.py` |
 | `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings (`j1939_demo.dbc`: an engine's J1939 parameter groups) |
-| `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts) |
+| `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab and TestExpert (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts; `dummy_ecu.cdd` and `dummy_ecu_services.odx-d`: its diagnostics, for TestExpert) |
+| `TestExpert/` | TestExpert's reports (`reports/`), the traffic it recorded, and the plans you save there |
 | `examples/` | A runnable panel and script, and demo firmware images |
 | `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |
 
