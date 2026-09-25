@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import json
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -107,6 +108,29 @@ class MeasurementTest(unittest.TestCase):
         self.assertIsNotNone(self.window.ecu_monitor)
         self.send_from_ecu(0x456, b"\x07")
         self.assertTrue(spin_until(lambda: (trace.flush(), any(frame[2] == 0x456 for frame in trace.frames))[1]))
+
+    def test_a_frame_sent_from_another_thread_reaches_the_windows_from_theirs(self):
+        # The Transmit window's cyclic rows are sent by a thread of their own.
+        self.window.on_connect_clicked()
+        before = time.time()
+        sender = threading.Thread(target=self.window.send_can_message, args=(0x18DA10F1, b"\x02\x10\x03", True))
+        sender.start()
+        sender.join(5)
+        received = self.ecu.recv(1.0)
+        while received is not None and received.arbitration_id != 0x18DA10F1:
+            received = self.ecu.recv(1.0)
+        self.assertIsNotNone(received, "on the bus")
+        self.assertTrue(received.is_extended_id)
+        self.assertTrue(spin_until(lambda: any(frame[2] == 0x18DA10F1 for frame in self.window.frame_history)))
+        frame = next(f for f in self.window.frame_history if f[2] == 0x18DA10F1)
+        self.assertEqual((frame[1], frame[3], frame[4]), ("TX", b"\x02\x10\x03", True))
+        self.assertGreaterEqual(frame[0], before - 1, "stamped when it was sent")
+
+    def test_the_sessions_own_frames_keep_their_moment_and_extended_identifier(self):
+        self.window.on_connect_clicked()
+        self.window.worker.message_sent.emit(1234.5, 0x18DAF110, b"\x02\x3e\x00", True)
+        self.assertTrue(spin_until(lambda: any(frame[2] == 0x18DAF110 for frame in self.window.frame_history)))
+        self.assertIn((1234.5, "TX", 0x18DAF110, b"\x02\x3e\x00", True), list(self.window.frame_history))
 
     def test_nothing_can_be_sent_before_connecting(self):
         with self.assertRaises(RuntimeError) as raised:

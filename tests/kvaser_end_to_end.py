@@ -178,9 +178,9 @@ def main_check():
         transmit = window.open_transmit().messages
         transmit.rows = [default_row("Start", 0x200, b"\x01", 50)]
         transmit._fill_table()
-        transmit.rows[0]["enabled"] = True
+        transmit.table.item(0, 0).setCheckState(Qt.Checked)          # On: sent by the transmit thread
         check("transmit list sends cyclically",
-              spin(lambda: (transmit.tick(), transmit.rows[0]["sent"] > 2)[1], 5), transmit.status.text())
+              spin(lambda: (transmit.refresh(), transmit.rows[0]["sent"] > 2)[1], 5), transmit.status.text())
         transmit.stop_all()
 
         check("the Trace assembles the diagnostic messages it saw",
@@ -206,7 +206,7 @@ def main_check():
         simulation._items["EngineData"].setCheckState(0, Qt.Checked)
         simulation.start_btn.setChecked(True)
         check("a simulated node puts its messages on the bus",
-              spin(lambda: (simulation.tick(), simulation.messages["EngineData"]["sent"] > 2)[1], 5),
+              spin(lambda: (simulation.refresh(), simulation.messages["EngineData"]["sent"] > 2)[1], 5),
               simulation.status.text())
         simulation.start_btn.setChecked(False)
 

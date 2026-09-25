@@ -183,11 +183,11 @@ class _Offline:
 
 
 class FrameMailbox(ReceiveMailbox):
-    """The run's view of the bus: every frame with the moment it arrived (time.monotonic()), for
+    """The run's view of the bus: every frame with the moment it arrived (time.perf_counter()), for
     wait_for_frame(), whatever clock the adapter stamps its frames with."""
 
     def push(self, message):
-        return super().push((time.monotonic(), message))
+        return super().push((time.perf_counter(), message))
 
 
 class TestContext:
@@ -203,7 +203,7 @@ class TestContext:
         self._stop = stop
         self._report_step = report_step or (lambda step: None)
         self._marker = marker or (lambda when, text: None)   # marker(when, comment): into the measurement
-        self._start = time.monotonic()
+        self._start = time.perf_counter()
         self._since = None              # when the last send() went out: a wait after it takes the answer too
         self._lenient = 0               # inside lenient(): failed steps are recorded as warnings
 
@@ -220,7 +220,7 @@ class TestContext:
         passed = verdict != FAIL
         if not passed and self._lenient:
             verdict = WARN
-        step = Step(round(time.monotonic() - self._start, 4), description, verdict, detail)
+        step = Step(round(time.perf_counter() - self._start, 4), description, verdict, detail)
         self.result.steps.append(step)
         self._report_step(step)
         return passed
@@ -291,10 +291,10 @@ class TestContext:
             raise TestStopped()
 
     def wait(self, seconds):
-        deadline = time.monotonic() + seconds
+        deadline = time.perf_counter() + seconds
         while True:
             self._check_stop()
-            remaining = deadline - time.monotonic()
+            remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 return
             time.sleep(min(remaining, 0.05))
@@ -303,7 +303,7 @@ class TestContext:
         """Send one frame; an identifier above 0x7FF is extended unless said otherwise. The next wait takes
         the frames from this moment on, so an answer that comes before it starts is not missed."""
         extended = can_id > 0x7FF if extended is None else extended
-        self._since = time.monotonic()
+        self._since = time.perf_counter()
         self._send(can.Message(arbitration_id=can_id, data=bytes(data), is_extended_id=extended))
 
     def wait_for_frame(self, can_id=None, timeout=1.0, condition=None):
@@ -312,12 +312,12 @@ class TestContext:
         test's last send() if that came just before."""
         if self._frames is None:
             raise RuntimeError("No measurement is running: connect first")
-        since = self._since if self._since is not None else time.monotonic()
+        since = self._since if self._since is not None else time.perf_counter()
         self._since = None
-        deadline = time.monotonic() + timeout
+        deadline = time.perf_counter() + timeout
         while True:
             self._check_stop()
-            remaining = deadline - time.monotonic()
+            remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 return None
             try:
@@ -413,13 +413,13 @@ class Runner:
         """after_each and teardown run also when the run is being stopped: they put the ECU back."""
         stopping = self.stop_event.is_set()
         self.stop_event.clear()
-        start = time.monotonic()
+        start = time.perf_counter()
         try:
             self._call(function, result)
         except TestStopped:
             pass
         finally:
-            result.duration = round(result.duration + time.monotonic() - start, 4)
+            result.duration = round(result.duration + time.perf_counter() - start, 4)
             if stopping:
                 self.stop_event.set()
 
@@ -428,16 +428,16 @@ class Runner:
         module = self.module
         chosen = [case for case in module.cases if names is None or case.name in names]
         report = TestReport(module.title, str(module.path), time.time(), self.configuration)
-        started = time.monotonic()
+        started = time.perf_counter()
         blocked = ""
         try:
             if "setup" in module.hooks:
                 report.setup = CaseResult("setup", "Setup")
-                start = time.monotonic()
+                start = time.perf_counter()
                 try:
                     self._call(module.hooks["setup"], report.setup)
                 finally:
-                    report.setup.duration = round(time.monotonic() - start, 4)
+                    report.setup.duration = round(time.perf_counter() - start, 4)
                 if report.setup.verdict != PASSED:
                     blocked = f"setup {report.setup.verdict}"
             for case in chosen:
@@ -457,21 +457,21 @@ class Runner:
             if "teardown" in module.hooks:
                 report.teardown = CaseResult("teardown", "Teardown")
                 self._clean_up(module.hooks["teardown"], report.teardown)
-            report.duration = round(time.monotonic() - started, 3)
+            report.duration = round(time.perf_counter() - started, 3)
         return report
 
     def _run_case(self, case, result):
         """before_each, the case, after_each; a failing before_each fails the case without running it (one
         that blocks it: blocked). The case keeps the worst verdict of the three."""
         hooks = self.module.hooks
-        start = time.monotonic()
+        start = time.perf_counter()
         try:
             if "before_each" in hooks:
                 self._call(hooks["before_each"], result)
             if result.verdict == PASSED:
                 self._call(case.function, result)
         finally:
-            result.duration = round(time.monotonic() - start, 4)
+            result.duration = round(time.perf_counter() - start, 4)
             if "after_each" in hooks:
                 verdict, error = result.verdict, result.error
                 self._clean_up(hooks["after_each"], result)

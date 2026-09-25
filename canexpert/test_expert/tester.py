@@ -78,22 +78,22 @@ class Tester:
         link = (options.get("extended", False), options.get("address_byte"), options.get("padding"))
         transaction = getattr(self.bus, "transaction", None)
         raw, error, first, pending, retries = None, "", None, [], 0
-        started = time.monotonic()
+        started = time.perf_counter()
         with transaction() if callable(transaction) else nullcontext():
             try:
                 drain(self.bus)
                 isotp_send(self.bus, request_id, payload, response_id, *link)
-                started = time.monotonic()
+                started = time.perf_counter()
                 deadline = started + timeout
                 while True:
-                    remaining = deadline - time.monotonic()
+                    remaining = deadline - time.perf_counter()
                     if remaining <= 0:
                         break
                     reply = isotp_recv(self.bus, response_id, request_id, remaining, *link,
                                        options.get("block_size", 0), options.get("st_min", 0))
                     if reply is None:
                         break
-                    moment = time.monotonic() - started
+                    moment = time.perf_counter() - started
                     if reply[0] == (payload[0] + 0x40) & 0xFF:
                         if payload[0] == 0x2A and len(reply) > 1:     # periodic data, not the answer
                             continue
@@ -104,20 +104,20 @@ class Tester:
                         first = moment if first is None else first
                         if reply[2] == 0x78:
                             pending.append(moment)
-                            deadline = time.monotonic() + self.pending_timeout
+                            deadline = time.perf_counter() + self.pending_timeout
                             continue
                         if reply[2] == 0x21 and retries < BUSY_RETRIES:
                             retries += 1
                             time.sleep(BUSY_RETRY_DELAY)
                             isotp_send(self.bus, request_id, payload, response_id, *link)
-                            deadline = time.monotonic() + timeout
+                            deadline = time.perf_counter() + timeout
                             continue
                         raw = reply
                         break
                     # anything else - an event's response, periodic data - is not the answer
             except IsoTpError as exc:
                 error = f"ISO-TP error: {exc}"
-        answer = Answer(payload, raw, time.monotonic() - started, functional, first, pending, retries, error,
+        answer = Answer(payload, raw, time.perf_counter() - started, functional, first, pending, retries, error,
                         self.session)
         self._follow(answer)
         self.log.append(answer)

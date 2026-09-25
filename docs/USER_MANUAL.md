@@ -471,6 +471,12 @@ Frames are timed by the adapter, so the Logger, the Trace window and a recorded 
 the other is in front — or while another window's tab covers the Transmit window. **Closing the window
 stops everything** it was sending, so nothing keeps going out of sight.
 
+Cyclic messages go out **on time**, to about half a millisecond: they are sent by a thread of their own that
+waits with Windows' high-resolution timer, whatever the windows are drawing meanwhile. (Windows wakes an
+ordinary program only every 15.6 ms, so a message due every 10 ms would otherwise go every 15 or 16.) The
+**Measured (ms)** column shows how often each one really went: the mean time between its last hundred sends
+and their range — `10.0 (9.7-10.3)`. Only the adapter itself can do better than that.
+
 ### Messages
 
 The **Messages** tab is CANoe's Interactive Generator.
@@ -479,8 +485,9 @@ The **Messages** tab is CANoe's Interactive Generator.
 - **Add from database...** picks a message from the symbol databases, with its identifier and length.
 - **Edit signals...** (or double-clicking the data of a database row) opens the message signal by signal,
   with value tables as lists, and re-encodes the bytes.
-- Tick **On** to send that row every *Cycle (ms)*; **Send now** sends the selected row once; **All off**
-  stops everything. *Sent* counts what went out.
+- Tick **On** to send that row every *Cycle (ms)* — the first time at once; **Send now** sends the selected row
+  once; **All off** stops everything. *Sent* counts what went out. A row edited while it is sent goes out as
+  edited from its next send.
 - **Save list...** and **Load list...** keep sets of rows as JSON files; the current list is remembered.
 
 A row that cannot be sent — because nothing is connected, say — switches itself off and shows why,
@@ -1068,7 +1075,7 @@ operation cycle — and **Show CAN frames** logs every frame, flow control inclu
 The **Signals** tab chooses the DBC whose messages the ECU sends. **Built-in** is `DBC/dummy_ecu.dbc` —
 `0x300` EngineData and `0x301` EcuStatus, which the example panels use — and **Browse...** takes any other.
 Each message is sent at its own period (the table's, else the DBC's `GenMsgCycleTime`, else the default
-period) and can be switched off. Each signal gets a **generator**:
+period) — on time, from a thread of its own, as CAN Expert's cyclic messages are — and can be switched off. Each signal gets a **generator**:
 
 | Generator | What the signal does |
 |---|---|

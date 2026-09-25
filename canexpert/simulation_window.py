@@ -2,14 +2,14 @@
 Simulated nodes: the messages an ECU would send, sent by CAN Expert instead.
 
 This is CANoe's rest-bus simulation in small: a symbol database says which node sends which message and
-how often, so ticking a node puts its messages on the bus at their cycle times. It is what makes an
-ECU on the bench believe the rest of the car is there.
+how often, so ticking a node puts its messages on the bus at their cycle times - sent by a thread of their
+own, on time (cyclic.CyclicSender). It is what makes an ECU on the bench believe the rest of the car is there.
 """
 from __future__ import annotations
 
 import json
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -22,20 +22,21 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from canexpert.cyclic import CyclicSchedule
+from canexpert.cyclic import CyclicSender
 from canexpert.transmit_window import SignalEditor
 from canexpert.ui_common import app_settings, enable_maximize, style_toggle
 
 SETTING = "simulated_messages"     # settings: the messages that were being sent, as JSON
-TICK_MS = 5
+REFRESH_MS = 250                   # how often the counters and measured cycles are shown
 DEFAULT_CYCLE_MS = 100             # for a message whose database gives no cycle time
 NO_SENDER = "(no sender named)"
-COL_NAME, COL_ID, COL_CYCLE, COL_DLC, COL_DATA, COL_COUNT = range(6)
-HEADERS = ["Node / message", "ID", "Cycle (ms)", "DLC", "Data (hex)", "Sent"]
+COL_NAME, COL_ID, COL_CYCLE, COL_DLC, COL_DATA, COL_COUNT, COL_MEASURED = range(7)
+HEADERS = ["Node / message", "ID", "Cycle (ms)", "DLC", "Data (hex)", "Sent", "Measured (ms)"]
 
 
 class SimulationWindow(QDialog):
     """Tick the nodes of a symbol database to send their messages, as the real ECUs would."""
+    cyclic_failed = pyqtSignal(object, str)       # (message name, why): a message could not be sent
 
     def __init__(self, parent=None, symbols=None, send=None, settings=None, stop_when_hidden=True):
         super().__init__(parent)
@@ -49,16 +50,16 @@ class SimulationWindow(QDialog):
         self.settings = settings or app_settings()
         self.messages = {}               # message name -> {"message", "data", "cycle_ms", "sent", "on"}
         self._items = {}
-        self._schedule = CyclicSchedule()
+        self.cyclic = CyclicSender(self._send_cyclic, lambda key, error: self.cyclic_failed.emit(key, str(error)))
+        self.cyclic_failed.connect(self._on_cyclic_failed)
         self._updating = False
         self._build_ui()
         if symbols is not None:
             symbols.changed.connect(self.rebuild)
         self.rebuild()
         self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.PreciseTimer)
-        self._timer.setInterval(TICK_MS)
-        self._timer.timeout.connect(self.tick)
+        self._timer.setInterval(REFRESH_MS)
+        self._timer.timeout.connect(self.refresh)
         self._timer.start()
 
     # --- UI -----------------------------------------------------------------------------
@@ -111,7 +112,7 @@ class SimulationWindow(QDialog):
         try:
             self.tree.clear()
             for node, messages in sorted(self._nodes().items()):
-                parent = QTreeWidgetItem([node, "", "", "", "", ""])
+                parent = QTreeWidgetItem([node, "", "", "", "", "", ""])
                 parent.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
                 self.tree.addTopLevelItem(parent)
                 parent.setExpanded(True)
@@ -124,13 +125,14 @@ class SimulationWindow(QDialog):
                     self.messages[message.name] = entry
                     item = QTreeWidgetItem(parent, [message.name, f"{message.frame_id:03X}",
                                                     str(entry["cycle_ms"]), str(message.length),
-                                                    entry["data"].hex(" ").upper(), str(entry["sent"])])
+                                                    entry["data"].hex(" ").upper(), str(entry["sent"]), ""])
                     item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable)
                     item.setCheckState(COL_NAME, Qt.Checked if entry["on"] else Qt.Unchecked)
                     self._items[message.name] = item
         finally:
             self._updating = False
         self._apply_filter()
+        self._sync_cyclic()
         self._update_status()
 
     def _nodes(self):
@@ -173,13 +175,13 @@ class SimulationWindow(QDialog):
         problem = ""
         if column == COL_NAME:
             entry["on"] = item.checkState(COL_NAME) == Qt.Checked
-            self._schedule.start(item.text(COL_NAME)) if entry["on"] else self._schedule.drop(item.text(COL_NAME))
         elif column == COL_CYCLE:
             try:
                 entry["cycle_ms"] = max(1, int(item.text(COL_CYCLE)))
             except ValueError:
                 problem = f"{entry['message'].name}: the cycle time must be a number of milliseconds"
         self._refresh_row(entry)
+        self._sync_cyclic()
         self._remember()
         self._update_status()
         if problem:
@@ -214,8 +216,8 @@ class SimulationWindow(QDialog):
             entry = self.messages.get(node.child(child).text(COL_NAME))
             if entry is not None:
                 entry["on"] = on
-                self._schedule.start(entry["message"].name) if on else self._schedule.drop(entry["message"].name)
                 self._refresh_row(entry)
+        self._sync_cyclic()
         self._remember()
         self._update_status()
 
@@ -233,9 +235,50 @@ class SimulationWindow(QDialog):
 
     def _on_start_toggled(self, running):
         self.start_btn.setText("Stop sending" if running else "Start sending")
-        for name in list(self.messages):
-            self._schedule.start(name)
+        self._sync_cyclic()
         self._update_status()
+
+    def _send_cyclic(self, can_id, data, extended):
+        """A ticked message's send, in the sending thread."""
+        if self.send is None:
+            raise RuntimeError("No measurement is running.")
+        self.send(can_id, data, extended)
+
+    def _sync_cyclic(self):
+        """While sending, the ticked messages are the ones the sending thread sends, as they are then."""
+        running = self.start_btn.isChecked()
+        wanted = {name: entry for name, entry in self.messages.items() if entry["on"]} if running else {}
+        for key in self.cyclic.keys():
+            if key not in wanted:
+                if key in self.messages:                    # what it sent since the last refresh still counts
+                    self.messages[key]["sent"] += self.cyclic.take(key)[0]
+                    self._refresh_row(self.messages[key])
+                self.cyclic.remove(key)
+        for name, entry in wanted.items():
+            self.cyclic.set(name, entry["cycle_ms"] / 1000.0, lambda entry=entry: (
+                entry["message"].frame_id, entry["data"], bool(entry["message"].is_extended_frame)))
+
+    def _on_cyclic_failed(self, name, why):
+        """A message that cannot go out stops the whole simulation rather than repeat its error."""
+        self.start_btn.setChecked(False)
+        self.status.setText(f"{name}: {why}")
+
+    def refresh(self):
+        """The counters and the measured cycles of the messages being sent."""
+        self._updating = True
+        try:
+            for name, entry in self.messages.items():
+                new, measured = self.cyclic.take(name)
+                entry["sent"] += new
+                item = self._items.get(name)
+                if item is None:
+                    continue
+                if new:
+                    item.setText(COL_COUNT, str(entry["sent"]))
+                if item.text(COL_MEASURED) != measured:
+                    item.setText(COL_MEASURED, measured)
+        finally:
+            self._updating = False
 
     def send_message(self, name) -> bool:
         """Send one message once. False (with the reason in the status line) when it could not go out."""
@@ -257,15 +300,6 @@ class SimulationWindow(QDialog):
         entry = self._selected()
         if entry is not None:
             self.send_message(entry["message"].name)
-
-    def tick(self):
-        """Send every ticked message whose cycle time has come."""
-        if not self.start_btn.isChecked():
-            return
-        for name, entry in list(self.messages.items()):
-            if entry["on"] and self._schedule.due(name, entry["cycle_ms"] / 1000.0):
-                if not self.send_message(name):
-                    return
 
     def _update_status(self):
         ticked = [entry for entry in self.messages.values() if entry["on"]]

@@ -600,9 +600,9 @@ class ModulesTest(unittest.TestCase):
         tester = SimpleNamespace(bus=SimpleNamespace(recv=lambda timeout=None: message))
         arrived, frame = BusFrames(tester).get(0.1)
         self.assertIs(frame, message)
-        self.assertAlmostEqual(time.monotonic() - arrived, 5, delta=0.5, msg="when it came, not when it was read")
+        self.assertAlmostEqual(time.perf_counter() - arrived, 5, delta=0.5, msg="when it came, not when it was read")
         message.timestamp = 1000.0                                  # an adapter's own clock
-        self.assertAlmostEqual(BusFrames(tester).get(0.1)[0], time.monotonic(), delta=0.5)
+        self.assertAlmostEqual(BusFrames(tester).get(0.1)[0], time.perf_counter(), delta=0.5)
         tester.bus.recv = lambda timeout=None: None
         with self.assertRaises(Exception):
             BusFrames(tester).get(0.1)

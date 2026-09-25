@@ -62,7 +62,7 @@ class BusFrames:
         message = self.tester.bus.recv(timeout)
         if message is None:
             raise queue.Empty
-        now = time.monotonic()
+        now = time.perf_counter()
         age = time.time() - (message.timestamp or 0)
         return (now - age if 0 <= age < MAX_AGE else now), message
 

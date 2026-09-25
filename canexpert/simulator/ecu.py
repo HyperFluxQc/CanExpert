@@ -61,6 +61,7 @@ from canexpert.simulator.j1939_node import DEFAULT_NAME, J1939Node
 from canexpert.simulator.signals import DEFAULT_GENERATORS, J1939_DEMO_GENERATORS, SignalSimulation, check_generators
 from canexpert.uds.isotp import (FC_OVERFLOW, FC_WAIT, N_CR_TIMEOUT, IsoTpError, flow_control_frame, isotp_send,
                                  parse_first_frame)
+from canexpert.timing import Waiter, precise_switching, raise_priority
 from canexpert.uds.seed_key import SeedKeyError, generate_key, load_library
 
 DEFAULT_SESSION, PROGRAMMING_SESSION, EXTENDED_SESSION = 0x01, 0x02, 0x03
@@ -119,6 +120,7 @@ MAX_PERIODIC = 16                     # periodic identifiers scheduled at once
 MAX_EVENTS = 8                        # ResponseOnEvent events set up at once
 EVENT_CHECK_INTERVAL = 0.1            # how often DIDs are compared for onChangeOfDataIdentifier
 STALL_SECONDS = N_CR_TIMEOUT + 0.2    # a consecutive frame held back past the tester's N_Cr
+FRAMES_IDLE = 0.05                    # with no application frame due, how often the frames thread looks again
 # Why a segmented response stops, as the ECU says it (ISO 15765-2: the sender aborts).
 RESPONSE_STOPPED = {"no_flow_control": "no flow control from the tester within N_Bs",
                     "too_many_waits": "the tester kept sending flow control WAIT",
@@ -407,7 +409,8 @@ class _FrameTap:
         self.ecu = ecu
 
     def send(self, message, timeout=None):
-        self.ecu.bus.send(message, timeout)
+        with self.ecu.send_lock:                    # the frames thread sends too
+            self.ecu.bus.send(message, timeout)
         self.ecu._trace("Tx", message)
 
     def recv(self, timeout=None):
@@ -453,6 +456,7 @@ class DummyEcu:
         self.config = config or EcuConfig()
         self.log = log
         self.trace = None       # trace(direction, message) for every diagnostic frame, when set
+        self.send_lock = threading.Lock()                  # the serving thread and the frames thread both send
         self._io = _FrameTap(self)
         self._started = time.monotonic()
         self._random = random.Random()
@@ -1465,33 +1469,75 @@ class DummyEcu:
         """What the ECU does by itself: application frames, periodic data, event responses, the operation
         cycle timer and the S3 timeout."""
         now = time.monotonic() if now is None else now
+        self._housekeeping(now)
+        self.send_application_frames()
+
+    def _housekeeping(self, now: float):
+        """All tick() does but the application frames, which serve() sends from a thread of their own."""
         self.j1939.tick(now)                        # its address is claimed before its frames go out
-        if self.config.broadcast_interval > 0 and self.application_running(now):
-            for frame in self.signals.due_frames(self.config.broadcast_interval, now):
-                frame = self.j1939.application_frame(frame) if self.config.j1939 else frame
-                if frame is not None:               # None: a J1939 node without an address stays quiet
-                    self.bus.send(frame)
         self._send_periodic(now)
         self._fire_events(now)
         if 0 < self.config.operation_cycle_seconds <= now - self._cycle_started:
             self.new_operation_cycle()
         self.check_session_timeout(now)
 
-    def serve(self, stop: threading.Event):
-        while not stop.is_set():
-            try:
-                self.tick()
-            except can.CanError:
-                raise                     # the adapter went away: the window sees the thread end
-            except Exception as exc:      # keep the simulator alive on anything else
-                self.log(f"Error: {exc}")
-            message = self._io.recv(timeout=0.01)
-            if message is not None:
+    def send_application_frames(self) -> float | None:
+        """Send the application frames that are due; when the next one is (time.perf_counter()), or None when
+        none is sent."""
+        if self.config.broadcast_interval <= 0 or not self.application_running():
+            return None
+        for frame in self.signals.due_frames(self.config.broadcast_interval, time.perf_counter()):
+            frame = self.j1939.application_frame(frame) if self.config.j1939 else frame
+            if frame is not None:                   # None: a J1939 node without an address stays quiet
+                with self.send_lock:
+                    self.bus.send(frame)
+        return self.signals.next_due(self.config.broadcast_interval)
+
+    def _send_frames_on_time(self, stop: threading.Event):
+        """The application frames at their cycle times, from a thread of their own waiting to the fraction of
+        a millisecond (timing.Waiter): the serving loop, waking on Windows' 15.6 ms tick, sent a 10 ms frame
+        every 15 or 16 ms."""
+        precise_switching()
+        raise_priority()
+        waiter = Waiter()
+        try:
+            while not stop.is_set():
                 try:
-                    self.on_message(message)
-                except Exception as exc:  # keep the simulator alive on transport errors
+                    next_due = self.send_application_frames()
+                except can.CanError:
+                    return                          # the adapter went away: serve() stops on it too
+                except Exception as exc:            # keep the simulator alive on anything else
                     self.log(f"Error: {exc}")
-                    self._rx = None
+                    next_due = None
+                idle = time.perf_counter() + FRAMES_IDLE      # a frame switched on meanwhile is seen within this
+                waiter.wait_until(min(next_due, idle) if next_due is not None else idle)
+        finally:
+            waiter.close()
+
+    def serve(self, stop: threading.Event):
+        """Answer requests and do what the ECU does by itself until stop is set; the application frames go
+        from a thread of their own."""
+        frames = threading.Thread(target=self._send_frames_on_time, args=(stop,), name="Dummy ECU frames",
+                                  daemon=True)
+        frames.start()
+        try:
+            while not stop.is_set():
+                try:
+                    self._housekeeping(time.monotonic())
+                except can.CanError:
+                    raise                     # the adapter went away: the window sees the thread end
+                except Exception as exc:      # keep the simulator alive on anything else
+                    self.log(f"Error: {exc}")
+                message = self._io.recv(timeout=0.01)
+                if message is not None:
+                    try:
+                        self.on_message(message)
+                    except Exception as exc:  # keep the simulator alive on transport errors
+                        self.log(f"Error: {exc}")
+                        self._rx = None
+        finally:
+            stop.set()                        # an adapter error ends the frames thread too
+            frames.join(1.0)
 
 
 def application_ids(config: EcuConfig) -> set[int]:

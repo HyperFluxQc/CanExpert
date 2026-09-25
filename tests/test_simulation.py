@@ -1,7 +1,9 @@
-"""Simulated nodes: the messages of a database's nodes, sent as those ECUs would."""
+"""Simulated nodes: the messages of a database's nodes, sent as those ECUs would - on time, by a thread of their
+own."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,11 +13,21 @@ from PyQt5.QtWidgets import QApplication, QDialog
 
 from canexpert import simulation_window as simulation
 from canexpert.cyclic import CyclicSchedule
-from canexpert.simulation_window import COL_CYCLE, COL_DATA, COL_NAME, SETTING, SimulationWindow
+from canexpert.simulation_window import COL_COUNT, COL_CYCLE, COL_DATA, COL_MEASURED, COL_NAME, SETTING, SimulationWindow
 from canexpert.symbols import SymbolDatabases
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parents[1] / "DBC" / "dummy_ecu.dbc"
+
+
+def spin_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        APP.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
 
 
 class CyclicScheduleTest(unittest.TestCase):
@@ -85,29 +97,28 @@ class SimulationWindowTest(unittest.TestCase):
 
     def test_a_ticked_message_is_sent_at_its_cycle_time(self):
         item = self.window._items["EngineData"]
+        item.setText(COL_CYCLE, "20")
         item.setCheckState(COL_NAME, Qt.Checked)
         self.window.start_btn.setChecked(True)
-        self.window.tick()
-        self.assertEqual(len(self.sent), 1)
-        self.assertEqual(self.sent[0][0], 0x300)
-        self.window.tick()                                      # not due yet
-        self.assertEqual(len(self.sent), 1)
-        self.window._schedule.start("EngineData")               # as the cycle time coming round does
-        self.window.tick()
-        self.assertEqual(len(self.sent), 2)
-        self.assertEqual(self.window.messages["EngineData"]["sent"], 2)
+        self.assertTrue(spin_until(lambda: len(self.sent) >= 6))
+        self.assertEqual({frame[0] for frame in self.sent}, {0x300})
+        self.window.refresh()
+        self.assertEqual(item.text(COL_COUNT), str(self.window.messages["EngineData"]["sent"]))
+        mean = float(item.text(COL_MEASURED).split()[0])
+        self.assertAlmostEqual(mean, 20, delta=6, msg="the measured cycle")
 
     def test_nothing_is_sent_before_start_or_after_stop(self):
         self.window._items["EngineData"].setCheckState(COL_NAME, Qt.Checked)
-        self.window.tick()
+        time.sleep(0.05)
         self.assertEqual(self.sent, [], "ticking a message does not send it until Start")
         self.window.start_btn.setChecked(True)
-        self.window.tick()
-        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(spin_until(lambda: len(self.sent) >= 1))
         self.window.start_btn.setChecked(False)
-        self.window._schedule.start("EngineData")
-        self.window.tick()
-        self.assertEqual(len(self.sent), 1)
+        time.sleep(0.03)                                        # a send already under way
+        sent = len(self.sent)
+        time.sleep(0.15)
+        self.assertEqual(len(self.sent), sent)
+        self.assertEqual(self.window.messages["EngineData"]["sent"], sent, "counted when it stopped")
 
     def test_a_whole_node_can_be_ticked_at_once(self):
         node = self.window.tree.findItems("DummyECU", Qt.MatchExactly, COL_NAME)[0]
@@ -115,8 +126,7 @@ class SimulationWindowTest(unittest.TestCase):
         self.window._set_node(True)
         self.assertTrue(all(self.window.messages[name]["on"] for name in ("EngineData", "EcuStatus")))
         self.window.start_btn.setChecked(True)
-        self.window.tick()
-        self.assertEqual(sorted(frame[0] for frame in self.sent), [0x300, 0x301])
+        self.assertTrue(spin_until(lambda: {frame[0] for frame in self.sent} == {0x300, 0x301}))
         self.window._set_node(False)
         self.assertFalse(any(self.window.messages[name]["on"] for name in ("EngineData", "EcuStatus")))
 
@@ -152,8 +162,8 @@ class SimulationWindowTest(unittest.TestCase):
         self.addCleanup(window.close)
         window._items["EngineData"].setCheckState(COL_NAME, Qt.Checked)
         window.start_btn.setChecked(True)
-        window.tick()
-        self.assertFalse(window.start_btn.isChecked(), "a simulation that cannot send must not spin")
+        self.assertTrue(spin_until(lambda: not window.start_btn.isChecked()),
+                        "a simulation that cannot send must not spin")
         self.assertIn("Connect before sending", window.status.text())
 
     def test_the_ticked_messages_are_remembered(self):

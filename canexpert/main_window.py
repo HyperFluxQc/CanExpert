@@ -6,12 +6,13 @@ Flashing, the tool windows and the logs.
 import json
 import re
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
 
 import can
-from PyQt5.QtCore import QSize, Qt, QTimer
+from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QKeySequence, QPalette
 from PyQt5.QtWidgets import (
     QAction,
@@ -93,9 +94,15 @@ WRITE_HISTORY = 5000               # Write window lines kept for when it is open
 
 class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
     """Main application window"""
-    
+    # A frame sent with send_can_message(): time.time(), identifier, data, extended - queued to the window's
+    # thread when it was sent from another (the Transmit window's cyclic rows).
+    frame_sent = pyqtSignal(float, int, bytes, bool)
+
     def __init__(self):
         super().__init__()
+        self.send_lock = threading.Lock()   # send_can_message() is called from more than one thread
+        self.frame_sent.connect(lambda stamp, can_id, data, extended:
+                                self.dispatch_frame(stamp, "TX", can_id, data, extended))
         self.setWindowTitle("CAN Expert")
         self.setGeometry(100, 100, 1000, 700)
         self._settings = app_settings()      # the settings every part of the window reads and writes
