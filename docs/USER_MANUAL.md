@@ -820,6 +820,37 @@ A sequence stops at its first step that goes wrong. What that means depends on w
 Before every test TestExpert still puts the ECU in the default session (`10 01`), and after it again; the
 sequences run in between — around a test in the order group, every test, the test, and back out.
 
+### Test plans
+
+A **test plan** keeps everything a run needs in one file: the description, the ECU connection, the settings
+and the key source, the tests left out (unticked) and the sequences. **File → Save plan** (Ctrl+S) or **Save
+plan as...** writes it; **Open plan...** (Ctrl+Shift+O) reads it back, and **New plan** (Ctrl+N) starts
+afresh. Give it a **Plan name** and a **Reports folder** on the Settings tab if you like (the reports go to
+`TestExpert/reports` otherwise). Paths are written relative to the plan's folder, so a plan and its CDD can be
+moved or put under version control together; the plan is JSON, and can be edited by hand.
+
+TestExpert keeps what the window holds — saved or not — for its next start, and opens the plan it was using.
+
+### Running without the window
+
+A plan runs without the window, for a bench script or a CI server (Jenkins, GitLab, Azure DevOps...):
+
+```bash
+python test_expert.py nightly.json --run
+python test_expert.py nightly.json --run --junit results/testexpert.xml --report-dir results
+python test_expert.py nightly.json --run --channel 1          # the plan, on another channel
+python test_expert.py ODX/ecu.cdd --run --interface vector --channel 0 --bitrate 500000
+python test_expert.py nightly.json --run --dummy-ecu          # against a Dummy ECU in the same process
+```
+
+Each test's verdict is printed as it ends, then the totals and the report files. The **exit code** says how it
+went: **0** every test passed, **1** one did not (failed, error or blocked), **2** the run could not start
+(the plan or its description cannot be read, the channel cannot be opened). `--junit` also copies the JUnit
+report to a fixed file for the CI server; `--quiet` prints only the totals. A description instead of a plan
+runs every test with the default settings. **TestExpert.exe** takes the same options; it prints into the
+console it was started from — in a batch file use `start /wait TestExpert.exe plan.json --run` to wait for its
+exit code.
+
 ### Trying it with the Dummy ECU
 
 Start the Dummy ECU on one virtual channel, TestExpert on the other, open `ODX/dummy_ecu.cdd` (or keep
@@ -974,7 +1005,7 @@ do not reach the script.
 | `Databases/` | Panels: `family_YYYY-MM-DD.xml` and `family_YYYY-MM-DD_script.py` |
 | `DBC/` | DBC files for the Trace window, the Logger, the Transmit list, the designer and panel bindings (`j1939_demo.dbc`: an engine's J1939 parameter groups) |
 | `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab and TestExpert (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts; `dummy_ecu.cdd`: its diagnostics, for TestExpert) |
-| `TestExpert/` | TestExpert's reports (`reports/`) and the traffic it recorded |
+| `TestExpert/` | TestExpert's reports (`reports/`), the traffic it recorded, and the plans you save there |
 | `examples/` | A runnable panel and script, and demo firmware images |
 | `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |
 

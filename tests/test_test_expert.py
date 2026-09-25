@@ -1,8 +1,10 @@
 """TestExpert: descriptions (JSON, how states become sessions and levels, CDD, ODX), the tests generated from
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
-post-test sequences around them, and the window."""
+post-test sequences around them, test plans and their run from the command line, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import argparse
+import json
 import tempfile
 import threading
 import time
@@ -18,12 +20,14 @@ from PyQt5.QtWidgets import QApplication
 
 from canexpert.paths import ODX_DIR
 from canexpert.simulator.ecu import DummyEcu, EcuConfig
+from canexpert.test_expert import cli
 from canexpert.test_expert import odx as odx_loader
 from canexpert.test_expert import window as window_module
 from canexpert.test_expert.cdd import CddError, load_cdd
 from canexpert.test_expert.description import (Access, EcuDescription, RawService, RawState, build_description)
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.generator import Options, Suite
+from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file
 from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
                                              parse_frame, parse_hex, parse_script)
 from canexpert.test_expert.tester import Tester
@@ -336,6 +340,102 @@ class SequenceTest(unittest.TestCase):
         self.assertEqual(report.verdict, "failed")
 
 
+class PlanTest(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+
+    def test_a_plan_as_json(self):
+        (self.folder / "cdd").mkdir()
+        description = self.folder / "cdd" / "ecu.cdd"
+        description.write_bytes(DUMMY_CDD.read_bytes())
+        plan = TestPlan("Nightly", str(description), Connection("vector", "1", 250000, 0x18DA10F1, 0x18DAF110, None,
+                                                               True, None),
+                        excluded=["timing.responses_within_p2"], key=KeySource("dll", 0x5A, "keys/ecu.dll", "B"),
+                        sequences=[Sequence("Hard reset", [SequenceStep("reset", "01")], [Attachment("after", "run")])])
+        plan.options["destructive"] = True
+        path = self.folder / "plans" / "nightly.json"
+        path.parent.mkdir()
+        plan.path = path
+        plan.description = plan.relative(description)
+        plan.save(path)
+        written = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(written["description"], "../cdd/ecu.cdd", "relative to the plan's folder")
+        self.assertEqual(written["connection"]["request_id"], "0x18DA10F1")
+        self.assertIsNone(written["connection"]["functional_id"])
+        again = TestPlan.load(path)
+        self.assertEqual(again.to_dict(), plan.to_dict())
+        self.assertEqual(again.resolve(again.description), description.resolve())
+        self.assertEqual(again.load_description().name, "DummyECU (CommonDiagnostics)")
+        self.assertTrue(again.make_options().destructive)
+        self.assertEqual(again.connection.transport()["padding"], None)
+        self.assertTrue(is_plan_file(path))
+        moved = self.folder / "elsewhere" / "nightly.json"
+        moved.parent.mkdir()
+        again.save(moved)
+        self.assertEqual(json.loads(moved.read_text(encoding="utf-8"))["description"], "../cdd/ecu.cdd")
+        self.assertEqual(TestPlan.load(moved).resolve("../cdd/ecu.cdd"), description.resolve())
+
+    def test_what_is_not_a_plan(self):
+        described = self.folder / "ecu.json"
+        dummy_description().save(described)
+        self.assertFalse(is_plan_file(described), "a description saved as JSON")
+        with self.assertRaises(PlanError):
+            TestPlan.load(described)
+        newer = self.folder / "newer.json"
+        newer.write_text(json.dumps({"format": "TestExpert plan", "version": 99}), encoding="utf-8")
+        with self.assertRaises(PlanError):
+            TestPlan.load(newer)
+        plan = TestPlan(description="missing.cdd", path=self.folder / "plan.json")
+        with self.assertRaises(PlanError):
+            plan.load_description()
+        self.assertEqual(TestPlan().load_description().name, "Dummy ECU", "no description: the Dummy ECU's")
+        from_numbers = TestPlan.from_dict({"format": "TestExpert plan", "connection": {"request_id": 2016, "padding": "AA"}})
+        self.assertEqual((from_numbers.connection.request_id, from_numbers.connection.padding), (0x7E0, 0xAA))
+
+    def test_the_command_line(self):
+        arguments = argparse.Namespace(file=None, interface="virtual", channel="7", bitrate=None)
+        plan = cli.load_plan(arguments)
+        self.assertEqual((plan.connection.interface, plan.connection.channel, plan.connection.bitrate),
+                         ("virtual", "7", 500000))
+        suite = Suite(dummy_description())
+        keep = {"sessions.default_session_10_01", "testerpresent.testerpresent_3e"}
+        plan = TestPlan("CLI", excluded=[case.name for case in suite.cases if case.name not in keep],
+                        sequences=[Sequence("Hard reset", [SequenceStep("reset", "01")], [Attachment("after", "run")])])
+        plan.options["reset_time"] = 0.6
+        path = self.folder / "cli.json"
+        plan.save(path)
+        reports, junit = self.folder / "reports", self.folder / "ci" / "junit.xml"
+        with patch("sys.stdout") as out:
+            code = cli.main([str(path), "--run", "--dummy-ecu", "--report-dir", str(reports), "--junit", str(junit)])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_PASSED, printed)
+        self.assertIn("Running 2 tests against a Dummy ECU", printed)
+        self.assertIn("PASSED   Sessions: Default session (10 01)", printed)
+        self.assertIn("PASSED: 2 passed, 0 failed", printed)
+        self.assertTrue(junit.exists())
+        root = ElementTree.parse(junit).getroot()
+        self.assertEqual(root.find("testsuite").get("tests"), "2")
+        page = next(reports.glob("*.html")).read_text(encoding="utf-8")
+        self.assertIn("<th>Test plan</th>", page)
+        self.assertIn("Post-run &#x27;Hard reset&#x27;", page)
+
+        plan.sequences = [Sequence("Unknown DID", [SequenceStep("request", "22 12 34", "positive")],
+                                   [Attachment("before", "each")])]
+        plan.record = True
+        plan.save(path)
+        with patch("sys.stdout"):
+            self.assertEqual(cli.main([str(path), "--run", "--dummy-ecu", "--report-dir", str(reports), "--quiet"]),
+                             cli.EXIT_FAILED, "blocked tests")
+        self.assertTrue(list(reports.glob("*.blf")), "the traffic recorded beside the reports")
+        plan.description = "nowhere.cdd"
+        plan.save(path)
+        with patch("sys.stdout"):
+            self.assertEqual(cli.main([str(path), "--run", "--dummy-ecu"]), cli.EXIT_NOT_RUN)
+            self.assertEqual(cli.main([str(DUMMY_CDD), "--run", "--interface", "no-such-interface"]), cli.EXIT_NOT_RUN)
+
+
 class WindowTest(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -354,7 +454,8 @@ class WindowTest(unittest.TestCase):
         self.window.destructive.setChecked(True)
         self.assertGreater(len(self.window.suite.cases), count)
         self.assertIsNotNone(self.window.open_description(DUMMY_CDD))
-        self.assertEqual(self.settings.value("test_expert/description"), str(DUMMY_CDD))
+        kept = json.loads(self.settings.value("test_expert/plan_state"))
+        self.assertEqual(kept["description"], str(DUMMY_CDD.resolve()), "kept for the next start")
         self.assertIn("DummyECU", self.window.description_label.text())
         bad = Path(tempfile.mkdtemp()) / "bad.cdd"
         bad.write_text("not xml", encoding="utf-8")
@@ -406,9 +507,53 @@ class WindowTest(unittest.TestCase):
         window.sequence_editor.detach("test", name)
         self.assertEqual(window._items[name].text(window_module.COL_SEQUENCES), "")
 
+    def test_plans_in_the_window(self):
+        window = self.window
+        window.open_description(DUMMY_CDD)
+        window.interface.setCurrentText("virtual")
+        window.channel.setEditText("bench")
+        window.destructive.setChecked(True)
+        window.plan_name.setText("Bench")
+        name = "timing.responses_within_p2"
+        window._items[name].setCheckState(0, 0)
+        window.sequence_editor.add_preset("Hard reset")
+        path = self.folder / "plans" / "bench.json"
+        path.parent.mkdir()
+        self.assertEqual(window.save_plan_as(path), path)
+        self.assertEqual(window.windowTitle(), "TestExpert - Bench")
+        saved = TestPlan.load(path)
+        self.assertEqual(saved.excluded, [name])
+        self.assertFalse(Path(saved.description).is_absolute(), "relative to the plan's folder")
+        self.assertEqual(saved.resolve(saved.description), DUMMY_CDD.resolve())
+        self.assertTrue(saved.options["destructive"])
+        other = window_module.TestExpertWindow(MemorySettings())
+        self.addCleanup(other.close)
+        self.assertEqual(other.description.name, "Dummy ECU")
+        self.assertIsNotNone(other.open_plan(path))
+        self.assertEqual(other.description.name, "DummyECU (CommonDiagnostics)")
+        self.assertEqual((other.interface.currentText(), other.channel.currentText()), ("virtual", "bench"))
+        self.assertTrue(other.destructive.isChecked())
+        self.assertEqual(other._items[name].checkState(0), 0, "left out, as the plan says")
+        self.assertEqual([sequence.name for sequence in other.sequence_editor.sequences()], ["Hard reset"])
+        self.assertEqual(other.plan(path).to_dict(), saved.to_dict())
+        other.new_plan()
+        self.assertEqual((other.description.name, other.sequence_editor.sequences(), other.plan_path),
+                         ("Dummy ECU", [], None))
+        bad = self.folder / "bad.json"
+        bad.write_text("{}", encoding="utf-8")
+        self.assertIsNone(other.open_plan(bad))
+        self.assertIn("not a TestExpert plan", other.log.toPlainText())
+        restarted = window_module.TestExpertWindow(self.settings)
+        self.addCleanup(restarted.close)
+        self.assertEqual(restarted.plan_path, path, "the plan in use when the window was left")
+        self.assertEqual(restarted._items[name].checkState(0), 0)
+
     def test_main_smoke_test(self):
         self.assertEqual(window_module.main(["--smoke-test"]), 0)
         self.assertEqual(window_module.main([str(DUMMY_CDD), "--smoke-test"]), 0)
+        path = self.folder / "plan.json"
+        TestPlan(description=str(DUMMY_CDD)).save(path)
+        self.assertEqual(window_module.main([str(path), "--smoke-test"]), 0)
 
 
 if __name__ == "__main__":

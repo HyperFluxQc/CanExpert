@@ -17,7 +17,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Scan for ECUs**: TesterPresent over an 11-bit range or 29-bit normal fixed addresses, then the sessions each ECU accepts and its VIN, part and serial numbers and versions - beside a running measurement - with a configuration made from any ECU found
 - **One measurement clock**: the Trace, the Logger, the Write window and the UDS Console show each frame's own time, absolute or relative to the start of the measurement; the Trace also filters by direction
 - **Write window** for the script's output and its variables; scripts react to keys, error frames and the bus state
-- **TestExpert**, a program of its own: UDS conformance tests generated from a CDD, ODX or PDX file, as Vector DiVa does, with HTML and JUnit reports
+- **TestExpert**, a program of its own: UDS conformance tests generated from a CDD, ODX or PDX file, as Vector DiVa does, with pre-test and post-test sequences, test plans that also run from the command line, and HTML and JUnit reports
 - **J1939**: the Trace names 29-bit frames by parameter group, source and destination and joins BAM and RTS/CTS messages; a **J1939 window** lists the nodes and their NAMEs, each node's DM1 faults (DM2, DM11/DM3 clear) and requests or sends any PGN; J1939 DBC messages decode from any source address; scripts and test modules use `j1939.request()` / `j1939.send()` and `@on_pgn`; the Dummy ECU can be a J1939 node (address claim, DM1, SOFT/VI/CI, `DBC/j1939_demo.dbc`)
 - **Test modules**: test cases in Python against the live bus (`@testcase`, `setup`/`teardown`, `t.check`, `t.require`, `t.expect_nrc`, `t.wait_for_frame`, `t.wait_for_signal` and the UDS functions), with a verdict per step as it runs, Stop, and an HTML and a JUnit XML report of every run; an example module checks the Dummy ECU
 - **Status bar** with the bus state, the diagnostic session and security state read off the ECU's answers, and the last error; **keyboard shortcuts** (F9 connect, Ctrl+1...7 tool windows, F1 help at the window you are in) and an **About** box listing every library and adapter driver version
@@ -171,7 +171,7 @@ CanExpert/
 ├── main.py                     # Start CAN Expert (--smoke-test: only check that it can start)
 ├── CanExpert.spec              # PyInstaller: the Windows programs (tools/build_windows.py runs it)
 ├── dummy_ecu.py                # Start the Dummy ECU (window, or --console)
-├── test_expert.py              # Start TestExpert: UDS conformance tests from a CDD, ODX or PDX file
+├── test_expert.py              # Start TestExpert: UDS conformance tests from a CDD, ODX or PDX file (--run: no window)
 ├── canexpert/
 │   ├── main_window.py          # Main window: configurations, receivers and ECU nodes, Connect, Flashing
 │   ├── main_tools.py, main_layouts.py, main_channels.py, main_session.py   # its parts (mixins)
@@ -217,11 +217,14 @@ generates the tests: sessions and their transitions, TesterPresent, unsupported 
 availability per session (0x7F) and the NRC order, message length (0x13), sub-functions (0x12), every DID read
 and written per session and security level (0x31, 0x33), security access (0x24, 0x35, the lockout's 0x36 and
 0x37), routines, the fault memory, CommunicationControl and ControlDTCSetting, ECU reset, functional
-addressing and P2 timing. Each run leaves an HTML and a JUnit report. `ODX/dummy_ecu.cdd` describes the Dummy
-ECU, which passes every test.
+addressing and P2 timing. Pre-test and post-test sequences run around the run, a group or a test — a hard
+reset after a test, an ignition frame before the run, a recovery reset after a failure — and a test plan keeps
+it all in one file, which also runs without the window for a CI server (exit code and JUnit report). Each run
+leaves an HTML and a JUnit report. `ODX/dummy_ecu.cdd` describes the Dummy ECU, which passes every test.
 
 ```bash
 python test_expert.py ODX/dummy_ecu.cdd
+python test_expert.py nightly.json --run --junit results.xml
 ```
 
 ## Dummy ECU (no vehicle needed)

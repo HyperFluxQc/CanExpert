@@ -1,11 +1,11 @@
 """
 TestExpert's window: load a description (CDD, ODX, PDX, JSON, or the Dummy ECU's), connect to the ECU, choose
 the generated tests and the sequences around them, and run them; each run leaves an HTML and a JUnit report,
-and the traffic if asked.
+and the traffic if asked. What the window holds is a test plan (plan.py): saved to a file, it runs again from
+here or from the command line (cli.py); the window also keeps it for its next start.
 """
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 import threading
@@ -48,23 +48,24 @@ from canexpert.simulator.ecu import parse_channel
 from canexpert.simulator.widgets import HexSpinBox
 from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.dummy import dummy_description
+from canexpert.test_expert.engine import PlanRun
 from canexpert.test_expert.generator import Options, Suite
 from canexpert.test_expert.odx import load_description
+from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file, options_dict
 from canexpert.test_expert.sequence_editor import SequenceEditor
-from canexpert.test_expert.sequences import PRESETS, Attachment, Sequence
-from canexpert.test_expert.tester import Tester
-from canexpert.testing.report import COLOURS, save_reports, summary_text
-from canexpert.testing.runner import PASSED, Runner
+from canexpert.test_expert.sequences import PRESETS, Attachment
+from canexpert.testing.report import COLOURS, summary_text
+from canexpert.testing.runner import PASSED
 from canexpert.testing.window import MemorySettings, step_text
 from canexpert.ui_common import app_icon, app_settings, enable_maximize
 from canexpert.uds.observer import SERVICE_NAMES
-from canexpert.uds.seed_key import dll_key, xor_key
 
 TEST_EXPERT_DIR = APP_DIR / "TestExpert"          # reports/ and the recordings of the runs
 INTERFACES = ("kvaser", "vector", "ixxat", "pcan", "virtual", "socketcan")
 BITRATES = ("125000", "250000", "500000", "1000000")
 KEY_SOURCES = ("key = seed XOR mask", "seed & key DLL")
 FILE_FILTER = "Diagnostic descriptions (*.cdd *.odx *.odx-d *.pdx *.json);;All files (*.*)"
+PLAN_FILTER = "TestExpert plans (*.json);;All files (*.*)"
 PREFIX = "test_expert/"                           # the settings TestExpert keeps
 COL_NAME, COL_VERDICT, COL_STEPS, COL_TIME, COL_SEQUENCES = range(5)
 TARGET = Qt.UserRole                              # a tests tree item's ("test", name) or ("group", name)
@@ -93,6 +94,9 @@ class TestExpertWindow(QMainWindow):
         self.suite: Suite | None = None
         self.bus = self.worker = self.mailbox = None
         self.runner = self.thread = self.report = self.report_paths = self.recorder = None
+        self.plan_path: Path | None = None           # the plan file the window's plan was read from or saved to
+        self._report_folder = TEST_EXPERT_DIR / "reports"
+        self._description_path = ""                   # the description's file; "": the Dummy ECU's
         self._items = {}
         self._group_items = {}
         self._running_item = None
@@ -114,50 +118,44 @@ class TestExpertWindow(QMainWindow):
         self.settings.setValue(PREFIX + key, value)
 
     def _restore(self):
-        self.interface.setCurrentText(self._value("interface", "kvaser"))
-        self.channel.setEditText(self._value("channel", "0"))
-        self.bitrate.setCurrentText(self._value("bitrate", "500000"))
-        for key, widget, default in (("request_id", self.request_id, 0x7E0), ("response_id", self.response_id, 0x7E8),
-                                     ("functional_id", self.functional_id, 0x7DF), ("padding", self.padding, 0xCC),
-                                     ("mask", self.mask, 0xA5)):
-            widget.setValue(int(self._value(key, default, int)))
-        self.extended.setChecked(self._value("extended", "false") in ("true", True))
-        self.use_padding.setChecked(self._value("use_padding", "true") in ("true", True))
-        self.dll_edit.setText(self._value("dll", ""))
-        self.key_source.setCurrentIndex(int(self._value("key_source", 0, int)))
+        """The plan the window held when it was last closed, saved or not; else a new one."""
+        plan = TestPlan()
         try:
-            saved = json.loads(self._value("sequences", "[]") or "[]")
-            self.sequence_editor.set_sequences([Sequence.from_dict(item) for item in saved])
-        except (TypeError, ValueError, AttributeError):
-            self._write("The sequences kept from last time could not be read")
-        path = Path(self._value("description", "") or "")
-        if path.is_file():
-            self.open_description(path)
-        else:
-            self.use_dummy()
+            state = json.loads(self._value("plan_state", "") or "null")
+            if state is not None:
+                plan = TestPlan.from_dict(state)
+        except (TypeError, ValueError):
+            self._write("The plan kept from last time could not be read; a new one is used")
+        path = Path(self._value("plan", "") or "")
+        plan.path = path if path.is_file() else None
+        self.apply_plan(plan)
 
     def _save_settings(self):
-        for key, value in (("interface", self.interface.currentText()), ("channel", self.channel.currentText()),
-                           ("bitrate", self.bitrate.currentText()), ("request_id", self.request_id.value()),
-                           ("response_id", self.response_id.value()), ("functional_id", self.functional_id.value()),
-                           ("padding", self.padding.value()), ("mask", self.mask.value()),
-                           ("extended", "true" if self.extended.isChecked() else "false"),
-                           ("use_padding", "true" if self.use_padding.isChecked() else "false"),
-                           ("dll", self.dll_edit.text()), ("key_source", self.key_source.currentIndex())):
-            self._remember(key, value)
-        self._save_sequences()
+        """Keep the window's plan for the next start (with absolute paths: it is not in the plan's file)."""
+        self._remember("plan_state", json.dumps(self.plan(portable=False).to_dict()))
+        self._remember("plan", str(self.plan_path or ""))
 
     def _save_sequences(self):
-        self._remember("sequences", json.dumps([sequence.to_dict() for sequence in self.sequence_editor.sequences()]))
+        self._save_settings()
 
     # --- UI ------------------------------------------------------------------------------------------------
 
     def _build(self):
         menu = self.menuBar().addMenu("&File")
-        for text, slot, keys in (("&Open description...", lambda: self.open_description(), QKeySequence.Open),
-                                 ("The &Dummy ECU", self.use_dummy, None),
-                                 ("&Save description as JSON...", self.save_description, QKeySequence.Save),
-                                 ("E&xit", self.close, QKeySequence("Ctrl+Q"))):
+        for entry in (("&Open description...", lambda: self.open_description(), QKeySequence.Open),
+                      ("The &Dummy ECU", self.use_dummy, None),
+                      ("Save description as &JSON...", self.save_description, None),
+                      None,
+                      ("&New plan", self.new_plan, QKeySequence.New),
+                      ("Open &plan...", lambda: self.open_plan(), QKeySequence("Ctrl+Shift+O")),
+                      ("&Save plan", self.save_plan, QKeySequence.Save),
+                      ("Save plan &as...", lambda: self.save_plan_as(), QKeySequence("Ctrl+Shift+S")),
+                      None,
+                      ("E&xit", self.close, QKeySequence("Ctrl+Q"))):
+            if entry is None:
+                menu.addSeparator()
+                continue
+            text, slot, keys = entry
             action = menu.addAction(text)
             action.triggered.connect(lambda _checked=False, slot=slot: slot())
             if keys is not None:
@@ -287,6 +285,9 @@ class TestExpertWindow(QMainWindow):
     def _options_tab(self):
         page = QWidget()
         form = QFormLayout(page)
+        self.plan_name = QLineEdit()
+        self.plan_name.setPlaceholderText("the plan's file name")
+        form.addRow("Plan name", self.plan_name)
         self.destructive = QCheckBox("Destructive tests")
         self.destructive.setToolTip("ECU reset, clearing every DTC, writing DIDs (their own value back)")
         self.lockout = QCheckBox("Security lockout")
@@ -332,6 +333,14 @@ class TestExpertWindow(QMainWindow):
         form.addRow("XOR mask", self.mask)
         form.addRow("Seed & key DLL", dll_row)
         form.addRow("DLL variant", self.variant)
+        self.reports_edit = QLineEdit()
+        self.reports_edit.setPlaceholderText("TestExpert/reports")
+        reports_browse = QPushButton("Browse...")
+        reports_browse.clicked.connect(self._browse_reports)
+        reports_row = QHBoxLayout()
+        reports_row.addWidget(self.reports_edit, 1)
+        reports_row.addWidget(reports_browse)
+        form.addRow("Reports folder", reports_row)
         return page
 
     def _write(self, text):
@@ -349,12 +358,16 @@ class TestExpertWindow(QMainWindow):
         except Exception as exc:                            # a file none of the loaders can read
             self._write(f"{Path(path).name} could not be read: {type(exc).__name__}: {exc}")
             return None
-        self._remember("description", str(path))
-        return self.set_description(description)
+        self._description_path = str(Path(path).resolve())
+        self.set_description(description)
+        self._save_settings()
+        return description
 
     def use_dummy(self):
-        self._remember("description", "")
-        return self.set_description(dummy_description())
+        self._description_path = ""
+        self.set_description(dummy_description())
+        self._save_settings()
+        return self.description
 
     def set_description(self, description: EcuDescription):
         self.description = description
@@ -405,25 +418,7 @@ class TestExpertWindow(QMainWindow):
     # --- the tests -------------------------------------------------------------------------------------------------
 
     def options(self) -> Options:
-        return Options(destructive=self.destructive.isChecked(), lockout=self.lockout.isChecked(),
-                       functional=self.functional.isChecked(), key=self._key_function(),
-                       timing_margin_ms=self.margin.value(), reset_time=self.reset_time.value(),
-                       attempts=self.attempts.value(), lockout_seconds=self.lockout_seconds.value())
-
-    def _key_function(self):
-        if self.key_source.currentIndex() == 0:
-            function = xor_key(self.mask.value())
-            return lambda level, seed: function(seed)
-        path = self.dll_edit.text().strip()
-        if not path:
-            return None
-        cache = {}
-
-        def key(level, seed):
-            if level not in cache:
-                cache[level] = dll_key(path, level, self.variant.text().strip())
-            return cache[level](seed)
-        return key
+        return self.plan().make_options()
 
     def _browse_dll(self):
         path, _ = QFileDialog.getOpenFileName(self, "Seed & key DLL", "", "DLL (*.dll);;All files (*.*)")
@@ -431,12 +426,141 @@ class TestExpertWindow(QMainWindow):
             self.dll_edit.setText(path)
             self.key_source.setCurrentIndex(1)
 
+    def _browse_reports(self):
+        path = QFileDialog.getExistingDirectory(self, "Reports folder", self.reports_edit.text() or str(TEST_EXPERT_DIR))
+        if path:
+            self.reports_edit.setText(path)
+
+    # --- the plan --------------------------------------------------------------------------------------------
+
+    def plan(self, path=None, portable=True) -> TestPlan:
+        """What the window holds, as a test plan; path: where it is to be saved. A portable plan writes its
+        paths relative to that folder; otherwise they stay absolute (the plan kept in the settings)."""
+        target = Path(path) if path is not None else self.plan_path
+        plan = TestPlan(path=target if portable else None)
+        plan.name = self.plan_name.text().strip()
+        plan.description = plan.relative(self._description_path) if self._description_path else ""
+        try:
+            bitrate = int(self.bitrate.currentText())
+        except ValueError:                                  # a bit rate being typed
+            bitrate = 500000
+        plan.connection = Connection(self.interface.currentText(), self.channel.currentText().strip(),
+                                     bitrate, self.request_id.value(),
+                                     self.response_id.value(), self.functional_id.value(), self.extended.isChecked(),
+                                     self.padding.value() if self.use_padding.isChecked() else None)
+        plan.options = {"destructive": self.destructive.isChecked(), "lockout": self.lockout.isChecked(),
+                        "functional": self.functional.isChecked(), "timing_margin_ms": self.margin.value(),
+                        "reset_time": self.reset_time.value(), "attempts": self.attempts.value(),
+                        "lockout_seconds": self.lockout_seconds.value()}
+        plan.options = {**options_dict(Options()), **plan.options}
+        dll = self.dll_edit.text().strip()
+        plan.key = KeySource("dll" if self.key_source.currentIndex() == 1 else "xor", self.mask.value(),
+                             plan.relative(dll) if dll else "", self.variant.text().strip())
+        plan.record = self.record.isChecked()
+        reports = self.reports_edit.text().strip()
+        plan.reports = plan.relative(reports) if reports else ""
+        plan.excluded = [name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Unchecked]
+        plan.sequences = self.sequence_editor.sequences()
+        plan.path = target
+        return plan
+
+    def apply_plan(self, plan: TestPlan):
+        """Show a plan: its connection, settings and sequences, its description and the tests it leaves out."""
+        self.plan_path = plan.path
+        self.plan_name.setText(plan.name)
+        connection = plan.connection
+        self.interface.setCurrentText(connection.interface)
+        self.channel.setEditText(str(connection.channel))
+        self.bitrate.setCurrentText(str(connection.bitrate))
+        self.request_id.setValue(connection.request_id)
+        self.response_id.setValue(connection.response_id)
+        self.functional_id.setValue(connection.functional_id if connection.functional_id is not None else 0x7DF)
+        self.extended.setChecked(connection.extended)
+        self.use_padding.setChecked(connection.padding is not None)
+        self.padding.setValue(connection.padding if connection.padding is not None else 0xCC)
+        options = plan.options
+        for box, name in ((self.destructive, "destructive"), (self.lockout, "lockout"), (self.functional, "functional")):
+            box.blockSignals(True)
+            box.setChecked(bool(options.get(name, box.isChecked())))
+            box.blockSignals(False)
+        self.margin.setValue(int(options.get("timing_margin_ms", 50)))
+        self.reset_time.setValue(float(options.get("reset_time", 1.0)))
+        self.attempts.setValue(int(options.get("attempts", 3)))
+        self.lockout_seconds.setValue(float(options.get("lockout_seconds", 10.0)))
+        self.key_source.setCurrentIndex(1 if plan.key.kind == "dll" else 0)
+        self.mask.setValue(plan.key.mask)
+        self.dll_edit.setText(str(plan.resolve(plan.key.dll) or "") if plan.key.dll else "")
+        self.variant.setText(plan.key.variant)
+        self.record.setChecked(plan.record)
+        self.reports_edit.setText(str(plan.resolve(plan.reports)) if plan.reports else "")
+        self.sequence_editor.set_sequences(plan.sequences)
+        self._items = {}                                    # the plan says what is left out, not the old tree
+        description = plan.resolve(plan.description)
+        if description is not None and description.is_file():
+            if self.open_description(description) is None:
+                self.use_dummy()
+        else:
+            if description is not None:
+                self._write(f"The plan's description {description} is not there: the Dummy ECU's is shown")
+            self.use_dummy()
+        excluded = set(plan.excluded)
+        for name, item in self._items.items():
+            item.setCheckState(COL_NAME, Qt.Unchecked if name in excluded else Qt.Checked)
+        self._show_title()
+        self._save_settings()
+
+    def _show_title(self):
+        name = self.plan_name.text().strip() or (self.plan_path.stem if self.plan_path else "")
+        self.setWindowTitle(f"TestExpert - {name}" if name else "TestExpert")
+
+    def new_plan(self):
+        self.apply_plan(TestPlan())
+
+    def open_plan(self, path=None):
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Test plan", str(TEST_EXPERT_DIR), PLAN_FILTER)
+            if not path:
+                return None
+        try:
+            plan = TestPlan.load(path)
+        except PlanError as exc:
+            self._write(f"{Path(path).name}: {exc}")
+            return None
+        self.apply_plan(plan)
+        self._write(f"Plan {Path(path).name}: {self.description.name if self.description else ''}")
+        return plan
+
+    def save_plan(self):
+        return self.save_plan_as(self.plan_path) if self.plan_path is not None else self.save_plan_as()
+
+    def save_plan_as(self, path=None):
+        if path is None:
+            TEST_EXPERT_DIR.mkdir(parents=True, exist_ok=True)
+            suggested = TEST_EXPERT_DIR / f"{self.plan_name.text().strip() or 'plan'}.json"
+            path, _ = QFileDialog.getSaveFileName(self, "Save the test plan", str(suggested), PLAN_FILTER)
+            if not path:
+                return None
+        plan = self.plan(path)
+        try:
+            plan.save(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "TestExpert", f"The plan could not be saved:\n{exc}")
+            return None
+        self.plan_path = Path(path)
+        self._show_title()
+        self._save_settings()
+        self._write(f"Plan saved: {path}  (run it without the window: test_expert.py \"{path}\" --run)")
+        return Path(path)
+
+    # --- the tests -------------------------------------------------------------------------------------------------
+
     def rebuild_tests(self):
         """The generated tests for the description and the options; what was unticked stays unticked."""
         if self.description is None:
             return
         unticked = {name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Unchecked}
-        self.suite = Suite(self.description, self.options(), self.sequence_editor.sequences(), APP_DIR)
+        plan = self.plan()
+        self.suite = Suite(self.description, plan.make_options(), plan.sequences, plan.folder())
         self.tree.clear()
         self._items = {}
         self._group_items = {}
@@ -557,12 +681,6 @@ class TestExpertWindow(QMainWindow):
         self.bitrate.setCurrentText(str(config.get("bitrate", 500000)))
         self._write(f"Identifiers of the CAN Expert configuration {config['name']}")
 
-    def transport(self) -> dict:
-        return {"request_id": self.request_id.value(), "response_id": self.response_id.value(), "timeout": 2.0,
-                "extended": self.extended.isChecked(), "address_byte": None,
-                "padding": self.padding.value() if self.use_padding.isChecked() else None, "block_size": 0,
-                "st_min": 0}
-
     def toggle_connection(self):
         return self.disconnect_ecu() if self.bus is not None else self.connect_ecu()
 
@@ -629,16 +747,14 @@ class TestExpertWindow(QMainWindow):
         if not names:
             self._write("Tick at least one test.")
             return None
-        TEST_EXPERT_DIR.mkdir(parents=True, exist_ok=True)
-        self.suite.tester = Tester(self.mailbox, self.transport(), self.functional_id.value())
-        configuration = (f"{self.interface.currentText()} {self.channel.currentText()}, {self.bitrate.currentText()} "
-                         f"bit/s, {self.request_id.value():X}/{self.response_id.value():X}")
-        self.runner = Runner(self.suite.module(names), send=self.suite.tester.send_frame,
-                             on_event=lambda kind, data: self.run_event.emit(kind, data), configuration=configuration)
+        plan = self.plan()
+        self._save_settings()
+        self.runner = PlanRun(plan, self.description, self.mailbox, names,
+                              on_event=lambda kind, data: self.run_event.emit(kind, data))
+        self._report_folder = plan.report_folder(TEST_EXPERT_DIR / "reports")
         if self.record.isChecked():
-            folder = TEST_EXPERT_DIR / "reports"
-            folder.mkdir(parents=True, exist_ok=True)
-            self.recorder = Recorder(folder / f"traffic_{datetime.now().strftime('%Y%m%d-%H%M%S')}.blf")
+            self._report_folder.mkdir(parents=True, exist_ok=True)
+            self.recorder = Recorder(self._report_folder / f"traffic_{datetime.now().strftime('%Y%m%d-%H%M%S')}.blf")
         for name in names:
             item = self._items[name]
             item.takeChildren()
@@ -647,14 +763,14 @@ class TestExpertWindow(QMainWindow):
         self._write(f"Running {len(names)} tests of {self.description.name}")
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.thread = threading.Thread(target=self._run, args=(self.runner, names), daemon=True)
+        self.thread = threading.Thread(target=self._run, args=(self.runner,), daemon=True)
         self.thread.start()
         return self.thread
 
-    def _run(self, runner, names):
+    def _run(self, run):
         report = None
         try:
-            report = runner.run(names)
+            report = run.run()
         finally:
             self.run_finished.emit(report)
 
@@ -686,7 +802,7 @@ class TestExpertWindow(QMainWindow):
     def _on_finished(self, report):
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self.runner = None
+        run, self.runner = self.runner, None
         self.report = report
         if self.recorder is not None:
             recording = self.recorder.path
@@ -697,7 +813,7 @@ class TestExpertWindow(QMainWindow):
             self.status.setText("The run failed; see the log.")
             return
         try:
-            self.report_paths = save_reports(report, TEST_EXPERT_DIR / "reports")
+            self.report_paths = run.save(self._report_folder)
             self.report_btn.setEnabled(True)
             where = f"   Report: {self.report_paths[0]}"
         except OSError as exc:
@@ -726,20 +842,26 @@ class TestExpertWindow(QMainWindow):
         return dialog
 
     def closeEvent(self, event):
+        self._save_settings()
         self.disconnect_ecu()
         super().closeEvent(event)
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="TestExpert: UDS conformance tests from a CDD, ODX or PDX file")
-    parser.add_argument("description", nargs="?", help="a .cdd, .odx, .pdx or .json description to open")
-    parser.add_argument("--smoke-test", action="store_true", help="build the window and exit (the Windows build)")
-    arguments = parser.parse_args(argv)
+    """TestExpert's command line (cli.py): the window, or a plan run without it."""
+    from canexpert.test_expert.cli import main as command_line
+    return command_line(argv)
+
+
+def gui(arguments) -> int:
+    """The window, with the plan or the description the command line names."""
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setWindowIcon(app_icon("test_expert"))
     window = TestExpertWindow(MemorySettings() if arguments.smoke_test else None)
-    if arguments.description:
-        window.open_description(arguments.description)
+    if arguments.file and is_plan_file(arguments.file):
+        window.open_plan(arguments.file)
+    elif arguments.file:
+        window.open_description(arguments.file)
     if arguments.smoke_test:
         print("startup ok" if window.suite is not None else "no tests")
         return 0 if window.suite is not None else 1
