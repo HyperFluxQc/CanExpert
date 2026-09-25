@@ -3,7 +3,7 @@ them against the Dummy ECU - passing when it keeps the rules, failing where it i
 post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
 the ECU has, comparing two runs, test plans and their run from the command line, a description's variants and
 telling which one the ECU is, CAN Expert's test modules run with the generated tests, the transport layer's tests,
-the services taken further than their availability, and the window."""
+the services taken further than their availability, security access taken further, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -628,7 +628,7 @@ class ModulesTest(unittest.TestCase):
         self.assertEqual(again.module_paths(), [module.resolve()], "relative paths follow the plan")
         self.assertEqual(again.symbol_paths(), [(DBC_DIR / "dummy_ecu.dbc").resolve()])
         keep = "sessions.default_session_10_01"
-        suite = Suite(dummy_description(), modules=load_modules([EXAMPLE_MODULE]))
+        suite = Suite(dummy_description(), TestPlan().make_options(), modules=load_modules([EXAMPLE_MODULE]))
         cli_plan = TestPlan("CLI", excluded=[case.name for case in suite.cases if case.name != keep
                                              and not case.name.startswith("module_dummy_ecu_checks.")])
         cli_plan.options["s3_test"] = False
@@ -815,6 +815,68 @@ class ServicesTest(unittest.TestCase):
                                         destructive=False)
         self.assertEqual(cases["CommunicationControl stops the ECU's own frames"].verdict, "skipped")
         self.assertEqual(report.verdict, "passed", failures(report))
+
+
+TWO_LEVELS = EcuConfig(lockout_seconds=1.5, security_levels=[{"level": 0x03, "seed_length": 4, "key_mask": 0x5A}],
+                       dids=[*EcuConfig().dids, {"did": 0x0300, "data": "0102", "writable": False, "level": 3}])
+
+
+def two_keys(level, seed):
+    return bytes(byte ^ (0xA5 if level == 0x01 else 0x5A) for byte in seed)
+
+
+class SecurityTest(unittest.TestCase):
+    """Seeds that do not repeat, keys of the wrong length, levels apart, a lockout outlasting a reset."""
+
+    def run_security(self, config=TWO_LEVELS, **options):
+        bench = Bench(self, config)
+        options = {"key": two_keys, "lockout": True, "destructive": True, "lockout_seconds": 1.5, "reset_time": 0.6,
+                   "transport": False, **options}
+        suite = Suite(dummy_description(config), Options(s3_test=False, **options))
+        suite.tester = Tester(bench.tester_bus, TRANSPORT, 0x7DF)
+        names = [case.name for case in suite.cases if suite.group_of[case.name] == "Security access"]
+        report = Runner(suite.module(names), send=suite.tester.send_frame).run(names)
+        return {case.title.split(": ", 1)[1]: case for case in report.cases}, report
+
+    def test_the_dummy_ecu_passes(self):
+        cases, report = self.run_security()
+        self.assertEqual(report.verdict, "passed", failures(report))
+        for title in ("Level 0x01: seeds do not repeat", "Level 0x03: a key of the wrong length",
+                      "Level 0x01: the lockout outlasts an ECU reset", "Levels 0x01 and 0x03 are apart"):
+            self.assertIn(title, cases)
+        apart = [step.description for step in cases["Levels 0x01 and 0x03 are apart"].steps]
+        self.assertIn("22 0300 (level 0x03 only) is still refused: NRC 0x33", apart)
+        self.assertIn("level 0x03 unlocked: 22 0300 is read", apart)
+        length = cases["Level 0x01: a key of the wrong length"].steps
+        self.assertIn("the key with a byte too many (5 bytes): NRC 0x13", [step.description for step in length])
+
+    def test_what_they_need(self):
+        titles = [case.title for case in Suite(dummy_description(), Options(key=None)).cases]
+        self.assertIn("Security access: Level 0x01: seeds do not repeat", titles, "no key needed")
+        self.assertFalse([title for title in titles if "wrong length" in title or "outlasts" in title
+                          or "are apart" in title], "without a key, lockout and destructive tests, or a second level")
+        self.assertEqual(NrcPolicy().accepted("key_wrong_length"), (0x13, 0x35),
+                         "taken for a wrong key: accepted with a note")
+        quick = Suite(dummy_description(), Options(key=key, lockout=True, destructive=True, lockout_seconds=1,
+                                                   reset_time=1.0))
+        self.assertFalse([case for case in quick.cases if "outlasts" in case.title],
+                         "a delay no longer than the reset: nothing left to check after it")
+
+    def test_an_ecu_that_breaks_them_is_found(self):
+        from canexpert.simulator import ecu as ecu_module
+
+        def forgetful_reset(ecu):
+            ecu.state.locked_until = 0.0                      # the lockout forgotten
+            original_reset(ecu)
+        original_reset = ecu_module.DummyEcu._reset
+        with patch.object(ecu_module, "os", SimpleNamespace(urandom=lambda length: b"\x12" * length)), \
+                patch.object(ecu_module.DummyEcu, "_reset", forgetful_reset), \
+                patch.object(ecu_module.DummyEcu, "_check_did_access", lambda ecu, did: None):
+            cases, report = self.run_security()
+        for title in ("Level 0x01: seeds do not repeat", "Level 0x01: the lockout outlasts an ECU reset",
+                      "Levels 0x01 and 0x03 are apart"):
+            self.assertEqual(cases[title].verdict, "failed", title)
+        self.assertEqual(cases["Level 0x01: a key of the wrong length"].verdict, "passed")
 
 
 def TransportTestsRequest(description):
@@ -1298,7 +1360,7 @@ class PlanTest(unittest.TestCase):
         plan = cli.load_plan(arguments)
         self.assertEqual((plan.connection.interface, plan.connection.channel, plan.connection.bitrate),
                          ("virtual", "7", 500000))
-        suite = Suite(dummy_description())
+        suite = Suite(dummy_description(), TestPlan().make_options())               # with the plan's key source
         keep = {"sessions.default_session_10_01", "testerpresent.testerpresent_3e"}
         plan = TestPlan("CLI", excluded=[case.name for case in suite.cases if case.name not in keep],
                         sequences=[Sequence("Hard reset", [SequenceStep("reset", "01")], [Attachment("after", "run")])])

@@ -38,6 +38,7 @@ UNUSED_DTC_GROUP = 0xFFFFFE
 # Services whose minimal request only reads or asks: sent where the service is allowed, to see it answer.
 HARMLESS = {0x19, 0x22, 0x23, 0x27, 0x28, 0x2A, 0x3E, 0x85, 0x86}
 SESSION_ORDER = (0x01, 0x03, 0x02)        # default, extended, programming: the order sessions are tried in
+SEED_ATTEMPTS = 4                         # seeds asked for, each in a new session, that must all differ
 # ISO 14229-1 annex C: the identification DIDs read at the start of a run, for the report (and comparing runs).
 IDENTIFICATION = {
     0xF180: "bootSoftwareIdentification", 0xF181: "applicationSoftwareIdentification",
@@ -887,6 +888,40 @@ class Suite:
                     t.check(any(raw[2:]), "the seed is not zero", _hex(raw))
             self._add("Security access", f"{name} (27 {level:02X} / {level + 1:02X})", case)
 
+            def seeds(t, level=level, session=session):
+                found = []
+                for attempt in range(SEED_ATTEMPTS):
+                    self.enter(t, DEFAULT_SESSION)
+                    self.enter(t, session)
+                    raw = self.positive(t, bytes([0x27, level]), f"attempt {attempt + 1}: requestSeed", echo=[level])
+                    if raw is None:
+                        return
+                    found.append(bytes(raw[2:]))
+                if len(found[0]) < 2:
+                    t.log(f"seeds of {len(found[0])} byte: they may repeat by chance")
+                    return
+                t.check(len(set(found)) == len(found), f"{len(found)} seeds, each for a new attempt, all different",
+                        ", ".join(_hex(seed) for seed in found))
+            self._add("Security access", f"{name}: seeds do not repeat", seeds,
+                      "requestSeed in a new session each time: every seed is new.")
+
+            def key_length(t, level=level, session=session):
+                self.enter(t, session)
+                for change, what in ((1, "a byte too many"), (-1, "a byte too few")):
+                    seed = self.positive(t, bytes([0x27, level]), "requestSeed", echo=[level])
+                    if seed is None:
+                        return
+                    key = bytes(self.o.key(level, bytes(seed[2:])))
+                    if change < 0 and len(key) < 2:
+                        break
+                    wrong = key + b"\x00" if change > 0 else key[:-1]
+                    self.negative(t, bytes([0x27, level + 1]) + wrong, "key_wrong_length",
+                                  f"the key with {what} ({len(wrong)} bytes): NRC 0x13")
+                self.unlock(t, level)                       # a good key: what the attempts counted is cleared
+            if self.o.key is not None:
+                self._add("Security access", f"{name}: a key of the wrong length", key_length,
+                          "sendKey with a byte too many and a byte too few gets NRC 0x13; then the right key unlocks.")
+
             if self.o.lockout:
                 def lockout(t, level=level, session=session):
                     self.enter(t, session)
@@ -905,6 +940,68 @@ class Suite:
                         self.tester.quiet(b"\x3e\x80")               # the session stays
                     self.positive(t, bytes([0x27, level]), "after the delay: a seed again", echo=[level])
                 self._add("Security access", f"{name}: lockout after {self.o.attempts} wrong keys", lockout)
+
+            reset = self.d.services.get(0x11)
+            if self.o.lockout and self.o.destructive and reset is not None and \
+                    (not reset.sub_functions or 0x01 in reset.sub_functions) and \
+                    self.o.lockout_seconds > self.o.reset_time:          # else the delay is over before it is back
+                def lockout_reset(t, level=level, session=session):
+                    self.enter(t, session)
+                    for attempt in range(1, self.o.attempts + 1):
+                        seed = self.positive(t, bytes([0x27, level]), f"attempt {attempt}: requestSeed", echo=[level])
+                        if seed is None:
+                            return
+                        self.tester.ask(bytes([0x27, level + 1]) + bytes(byte ^ 0xFF for byte in seed[2:]))
+                    locked = time.monotonic()
+                    self.positive(t, b"\x11\x01", "locked out, then an ECU reset (11 01)", echo=[0x01])
+                    t.wait(self.o.reset_time)
+                    self.enter(t, session)
+                    if time.monotonic() - locked >= self.o.lockout_seconds:
+                        t.skip(f"the delay ({self.o.lockout_seconds:g} s) was over before the ECU was back")
+                    self.negative(t, bytes([0x27, level]), "delay_not_expired",
+                                  "after the reset, still locked out: NRC 0x37")
+                    deadline = time.monotonic() + self.o.lockout_seconds + 0.5
+                    while time.monotonic() < deadline:
+                        t.wait(min(2.0, max(0.0, deadline - time.monotonic())))
+                        self.tester.quiet(b"\x3e\x80")
+                    self.positive(t, bytes([0x27, level]), "after the delay: a seed again", echo=[level])
+                self._add("Security access", f"{name}: the lockout outlasts an ECU reset", lockout_reset,
+                          "Locked out by wrong keys, the ECU keeps its delay through an ECU reset (ISO 14229-1: "
+                          "the delay timer restarts after a power-on).")
+        self._levels_apart(service)
+
+    def _levels_apart(self, service):
+        """With two levels or more: unlocking one does not unlock the other."""
+        levels = sorted(self.d.security_levels)
+        if len(levels) < 2 or self.o.key is None:
+            return
+        first, other = levels[0], levels[1]
+        session = next((s for s in self.sessions() if service.sub_functions.get(first, service.access).allows(s)
+                        and service.sub_functions.get(other, service.access).allows(s)), None)
+        if session is None:
+            return
+        # Something the other level alone opens: a DID read, else a DID write, needing it and not the first.
+        needs_other = next((("22", did) for did, entry in sorted(self.d.dids.items()) if entry.read is not None
+                            and entry.read.levels == {other} and entry.read.allows(session)), None)
+
+        def case(t):
+            self.enter(t, session)
+            self.unlock(t, first)
+            raw = self.positive(t, bytes([0x27, other]), f"level 0x{first:02X} unlocked: requestSeed 0x{other:02X}",
+                                echo=[other])
+            if raw is not None:
+                t.check(any(raw[2:]), f"level 0x{other:02X} is still locked: its seed is not zero", _hex(raw))
+            if needs_other is not None:
+                _service, did = needs_other
+                self.negative(t, b"\x22" + did.to_bytes(2, "big"), "locked",
+                              f"22 {did:04X} (level 0x{other:02X} only) is still refused: NRC 0x33")
+            self.unlock(t, other)
+            if needs_other is not None:
+                _service, did = needs_other
+                self.positive(t, b"\x22" + did.to_bytes(2, "big"), f"level 0x{other:02X} unlocked: 22 {did:04X} "
+                              f"is read", echo=did.to_bytes(2, "big"))
+        self._add("Security access", f"Levels 0x{first:02X} and 0x{other:02X} are apart", case,
+                  "Unlocking one security level does not unlock another.")
 
     def _routines(self):
         if 0x31 not in self.d.services:

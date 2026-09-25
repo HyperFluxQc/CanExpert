@@ -31,6 +31,7 @@ SITUATIONS = {
     "invalid_key": ("A wrong key", (0x35,)),
     "attempts_exceeded": ("The wrong key that starts the lockout", (0x36,)),
     "delay_not_expired": ("requestSeed during the lockout delay", (0x37,)),
+    "key_wrong_length": ("A key of the wrong length", (0x13,)),
     "transfer_sequence": ("TransferData or RequestTransferExit out of order", (0x24,)),
     "transfer_format": ("A RequestDownload of a format the ECU does not take", (0x31,)),
     "transfer_active": ("A RequestDownload while one runs", (0x22,)),
@@ -40,8 +41,10 @@ SITUATIONS = {
     "roe_sequence": ("startResponseOnEvent with no event set up", (0x24,)),
     "io_unknown": ("InputOutputControl of a DID that has none", (0x31,)),
 }
-# What TestExpert accepted before it had a policy: a routine refused in the session with 0x7F or 0x7E.
-DEFAULT_EXTRA = {"routine_not_in_session": (0x7F, 0x7E)}
+# What passes besides ISO's code unless the policy says otherwise (with a note): what TestExpert accepted before
+# it had a policy - a routine refused in the session with 0x7F or 0x7E - and a key of the wrong length taken for a
+# wrong key (0x35), as many ECUs do.
+DEFAULT_EXTRA = {"routine_not_in_session": (0x7F, 0x7E), "key_wrong_length": (0x35,)}
 
 
 def nrc_text(nrc: int) -> str:

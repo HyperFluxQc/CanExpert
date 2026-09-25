@@ -801,7 +801,7 @@ The tests are grouped as DiVa groups them; untick any you do not want.
 | Message length | requests too short or too long get 0x13 |
 | Sub-functions | a sub-function the service does not have gets 0x12 |
 | Data identifiers | every DID read in every session — positive with its length where allowed, 0x31 where not, 0x33 while locked and positive once unlocked; a DID that does not exist; writing a read-only DID (0x31); the **values** of each DID the description gives fields for — each within its limits, in its text table, text that is text |
-| Security access | sendKey before requestSeed (0x24), a seed, a wrong key (0x35), unlocking, the zero seed once unlocked, locked again by a new session; a level that does not exist |
+| Security access | sendKey before requestSeed (0x24), a seed, a wrong key (0x35), unlocking, the zero seed once unlocked, locked again by a new session; a level that does not exist; **seeds that do not repeat** — four, each in a new session; with the key source, **a key of the wrong length** (a byte too many, a byte too few: 0x13, or 0x35 with a note) then the right key; with two levels or more, **levels apart** — unlocking one leaves the other locked (its seed, and what it alone opens: 0x33); with the lockout and destructive tests, **the lockout outlasting an ECU reset** (0x37 after it, a seed after the delay) |
 | Routines | each routine refused where it may not run (0x31) and while locked (0x33); a routine that does not exist; its stop and results asked before a start (0x24); the routines you allow **started**, their results asked and stopped |
 | Fault memory | 19 01, 19 02 and 19 0A answered in their format; a group of DTCs that does not exist (0x31); when the description lists the ECU's DTCs, **the ECU's DTCs are the description's** — every DTC it supports (19 0A) is listed, every listed one is supported, every one it reports (19 02 FF) is listed |
 | Input/output control | for the DIDs the description gives InputOutputControlByIdentifier: returnControlToECU (00) answered; with destructive tests, shortTermAdjustment (03) to the value read first, then control given back; a DID that has none (0x31) |
@@ -1084,7 +1084,9 @@ on DID `0101`, `86 01 02 08 19 02 08` one on DTCs becoming confirmed, `86 05 02`
 
 The **Access** tab has the main security level and as many more as needed, each with its own seed length
 and key: seed XOR a mask, or what a **seed & key DLL** (`GenerateKeyEx`) computes — give the UDS Console
-the same DLL and it unlocks. Each level unlocks on its own, until the session changes. A DID can be
+the same DLL and it unlocks. Each level unlocks on its own, until the session changes. A key of another
+length than the level's is a message of the wrong length (NRC `0x13`, not counted as a wrong key); wrong keys
+lock the ECU out (`0x36`, then `0x37` until the delay is over — an ECU reset does not end it). A DID can be
 readable only in some **Sessions** (elsewhere NRC `0x31`) or after unlocking a **Level** (NRC `0x33`) —
 DID `0200` shows both — and a **service rule** does the same for a whole service, with NRC `0x7F` and
 `0x33`.

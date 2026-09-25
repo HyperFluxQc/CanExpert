@@ -1150,6 +1150,8 @@ class DummyEcu:
         except SeedKeyError as exc:
             self.log(f"SecurityAccess level {level:02X}: {exc}")
             raise NegativeResponse(0x22) from None
+        if len(request) - 2 != len(expected):
+            raise NegativeResponse(0x13)          # a key of another length: the message is wrong, not the key
         if request[2:] != expected:
             self.state.failed_attempts += 1
             if self.state.failed_attempts >= self.config.max_attempts:
