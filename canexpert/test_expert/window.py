@@ -66,6 +66,8 @@ from canexpert.test_expert.policy_editor import PolicyEditor
 from canexpert.test_expert.sequence_editor import SequenceEditor
 from canexpert.test_expert.sequences import PRESETS, Attachment
 from canexpert.test_expert.tester import Tester
+from canexpert.test_expert.variant_dialog import IdentificationDialog
+from canexpert.test_expert.variants import Identification, identify, is_odx
 from canexpert.testing.report import COLOURS, summary_text
 from canexpert.testing.runner import INFO, PASS, PASSED
 from canexpert.testing.window import MemorySettings, step_text
@@ -143,6 +145,7 @@ class TestExpertWindow(QMainWindow):
         self.bus = self.worker = self.mailbox = None
         self.runner = self.thread = self.report = self.report_paths = self.recorder = None
         self.plan_path: Path | None = None           # the plan file the window's plan was read from or saved to
+        self.identification = Identification()        # how the variants are told apart, where the file does not say
         self.discovery_options = TestPlan().discovery
         self.comparison = None
         self.discovery_result = None
@@ -406,6 +409,33 @@ class TestExpertWindow(QMainWindow):
             button.clicked.connect(lambda _checked=False, slot=slot: slot())
             row.addWidget(button)
         layout.addLayout(row)
+        self.variant_box = QWidget()
+        variant_layout = QVBoxLayout(self.variant_box)
+        variant_layout.setContentsMargins(0, 0, 0, 0)
+        choose = QHBoxLayout()
+        choose.addWidget(QLabel("Variant"))
+        self.variant_combo = QComboBox()
+        self.variant_combo.setToolTip("The file has several variants: the one to test")
+        self.variant_combo.activated.connect(lambda _index: self.choose_variant(self.variant_combo.currentText()))
+        choose.addWidget(self.variant_combo, 1)
+        self.identify_btn = QPushButton("Identify")
+        self.identify_btn.setToolTip("Ask the ECU which variant it is (connect first)")
+        self.identify_btn.clicked.connect(lambda: self.identify_variant())
+        choose.addWidget(self.identify_btn)
+        variant_layout.addLayout(choose)
+        told = QHBoxLayout()
+        self.identify_box = QCheckBox("Identify it when connecting")
+        self.identify_box.toggled.connect(lambda _on: self._save_settings())
+        told.addWidget(self.identify_box)
+        told.addStretch()
+        self.told_btn = QPushButton("Told apart by...")
+        self.told_btn.setToolTip("The DID that tells the variants apart, and each variant's value (for a CDD or a "
+                                 "JSON description; an ODX file says it itself)")
+        self.told_btn.clicked.connect(lambda: self.edit_identification())
+        told.addWidget(self.told_btn)
+        variant_layout.addLayout(told)
+        self.variant_box.setVisible(False)
+        layout.addWidget(self.variant_box)
         self.description_tree = QTreeWidget()
         self.description_tree.setHeaderLabels(["Description", "Where"])
         self.description_tree.setColumnWidth(0, 220)
@@ -542,13 +572,14 @@ class TestExpertWindow(QMainWindow):
 
     # --- the description --------------------------------------------------------------------------------------
 
-    def open_description(self, path=None):
+    def open_description(self, path=None, variant=None):
+        """Read a description file (asked for when not given); variant: the one to read (default: the first)."""
         if path is None:
             path, _ = QFileDialog.getOpenFileName(self, "Diagnostic description", str(ODX_DIR), FILE_FILTER)
             if not path:
                 return None
         try:
-            description = load_description(path)
+            description = load_description(path, variant or None)
         except Exception as exc:                            # a file none of the loaders can read
             self._write(f"{Path(path).name} could not be read: {type(exc).__name__}: {exc}")
             return None
@@ -556,6 +587,44 @@ class TestExpertWindow(QMainWindow):
         self.set_description(description)
         self._save_settings()
         return description
+
+    # --- variants ----------------------------------------------------------------------------------------------
+
+    def choose_variant(self, variant):
+        """Read the description's file again, as that variant."""
+        if not self._description_path or variant == (self.description.variant if self.description else ""):
+            return self.description
+        self._write(f"Variant {variant}")
+        return self.open_description(self._description_path, variant)
+
+    def identify_variant(self):
+        """Ask the ECU which variant it is, and test it as that one."""
+        if self.description is None or len(self.description.variants) < 2:
+            return None
+        if self.mailbox is None:
+            self._write("Connect to the ECU first.")
+            return None
+        if not is_odx(self._description_path) and (self.identification.did is None or not self.identification.values):
+            if not self.edit_identification():
+                return None
+        plan = self.plan()
+        tester = Tester(self.mailbox, plan.connection.transport(), plan.connection.functional_id)
+        variant, detail = identify(self._description_path, tester, self.identification)
+        if variant is None:
+            self._write(f"The variant could not be told: {detail}")
+            self.status.setText("The variant could not be told; see the log.")
+            return None
+        self._write(f"The ECU is the variant {variant}: {detail}")
+        self.choose_variant(variant)
+        return variant
+
+    def edit_identification(self):
+        dialog = IdentificationDialog(self.description.variants if self.description else [], self.identification, self)
+        if not dialog.exec_():
+            return None
+        self.identification = dialog.identification()
+        self._save_settings()
+        return self.identification
 
     def use_dummy(self):
         self._description_path = ""
@@ -565,6 +634,13 @@ class TestExpertWindow(QMainWindow):
 
     def set_description(self, description: EcuDescription):
         self.description = description
+        self.variant_combo.blockSignals(True)
+        self.variant_combo.clear()
+        self.variant_combo.addItems(description.variants)
+        self.variant_combo.setCurrentText(description.variant)
+        self.variant_combo.blockSignals(False)
+        self.variant_box.setVisible(len(description.variants) > 1)
+        self.told_btn.setVisible(not is_odx(self._description_path))
         self.description_label.setText(f"<b>{description.name}</b><br>{description.summary()}"
                                        f"<br><span style='color:gray'>{description.source}</span>")
         self._fill_description()
@@ -658,6 +734,9 @@ class TestExpertWindow(QMainWindow):
         plan = TestPlan(path=target if portable else None)
         plan.name = self.plan_name.text().strip()
         plan.description = plan.relative(self._description_path) if self._description_path else ""
+        plan.variant = self.description.variant if self.description and len(self.description.variants) > 1 else ""
+        plan.identify = self.identify_box.isChecked()
+        plan.identification = Identification(self.identification.did, dict(self.identification.values))
         try:
             bitrate = int(self.bitrate.currentText())
         except ValueError:                                  # a bit rate being typed
@@ -725,9 +804,14 @@ class TestExpertWindow(QMainWindow):
         self.policy_editor.set_deviations(plan.deviations)
         self.discovery_options = plan.discovery
         self._items = {}                                    # the plan says what is left out, not the old tree
+        self.identification = Identification(plan.identification.did, dict(plan.identification.values))
+        self.identify_box.blockSignals(True)
+        self.identify_box.setChecked(plan.identify)
+        self.identify_box.blockSignals(False)
         description = plan.resolve(plan.description)
         if description is not None and description.is_file():
-            if self.open_description(description) is None:
+            if self.open_description(description, plan.variant) is None and \
+                    (not plan.variant or self.open_description(description) is None):
                 self.use_dummy()
         else:
             if description is not None:
@@ -994,6 +1078,8 @@ class TestExpertWindow(QMainWindow):
         self._show_connection(True)
         self.connection_label.setText(f"Connected: {self.interface.currentText()} {self.channel.currentText()}")
         self._write(f"Connected to {self.interface.currentText()} {self.channel.currentText()}")
+        if self.identify_box.isChecked() and self.description is not None and len(self.description.variants) > 1:
+            self.identify_variant()
         return True
 
     def disconnect_ecu(self):

@@ -24,6 +24,8 @@ DID_NAMES = {0xF187: "SparePartNumber", 0xF18C: "ECUSerialNumber", 0xF190: "VIN"
 # The default DBC's signals a DID can follow: (scale, unit) of their raw value.
 SIGNAL_SCALES = {"EngineData.Temperature": (0.1, "degC"), "EngineData.Pressure": (0.01, "bar")}
 SESSION_TEXTS = {DEFAULT_SESSION: "Default", PROGRAMMING_SESSION: "Programming", EXTENDED_SESSION: "Extended"}
+# Texts of a length of their own: the software version, which the bootloader and a flashed image change.
+VARIABLE_TEXT = {0xF195}
 
 
 def did_fields(did: int, name: str, data: bytes, signal: str = "", valid=()) -> list[DataField]:
@@ -35,6 +37,8 @@ def did_fields(did: int, name: str, data: bytes, signal: str = "", valid=()) -> 
         return [DataField("Seconds", 0, 32, unit="s")]
     if did == 0x0110:
         return [DataField("Speed", 0, bits, valid=[tuple(pair) for pair in valid], unit="rpm")]
+    if did in VARIABLE_TEXT:
+        return [DataField("Text", 0, 0, "ascii")]
     if valid:
         return [DataField(name, 0, bits, valid=[tuple(pair) for pair in valid])]
     if signal:
@@ -90,7 +94,7 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
             write_sessions = set(did_sessions or ALL_SESSIONS) & set(SERVICE_SESSIONS[0x2E])
             write = Access(write_sessions, {level} if level else set(levels))     # WDBI needs some unlocked level
         name = DID_NAMES.get(did, f"DID 0x{did:04X}")
-        description.dids[did] = DataIdentifier(did, name, len(data), read, write,
+        description.dids[did] = DataIdentifier(did, name, None if did in VARIABLE_TEXT else len(data), read, write,
                                                did_fields(did, name, data, signal, tables.valid.get(did, ())))
     for did, (name, length) in BUILT_IN_DIDS.items():
         description.dids.setdefault(did, DataIdentifier(did, name, length, Access(), None,

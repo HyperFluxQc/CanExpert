@@ -1,7 +1,8 @@
 """TestExpert: descriptions (JSON, how states become sessions and levels, CDD, ODX), the tests generated from
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
 post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
-the ECU has, comparing two runs, test plans and their run from the command line, and the window."""
+the ECU has, comparing two runs, test plans and their run from the command line, a description's variants and
+telling which one the ECU is, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -21,11 +22,11 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QToolButton
 
 from canexpert.paths import ODX_DIR
-from canexpert.simulator.ecu import DummyEcu, EcuConfig
+from canexpert.simulator.ecu import BOOT_VERSION, DummyEcu, EcuConfig
 from canexpert.test_expert import cli
 from canexpert.test_expert import odx as odx_loader
 from canexpert.test_expert import window as window_module
-from canexpert.test_expert.cdd import CddError, load_cdd
+from canexpert.test_expert.cdd import CddError, cdd_variants, load_cdd
 from canexpert.test_expert.compare import (answer_of, compare_runs, comparison_page, load_results, previous_results,
                                            results_dict)
 from canexpert.test_expert.coverage import Coverage, coverage_html, untested
@@ -40,6 +41,7 @@ from canexpert.test_expert.policy import Deviation, NrcPolicy, accept_function, 
 from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
                                              parse_frame, parse_hex, parse_script)
 from canexpert.test_expert.tester import Tester
+from canexpert.test_expert.variants import Identification, identify, is_odx
 from canexpert.testing.runner import Runner
 from canexpert.testing.window import MemorySettings
 from canexpert.uds.seed_key import xor_key
@@ -249,8 +251,7 @@ class OdxTest(unittest.TestCase):
             service(b"\x10\x03", "Extended", (), [(default, extended)]),
             service(b"\x27\x01", "Seed", [extended]), service(b"\x27\x02", "Key", [extended], [(locked, unlocked)]),
             service(b"\x2e\xf1\x90", "WriteVIN", [extended, unlocked])])
-        with patch.object(odx_loader, "load_database", return_value=None), \
-                patch.object(odx_loader, "first_layer", return_value=layer):
+        with patch.object(odx_loader, "load_database", return_value=SimpleNamespace(ecus=[layer], base_variants=[])):
             d = odx_loader.load_odx("ecu.odx")
         self.assertEqual(sorted(d.sessions), [1, 3])
         self.assertEqual(d.dids[0xF190].write, Access({3}, {1}))
@@ -313,6 +314,115 @@ class OdxTest(unittest.TestCase):
 
     def test_by_extension(self):
         self.assertEqual(odx_loader.load_description(DUMMY_CDD).name, "DummyECU (CommonDiagnostics)")
+
+
+class VariantTest(unittest.TestCase):
+    """A file's variants (a CDD's VARs, ODX ECU variants): reading the one chosen, and asking the ECU which it is."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+
+    def two_variants(self):
+        start, end = OLD_STYLE_CDD.index("<VAR>"), OLD_STYLE_CDD.index("</VAR>") + len("</VAR>")
+        boot = OLD_STYLE_CDD[start:end].replace("<QUAL>COMMON</QUAL>", "<QUAL>BOOT</QUAL>").replace("v='4660'", "v='4661'")
+        path = self.folder / "two.cdd"
+        path.write_text(OLD_STYLE_CDD[:end] + boot + OLD_STYLE_CDD[end:], encoding="iso-8859-1")
+        return path
+
+    def test_a_cdds_variants(self):
+        path = self.two_variants()
+        self.assertEqual(cdd_variants(path), ["COMMON", "BOOT"])
+        first = load_cdd(path)
+        self.assertEqual((first.variants, first.variant), (["COMMON", "BOOT"], "COMMON"), "the first, unless chosen")
+        self.assertIn(0x1234, first.dids)
+        boot = odx_loader.load_description(path, "BOOT")
+        self.assertEqual(boot.variant, "BOOT")
+        self.assertEqual((0x1235 in boot.dids, 0x1234 in boot.dids), (True, False))
+        with self.assertRaises(CddError):
+            load_cdd(path, "NONE")
+        boot.save(self.folder / "boot.json")
+        again = EcuDescription.load(self.folder / "boot.json")
+        self.assertEqual((again.variants, again.variant), (["COMMON", "BOOT"], "BOOT"), "kept in a JSON description")
+
+    def test_an_odx_files_variants(self):
+        application = odx_loader.load_odx(DUMMY_ODX)
+        self.assertEqual(application.variants, ["Application", "Bootloader", "DummyECU"], "ECU variants, then the base")
+        self.assertEqual(application.variant, "Application")
+        boot = odx_loader.load_description(DUMMY_ODX, "Bootloader")
+        self.assertEqual(boot.variant, "Bootloader")
+        self.assertIn(0x19, application.services)
+        self.assertNotIn(0x19, boot.services, "the bootloader has no fault memory: NOT-INHERITED-DIAG-COMMS")
+        self.assertIn(0x0201, application.routines)
+        self.assertNotIn(0x0201, boot.routines)
+        self.assertLess(len(Suite(boot).cases), len(Suite(application).cases))
+        with self.assertRaises(ValueError):
+            odx_loader.load_odx(DUMMY_ODX, "Nothing")
+
+    def test_identification_values(self):
+        told = Identification(0xF195, {"App": "APP-1.0.0", "Boot": "42 4F 4F 54"})
+        self.assertEqual(Identification.from_dict(told.to_dict()), told)
+        self.assertEqual(told.to_dict()["did"], "F195")
+        self.assertEqual(Identification.from_dict(None), Identification())
+        self.assertTrue(told.matches("APP-1.0.0", b"APP-1.0.0"))
+        self.assertTrue(told.matches("42 4F 4F 54", b"BOOT"), "or its bytes, in hex")
+        self.assertFalse(told.matches("APP-1.0.0", b"APP-2.0.0"))
+        self.assertEqual((is_odx(DUMMY_ODX), is_odx(DUMMY_CDD), is_odx("found.json"), is_odx("")),
+                         (True, False, False, False))
+
+    def test_asking_the_ecu(self):
+        bench = Bench(self)
+        tester = Tester(bench.tester_bus, TRANSPORT, 0x7DF)
+        variant, detail = identify(DUMMY_ODX, tester)
+        self.assertEqual(variant, "Application", detail)
+        self.assertIn("22 F1 95", detail, "the ECU-VARIANT-PATTERN's request")
+        bench.ecu.state.bootloader = True
+        self.assertEqual(identify(DUMMY_ODX, tester)[0], "Bootloader")
+        told = Identification(0xF195, {"App": "APP-1.0.0", "Boot": BOOT_VERSION.hex(" ")})
+        self.assertEqual(identify(DUMMY_CDD, tester, told), ("Boot", "F195 answers BOOTLOADER"), "a CDD: the plan's DID")
+        bench.ecu.state.bootloader = False
+        self.assertEqual(identify(DUMMY_CDD, tester, told)[0], "App")
+        variant, detail = identify(DUMMY_CDD, tester)
+        self.assertEqual(variant, None)
+        self.assertIn("names no DID", detail)
+        variant, detail = identify(DUMMY_CDD, tester, Identification(0x1234, {"App": "01"}))
+        self.assertEqual(variant, None)
+        self.assertIn("22 1234", detail)
+        variant, detail = identify(DUMMY_CDD, tester, Identification(0xF195, {"Other": "APP-9"}))
+        self.assertEqual(variant, None)
+        self.assertIn("no variant expects it", detail)
+
+    def test_in_a_plan_and_from_the_command_line(self):
+        told = Identification(0xF195, {"Application": "APP-1.0.0"})
+        plan = TestPlan("Variants", description=str(DUMMY_ODX), variant="Bootloader", identify=True,
+                        identification=told)
+        path = self.folder / "variants.json"
+        plan.save(path)
+        again = TestPlan.load(path)
+        self.assertEqual((again.variant, again.identify, again.identification), ("Bootloader", True, told))
+        self.assertEqual(again.load_description().variant, "Bootloader")
+        keep = "sessions.default_session_10_01"
+        again.excluded = [case.name for case in Suite(odx_loader.load_odx(DUMMY_ODX)).cases if case.name != keep]
+        again.save(path)
+        reports = self.folder / "reports"
+        with patch("sys.stdout") as out:
+            code = cli.main([str(path), "--run", "--dummy-ecu", "--report-dir", str(reports)])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_PASSED, printed)
+        self.assertIn("the ECU is the variant Application", printed, "asked, not the plan's Bootloader")
+        with patch("sys.stdout") as out:
+            code = cli.main([str(DUMMY_ODX), "--run", "--dummy-ecu", "--variant", "Nothing"])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_NOT_RUN)
+        self.assertIn("no variant 'Nothing'", printed)
+        cdd = TestPlan("CDD", description=str(self.two_variants()), identify=True)
+        cdd.save(path)
+        with patch("sys.stdout") as out:
+            code = cli.main([str(path), "--run", "--dummy-ecu"])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_NOT_RUN, "a CDD without the plan's DID: it cannot be told")
+        self.assertIn("could not be told", printed)
 
 
 class Bench:
@@ -952,6 +1062,62 @@ class WindowTest(unittest.TestCase):
         self.assertIn("PASSED", self.window.status.text())
         self.assertIn("Services", self.window.coverage_view.toPlainText())
         self.assertIn("ECU: F195 systemSupplierECUSoftwareVersionNumber = APP-1.0.0", self.window.log.toPlainText())
+
+    def test_variants_in_the_window(self):
+        window = self.window
+        self.assertTrue(window.variant_box.isHidden(), "the Dummy ECU's own description: one variant")
+        window.open_description(DUMMY_ODX)
+        self.assertFalse(window.variant_box.isHidden())
+        self.assertEqual([window.variant_combo.itemText(i) for i in range(window.variant_combo.count())],
+                         ["Application", "Bootloader", "DummyECU"])
+        self.assertTrue(window.told_btn.isHidden(), "an ODX file says how its variants are told apart")
+        application = len(window.suite.cases)
+        window.choose_variant("Bootloader")
+        self.assertEqual((window.description.variant, window.variant_combo.currentText()), ("Bootloader",) * 2)
+        self.assertLess(len(window.suite.cases), application)
+        self.assertIsNone(window.identify_variant(), "not connected")
+        self.assertIn("Connect to the ECU first", window.log.toPlainText())
+        window.identify_box.setChecked(True)
+        plan = window.plan()
+        self.assertEqual((plan.variant, plan.identify), ("Bootloader", True))
+        other = window_module.TestExpertWindow(self.settings)
+        self.addCleanup(other.close)
+        self.assertEqual(other.description.variant, "Bootloader", "kept for the next start")
+        self.assertTrue(other.identify_box.isChecked())
+
+        bench = Bench(self)
+        window.request_id.setValue(0x7E0)
+        window.response_id.setValue(0x7E8)
+        self.assertTrue(window.connect_ecu(can.Bus(interface="virtual", channel=bench.channel)))
+        self.addCleanup(window.disconnect_ecu)
+        self.assertEqual(window.description.variant, "Application", "asked when connecting")
+        self.assertIn("The ECU is the variant Application", window.log.toPlainText())
+        bench.ecu.state.bootloader = True
+        self.assertEqual(window.identify_variant(), "Bootloader")
+        self.assertEqual(len(window.suite.cases), len(Suite(odx_loader.load_odx(DUMMY_ODX, "Bootloader"),
+                                                            window.options()).cases))
+
+        window.open_description(VariantTest.two_variants(self))
+        self.assertFalse(window.told_btn.isHidden(), "a CDD: the plan says how")
+        with patch.object(window_module.IdentificationDialog, "exec_", return_value=False):
+            self.assertIsNone(window.identify_variant(), "no DID given")
+        window.identification = Identification(0xF195, {"COMMON": "BOOTLOADER"})
+        self.assertEqual(window.identify_variant(), "COMMON")
+        self.assertEqual(window.plan().identification, window.identification)
+
+    def test_the_identification_dialog(self):
+        from canexpert.test_expert.variant_dialog import IdentificationDialog
+        dialog = IdentificationDialog(["A", "B"], Identification(0xF1A0, {"A": "01"}))
+        self.addCleanup(dialog.close)
+        self.assertEqual(dialog.did.text(), "F1A0")
+        dialog.table.item(1, 1).setText("02 03")
+        self.assertEqual(dialog.identification(), Identification(0xF1A0, {"A": "01", "B": "02 03"}))
+        dialog.did.setText("zz")
+        dialog._accept()
+        self.assertIn("four hex digits", dialog.problem.text())
+        dialog.did.setText("12345")
+        dialog._accept()
+        self.assertIn("four hex digits", dialog.problem.text())
 
     def test_sequences_in_the_window(self):
         window = self.window

@@ -109,8 +109,14 @@ class Writer:
         else:
             _element(compu, "CATEGORY", "IDENTICAL")
         text = field.encoding == "ascii"
-        _element(dop, "DIAG-CODED-TYPE", BASE__DATA__TYPE="A_ASCIISTRING" if text else "A_UINT32",
-                 **{TYPE: "STANDARD-LENGTH-TYPE"}).append(_leaf("BIT-LENGTH", field.bits))
+        if field.variable:                               # text of a length of its own, up to the end
+            coded = _element(dop, "DIAG-CODED-TYPE", BASE__DATA__TYPE="A_ASCIISTRING" if text else "A_BYTEFIELD",
+                             TERMINATION="END-OF-PDU", **{TYPE: "MIN-MAX-LENGTH-TYPE"})
+            coded.append(_leaf("MAX-LENGTH", 32))
+            coded.append(_leaf("MIN-LENGTH", 1))
+        else:
+            _element(dop, "DIAG-CODED-TYPE", BASE__DATA__TYPE="A_ASCIISTRING" if text else "A_UINT32",
+                     **{TYPE: "STANDARD-LENGTH-TYPE"}).append(_leaf("BIT-LENGTH", field.bits))
         physical = "A_UNICODE2STRING" if text or field.texts else \
             "A_FLOAT64" if (field.scale, field.shift) != (1.0, 0.0) else "A_UINT32"
         _element(dop, "PHYSICAL-TYPE", BASE__DATA__TYPE=physical)
@@ -300,7 +306,7 @@ class _Field:
     def __init__(self, name, bits):
         self.name, self.bits = name, bits
         self.encoding, self.valid, self.texts, self.scale, self.shift, self.unit = "bytes", [], {}, 1.0, 0.0, ""
-        self.numeric = False
+        self.numeric = self.variable = False
 
 
 def _leaf(tag, text):

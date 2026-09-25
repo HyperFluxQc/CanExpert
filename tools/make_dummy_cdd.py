@@ -19,6 +19,7 @@ from canexpert.simulator.ecu import EcuConfig  # noqa: E402
 from canexpert.test_expert.dummy import dummy_description  # noqa: E402
 
 TARGET = ROOT / "ODX" / "dummy_ecu.cdd"
+MAX_TEXT = 32                       # the longest text of a variable length
 
 
 class Writer:
@@ -94,9 +95,10 @@ class Writer:
                 ElementTree.SubElement(element, "COMP", f=f"{factor:g}", o=f"{offset:g}", div=str(divisor), **limits)
         elif not field.numeric:
             element = ElementTree.SubElement(self.datatypes, "IDENT", id=self._id("dt"))
-            self._named(element, f"{field.name}{field.bits // 8}")
+            self._named(element, f"{field.name}{field.bits // 8 or 'Any'}")
+            sizes = (1, MAX_TEXT) if field.variable else (field.bits // 8, field.bits // 8)
             ElementTree.SubElement(element, "CVALUETYPE", bl="8", bo="21", enc=encoding, sz="no", qty="field",
-                                   minsz=str(field.bits // 8), maxsz=str(field.bits // 8))
+                                   minsz=str(sizes[0]), maxsz=str(sizes[1]))
             ElementTree.SubElement(element, "PVALUETYPE", bl="8", bo="21", enc=encoding, sz="no")
         else:
             element = ElementTree.SubElement(self.datatypes, "IDENT", id=self._id("dt"))

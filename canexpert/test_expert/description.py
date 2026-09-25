@@ -68,8 +68,9 @@ ENCODINGS = ("unsigned", "signed", "bcd", "ascii", "bytes")
 @dataclass
 class DataField:
     """A value in a DID's data record: its bits (position of the first, most significant, from the record's
-    start), how they are coded, the coded values that are valid ([] any; a text table's own values when it has
-    one), and how the report shows it (text, or coded * scale + shift and the unit)."""
+    start; bits 0: text or bytes up to the record's end, of any length), how they are coded, the coded values
+    that are valid ([] any; a text table's own values when it has one), and how the report shows it (text, or
+    coded * scale + shift and the unit)."""
     name: str
     position: int
     bits: int
@@ -82,7 +83,12 @@ class DataField:
 
     @property
     def numeric(self) -> bool:
-        return self.encoding in ("unsigned", "signed", "bcd") and self.bits <= 64
+        return self.encoding in ("unsigned", "signed", "bcd") and 0 < self.bits <= 64
+
+    @property
+    def variable(self) -> bool:
+        """Text or bytes up to the end of the record."""
+        return self.bits == 0 and self.encoding in ("ascii", "bytes")
 
     def limits(self) -> list:
         """The valid coded ranges: its own, else its text table's values."""
@@ -94,6 +100,8 @@ class DataField:
         """Its coded value in record: an int for a number (a BCD's digits as they read), bytes for text and
         bytes; None when the record is too short, or a BCD has a nibble above 9."""
         record = bytes(record)
+        if self.variable:
+            return record[self.position // 8:] if self.position % 8 == 0 and self.position < len(record) * 8 else None
         end = self.position + self.bits
         if self.bits <= 0 or end > len(record) * 8:
             return None
@@ -137,7 +145,7 @@ class DataField:
         """Whether its value in record is valid, and what the report says of it."""
         value = self.coded(record)
         if value is None:
-            return False, "not in the record" if self.position + self.bits > len(record) * 8 else \
+            return False, "not in the record" if self.position + max(self.bits, 1) > len(record) * 8 else \
                 "not a BCD number"
         if isinstance(value, bytes):
             trimmed = value.rstrip(b"\x00\xff ")
@@ -200,6 +208,8 @@ class EcuDescription:
     warnings: list = field(default_factory=list)          # what a loader could not read
     unknown: set = field(default_factory=set)             # what it does not say: "writing" (which DIDs may be
     # written), "sub-functions", "starting routines" - the tests that would rely on it are left out
+    variants: list = field(default_factory=list)          # the variants its file has (CDD VARs, ODX variants)
+    variant: str = ""                                     # the one read
 
     def service(self, sid: int) -> Service | None:
         return self.services.get(sid)
@@ -245,6 +255,7 @@ class EcuDescription:
                          for r in sorted(self.routines.values(), key=lambda r: r.rid)],
             "warnings": list(self.warnings),
             "unknown": sorted(self.unknown),
+            "variants": list(self.variants), "variant": self.variant,
         }
 
     @classmethod
@@ -273,6 +284,8 @@ class EcuDescription:
                                                 {int(sub["id"]): Access.from_dict(sub) for sub in item.get("sub_functions", ())})
         description.warnings = list(values.get("warnings", ()))
         description.unknown = set(values.get("unknown", ()))
+        description.variants = [str(name) for name in values.get("variants", ())]
+        description.variant = str(values.get("variant", ""))
         return description
 
     def save(self, path):

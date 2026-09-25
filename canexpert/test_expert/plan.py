@@ -20,6 +20,7 @@ from canexpert.test_expert.discovery import DiscoveryOptions
 from canexpert.test_expert.generator import Options
 from canexpert.test_expert.policy import Deviation, NrcPolicy
 from canexpert.test_expert.sequences import Sequence
+from canexpert.test_expert.variants import Identification
 
 PLAN_FORMAT = "TestExpert plan"
 PLAN_VERSION = 1
@@ -134,6 +135,9 @@ class TestPlan:
     nrc_policy: NrcPolicy = field(default_factory=NrcPolicy)
     deviations: list = field(default_factory=list)     # Deviation: failures accepted
     discovery: DiscoveryOptions = field(default_factory=DiscoveryOptions)
+    identify: bool = False                # tell the ECU's variant when connecting (before a run without the window)
+    identification: Identification = field(default_factory=Identification)   # for files that do not say how
+    variant: str = ""                     # the variant of the description's file to read; "": its first
     path: Path | None = None              # where it was read from or saved to (not saved)
 
     # --- files -----------------------------------------------------------------------------------------
@@ -169,7 +173,7 @@ class TestPlan:
             return dummy_description()
         if not path.is_file():
             raise PlanError(f"the description {path} is not there")
-        return load_description(path)
+        return load_description(path, self.variant or None)
 
     def make_options(self) -> Options:
         values = {name: self.options[name] for name in OPTION_NAMES if name in self.options}
@@ -182,6 +186,7 @@ class TestPlan:
 
     def to_dict(self) -> dict:
         return {"format": PLAN_FORMAT, "version": PLAN_VERSION, "name": self.name, "description": self.description,
+                "variant": self.variant, "identify": self.identify, "identification": self.identification.to_dict(),
                 "connection": self.connection.to_dict(), "options": dict(self.options), "key": self.key.to_dict(),
                 "record": self.record, "reports": self.reports, "excluded": sorted(self.excluded),
                 "sequences": [sequence.to_dict() for sequence in self.sequences],
@@ -201,15 +206,17 @@ class TestPlan:
             options = {name: getattr(Options(), name) for name in OPTION_NAMES}
             options.update({name: value for name, value in (values.get("options") or {}).items()
                             if name in OPTION_NAMES})
-            return cls(str(values.get("name", "")), str(values.get("description", "")),
-                       Connection.from_dict(values.get("connection")), options, KeySource.from_dict(values.get("key")),
-                       bool(values.get("record", False)), str(values.get("reports", "")),
-                       [str(name) for name in values.get("excluded", ())],
-                       [Sequence.from_dict(item) for item in values.get("sequences", ())],
-                       NrcPolicy.from_dict(values.get("nrc_policy")),
-                       [Deviation.from_dict(item) for item in values.get("deviations", ())],
-                       _discovery(values.get("discovery")),
-                       Path(path) if path is not None else None)
+            return cls(name=str(values.get("name", "")), description=str(values.get("description", "")),
+                       connection=Connection.from_dict(values.get("connection")), options=options,
+                       key=KeySource.from_dict(values.get("key")), record=bool(values.get("record", False)),
+                       reports=str(values.get("reports", "")),
+                       excluded=[str(name) for name in values.get("excluded", ())],
+                       sequences=[Sequence.from_dict(item) for item in values.get("sequences", ())],
+                       nrc_policy=NrcPolicy.from_dict(values.get("nrc_policy")),
+                       deviations=[Deviation.from_dict(item) for item in values.get("deviations", ())],
+                       discovery=_discovery(values.get("discovery")), identify=bool(values.get("identify", False)),
+                       identification=Identification.from_dict(values.get("identification")),
+                       variant=str(values.get("variant", "") or ""), path=Path(path) if path is not None else None)
         except (TypeError, ValueError, AttributeError) as exc:
             raise PlanError(f"the plan cannot be read: {exc}") from None
 

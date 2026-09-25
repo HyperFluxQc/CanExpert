@@ -160,9 +160,12 @@ class _Document:
         return elements
 
     def record(self, instance) -> tuple[int | None, list[DataField]]:
-        """(bytes, fields) of an instance's data record; (None, []) when it has none, or no fixed layout."""
+        """(bytes, fields) of an instance's data record; (None, []) when it has none, or no fixed layout; (None,
+        fields) when its last field is text or bytes of a length of their own."""
         fields = []
         bits = self._walk(self._record_elements(instance), fields, 0)
+        if fields and fields[-1].variable:
+            return None, fields
         return ((bits + 7) // 8, fields) if bits else (None, [])
 
     def _walk(self, elements, fields, position) -> int | None:
@@ -172,6 +175,8 @@ class _Document:
             tag = element.tag
             if tag in ("NAME", "QUAL", "DESC"):
                 continue
+            if fields and fields[-1].variable:
+                return None                                       # nothing is known after a field of any length
             if tag in ("DATAOBJ", "SPECDATAOBJ"):
                 field = self._field(element, position)
                 if field is None:
@@ -204,17 +209,17 @@ class _Document:
         coded = datatype.find("CVALUETYPE") if datatype is not None else None
         if coded is None or coded.get("sz") == "yes":             # sz: the value says its own size
             return None
+        encoding = ENCODINGS.get(coded.get("enc", "uns"), "bytes")
         try:
             width = int(coded.get("bl", "0"))
             if coded.get("qty") == "field":
-                if coded.get("minsz") != coded.get("maxsz"):
-                    return None                                   # a variable length
+                if coded.get("minsz") != coded.get("maxsz"):          # a variable length: text or bytes to the end
+                    return DataField(_name(data) or "Value", position, 0, "ascii" if encoding == "ascii" else "bytes")
                 width *= int(coded.get("maxsz", "1"))
         except ValueError:
             return None
         if width <= 0:
             return None
-        encoding = ENCODINGS.get(coded.get("enc", "uns"), "bytes")
         if coded.get("qty") == "field" and encoding != "ascii":
             encoding = "bytes"
         texts, valid, scale, shift = {}, [], 1.0, 0.0
@@ -281,6 +286,14 @@ class _Document:
         return raw
 
 
+def cdd_variants(path) -> list[str]:
+    """The qualifiers of a CDD's variants (VARs), in the file's order."""
+    root = ElementTree.parse(str(path)).getroot()
+    ecudoc = root.find("ECUDOC") if root.tag != "ECUDOC" else root
+    ecu = ecudoc.find("ECU") if ecudoc is not None else None
+    return [_name(var) for var in ecu.findall("VAR")] if ecu is not None else []
+
+
 def load_cdd(path, variant: str | None = None) -> EcuDescription:
     """The description of a CDD file; variant: the qualifier of the VAR to read (default: the first)."""
     try:
@@ -292,7 +305,10 @@ def load_cdd(path, variant: str | None = None) -> EcuDescription:
     variants = ecu.findall("VAR") if ecu is not None else []
     if not variants:
         raise CddError("no ECU/VAR: the document describes no variant")
-    chosen = next((var for var in variants if variant and _name(var) == variant), variants[0])
+    chosen = next((var for var in variants if variant and _name(var) == variant), None)
+    if chosen is None and variant:
+        raise CddError(f"no variant {variant!r}: the file has {', '.join(_name(var) for var in variants)}")
+    chosen = chosen if chosen is not None else variants[0]
     states, _order = document.states()
     raw = document.services(chosen)
     ecu_name = _name(ecu) or Path(path).stem
@@ -311,6 +327,6 @@ def load_cdd(path, variant: str | None = None) -> EcuDescription:
         description.warnings.insert(0, "This looks like a KWP2000 (ISO 14230) description, not a UDS one: sessions "
                                        "81, 85..., data by local identifier (21, 3B), ECU identification (1A). "
                                        "TestExpert tests UDS (ISO 14229-1): many of its tests do not apply")
-    if len(variants) > 1:
-        description.warnings.append(f"{len(variants)} variants; read: {_name(chosen) or 'the first'}")
+    description.variants = [_name(var) for var in variants]
+    description.variant = _name(chosen)
     return description

@@ -174,12 +174,13 @@
               <PHYSICAL-TYPE BASE-DATA-TYPE="A_UNICODE2STRING" />
             </DATA-OBJECT-PROP>
             <DATA-OBJECT-PROP ID="DOP.10">
-              <SHORT-NAME>Text_72</SHORT-NAME>
+              <SHORT-NAME>Text_0</SHORT-NAME>
               <COMPU-METHOD>
                 <CATEGORY>IDENTICAL</CATEGORY>
               </COMPU-METHOD>
-              <DIAG-CODED-TYPE BASE-DATA-TYPE="A_ASCIISTRING" xsi:type="STANDARD-LENGTH-TYPE">
-                <BIT-LENGTH>72</BIT-LENGTH>
+              <DIAG-CODED-TYPE BASE-DATA-TYPE="A_ASCIISTRING" TERMINATION="END-OF-PDU" xsi:type="MIN-MAX-LENGTH-TYPE">
+                <MAX-LENGTH>32</MAX-LENGTH>
+                <MIN-LENGTH>1</MIN-LENGTH>
               </DIAG-CODED-TYPE>
               <PHYSICAL-TYPE BASE-DATA-TYPE="A_UNICODE2STRING" />
             </DATA-OBJECT-PROP>

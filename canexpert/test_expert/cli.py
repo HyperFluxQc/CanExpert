@@ -7,6 +7,8 @@ for a bench script or a CI server, which read the exit code and the JUnit report
     python test_expert.py nightly.json --run                 run a plan; exit code 0 passed, 1 failed, 2 could not run
     python test_expert.py nightly.json --run --junit results.xml --report-dir reports
     python test_expert.py nightly.json --run --channel 1     the plan, on another channel
+    python test_expert.py ecu.pdx --run --identify           ask the ECU which of the file's variants it is, test that one
+    python test_expert.py ecu.cdd --run --variant BOOT       the file's variant BOOT
     python test_expert.py --run --dummy-ecu                  the built-in description against a Dummy ECU in this process
     python test_expert.py nightly.json --discover            ask the ECU what it has; exit code 0 when it matches
                                                              the description, 1 when it does not
@@ -40,6 +42,11 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel", help="with --run: the channel, instead of the plan's")
     parser.add_argument("--bitrate", type=int, help="with --run: the bit rate, instead of the plan's")
     parser.add_argument("--quiet", action="store_true", help="with --run: print the summary only")
+    parser.add_argument("--variant", help="the variant of the description to test (a CDD's VAR, an ODX variant)")
+    parser.add_argument("--identify", action="store_true",
+                        help="with --run or --discover: ask the ECU which of the description's variants it is, and "
+                             "test that one (an ODX file's ECU-VARIANT-PATTERNs, else the plan's DID); exit code 2 "
+                             "when it cannot be told")
     parser.add_argument("--discover", action="store_true",
                         help="ask the ECU what it has and compare it with the description, without the window; exit "
                              "code 0 when they agree, 1 when they differ, 2 when it could not run")
@@ -94,6 +101,10 @@ def load_plan(arguments):
         plan = TestPlan()
         if arguments.file:
             plan.description = str(Path(arguments.file).resolve())
+    if getattr(arguments, "variant", None):
+        plan.variant = arguments.variant
+    if getattr(arguments, "identify", False):
+        plan.identify = True
     connection = plan.connection
     if arguments.interface:
         connection.interface = arguments.interface
@@ -138,6 +149,23 @@ def _open_bus(arguments, plan):
         return bench.tester_bus, bench
     connection = plan.connection
     return create_can_bus(connection.interface, parse_channel(connection.channel), connection.bitrate), None
+
+
+def _identified(plan, bus, description):
+    """The description of the variant the ECU says it is, when the plan says to ask it (else the one read);
+    PlanError when it cannot be told."""
+    if not plan.identify or len(description.variants) < 2:
+        return description
+    from canexpert.test_expert.plan import PlanError
+    from canexpert.test_expert.tester import Tester
+    from canexpert.test_expert.variants import identify
+    tester = Tester(bus, plan.connection.transport(), plan.connection.functional_id)
+    variant, detail = identify(plan.resolve(plan.description), tester, plan.identification)
+    if variant is None:
+        raise PlanError(f"the ECU's variant could not be told: {detail}")
+    _say(f"TestExpert: the ECU is the variant {variant} ({detail})")
+    plan.variant = variant
+    return plan.load_description()
 
 
 def compare(arguments) -> int:
@@ -185,6 +213,11 @@ def discover(arguments) -> int:
         _say(f"TestExpert: cannot open {plan.connection.interface} {plan.connection.channel}: {exc}")
         return EXIT_NOT_RUN
     try:
+        try:
+            description = _identified(plan, bus, description)
+        except (PlanError, OSError, ValueError) as exc:
+            _say(f"TestExpert: {exc}")
+            return EXIT_NOT_RUN
         _say(f"TestExpert: discovering, against {description.name} - sessions "
              f"{', '.join(f'{s:02X}' for s in options.sessions)}, DIDs {options.dids}, routines {options.rids}")
         tester = Tester(bus, plan.connection.transport(), plan.connection.functional_id)
@@ -240,6 +273,11 @@ def run(arguments) -> int:
             _say(f"  {data.verdict.upper():8} {data.title}" + (f"  ({data.error.strip().splitlines()[-1]})"
                                                                if data.error.strip() and data.verdict != "passed" else ""))
     try:
+        try:
+            description = _identified(plan, bus, description)
+        except (PlanError, OSError, ValueError) as exc:
+            _say(f"TestExpert: {exc}")
+            return EXIT_NOT_RUN
         _say(f"TestExpert: {description.name} - {description.summary()}")
         target = "a Dummy ECU (in this process)" if bench else plan.connection.text()
         tester_bus = bus

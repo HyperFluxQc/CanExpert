@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from canexpert.odx_services import first_layer, load_database, name_of
+from canexpert.odx_services import load_database, name_of
 from canexpert.test_expert.description import DataField, EcuDescription, RawService, RawState, build_description
 
 RECORD_START = 3                     # 62, then the DID: the data record's first byte in the response
@@ -55,12 +55,17 @@ def _field(param) -> DataField | None:
     coded = getattr(dop, "diag_coded_type", None)
     byte = getattr(param, "byte_position", None)
     bits = getattr(coded, "bit_length", None)
-    if dop is None or byte is None or not bits or byte < RECORD_START:
-        return None
     base = getattr(coded, "base_data_type", "")
     base = str(getattr(base, "value", base)).upper()          # odxtools' DataType: its value is A_UINT32...
     encoding = "ascii" if "ASCII" in base else "bytes" if "BYTE" in base or "UNICODE" in base else \
         "signed" if "_INT" in base and "UINT" not in base else "unsigned"
+    if dop is not None and byte is not None and byte >= RECORD_START and not bits and \
+            getattr(coded, "max_length", None) is not None and encoding in ("ascii", "bytes"):
+        # A MIN-MAX-LENGTH-TYPE: text or bytes of a length of their own, to the end.
+        return DataField(str(getattr(param, "short_name", "") or f"Byte{byte}"), (byte - RECORD_START) * 8, 0,
+                         encoding)
+    if dop is None or byte is None or not bits or byte < RECORD_START:
+        return None
     shift_bits = getattr(param, "bit_position", None) or 0
     span = (bits + shift_bits + 7) // 8
     position = (byte - RECORD_START) * 8 + span * 8 - shift_bits - bits
@@ -111,17 +116,28 @@ def did_fields(service) -> list[DataField]:
             field = _field(param)
         except (AttributeError, TypeError, ValueError):
             field = None
-        if field is None:
+        if field is None or (fields and fields[-1].variable):
             return []
         fields.append(field)
     return fields
 
 
-def load_odx(path) -> EcuDescription:
+def variant_layers(database) -> list:
+    """The layers a description can be read from: the ECU variants, then the base variants."""
+    return list(getattr(database, "ecus", None) or []) + list(getattr(database, "base_variants", None) or [])
+
+
+def load_odx(path, variant: str | None = None) -> EcuDescription:
+    """The description of an ODX or PDX file; variant: the short name of the ECU or base variant to read
+    (default: the first ECU variant)."""
     database = load_database(path)
-    layer = first_layer(database)
-    if layer is None:
+    layers = variant_layers(database) or list(getattr(database, "diag_layers", None) or [])
+    if not layers:
         raise ValueError("the file describes no ECU")
+    layer = next((candidate for candidate in layers if variant and name_of(candidate) == variant), None)
+    if layer is None and variant:
+        raise ValueError(f"no variant {variant!r}: the file has {', '.join(name_of(item) for item in layers)}")
+    layer = layer if layer is not None else layers[0]
     states = {}
     for chart in getattr(layer, "state_charts", None) or []:
         group = _group(chart)
@@ -143,7 +159,8 @@ def load_odx(path) -> EcuDescription:
                        for transition in getattr(service, "state_transitions", None) or []
                        if getattr(transition, "target_state", None) is not None]
         fields = did_fields(service) if prefix[:1] == b"\x22" and len(prefix) >= 3 else []
-        length = max((item.position + item.bits + 7) // 8 for item in fields) if fields else None
+        length = max((item.position + item.bits + 7) // 8 for item in fields) \
+            if fields and not fields[-1].variable else None
         raw.append(RawService(prefix, plain_name(name_of(service)), allowed, transitions, length, fields))
     description = build_description(raw, states, name_of(layer), str(path))
     description.warnings = warnings + description.warnings
@@ -155,15 +172,39 @@ def load_odx(path) -> EcuDescription:
     if 0 in description.sessions:
         description.warnings.append("10 00 is no UDS session (ISO 14229-1 reserves 00): this is not a UDS ECU's "
                                     "description, or not all of it")
+    description.variants = [name_of(item) for item in layers]
+    description.variant = name_of(layer)
     return description
 
 
-def load_description(path) -> EcuDescription:
-    """Any description file: .cdd, .json (TestExpert's own), else ODX/PDX."""
+def identify_odx(path, ask) -> tuple[str | None, str]:
+    """The ECU variant whose ECU-VARIANT-PATTERN the ECU matches (odxtools' VariantMatcher, ISO 22901-1), and
+    how it was told; (None, why) when none does or the file has no patterns. ask(request, physical) sends a
+    request and returns the ECU's answer (b"" without one)."""
+    from odxtools.variantmatcher import VariantMatcher
+    database = load_database(path)
+    candidates = [layer for layer in getattr(database, "ecus", None) or [] if getattr(layer, "ecu_variant_patterns", None)]
+    if not candidates:
+        return None, "the file's variants have no ECU-VARIANT-PATTERNs"
+    matcher = VariantMatcher(variant_candidates=candidates, use_cache=False)    # its cache takes no bytearray
+    asked = []
+    for physical, request in matcher.request_loop():
+        answer = ask(bytes(request), physical)
+        asked.append(f"{bytes(request).hex(' ').upper()} -> {answer.hex(' ').upper() if answer else 'no answer'}")
+        matcher.evaluate(answer or b"")
+    detail = "; ".join(dict.fromkeys(asked))
+    if matcher.has_match():
+        return name_of(matcher.matching_variant), detail
+    return None, f"no variant's pattern matches ({detail})"
+
+
+def load_description(path, variant: str | None = None) -> EcuDescription:
+    """Any description file: .cdd, .json (TestExpert's own), else ODX/PDX; variant: the one to read (default:
+    the first)."""
     suffix = Path(path).suffix.lower()
     if suffix == ".json":
         return EcuDescription.load(path)
     if suffix == ".cdd":
         from canexpert.test_expert.cdd import load_cdd
-        return load_cdd(path)
-    return load_odx(path)
+        return load_cdd(path, variant or None)
+    return load_odx(path, variant or None)

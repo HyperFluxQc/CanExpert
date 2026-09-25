@@ -212,8 +212,8 @@ CanExpert/
 ## TestExpert (UDS conformance tests)
 
 `test_expert.py` (**TestExpert.exe**) checks that an ECU keeps the UDS rules of ISO 14229-1, as Vector DiVa
-does. It reads the ECU's description — a **CDD** from CANdelaStudio, an **ODX/PDX** file, or its own JSON — and
-generates the tests: sessions and their transitions, TesterPresent, unsupported services (0x11),
+does. It reads the ECU's description — a **CDD** from CANdelaStudio, an **ODX/PDX** file, or its own JSON; of a file
+with several variants, the one chosen or the one the ECU says it is — and generates the tests: sessions and their transitions, TesterPresent, unsupported services (0x11),
 availability per session (0x7F) and the NRC order, message length (0x13), sub-functions (0x12), every DID read
 and written per session and security level (0x31, 0x33), security access (0x24, 0x35, the lockout's 0x36 and
 0x37), routines, the fault memory, CommunicationControl and ControlDTCSetting, ECU reset, functional
