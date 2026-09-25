@@ -23,6 +23,7 @@ from canexpert.test_expert.description import DEFAULT_SESSION, ISO_SERVICES, SUB
 from canexpert.test_expert.modules import GROUP_PREFIX
 from canexpert.test_expert.policy import NrcPolicy, nrc_text
 from canexpert.test_expert.sequences import LABELS, SequenceRunner, due
+from canexpert.test_expert.services import ServiceTests
 from canexpert.test_expert.transport import TransportTests
 from canexpert.testing.runner import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, TestCase, TestModule, call_hook
 from canexpert.uds.client import UdsFunctions
@@ -64,6 +65,8 @@ class Options:
     s3_seconds: float = 5.0       # S3server (ISO 14229-2: 5 s)
     start_routines: str = ""      # routines that may be started: "0201; FF00: 44 00 01 00 00 00 00 00 04"
     transport: bool = True        # the transport layer's tests (ISO 15765-2): a few seconds of waiting
+    download: str = ""            # a RequestDownload the ECU accepts, "address:size" in hex: "10000:300"
+    memory: str = ""              # memory ReadMemoryByAddress may read (and, destructive, write back): "F000:10"
 
 
 def parse_routine_starts(text: str) -> dict:
@@ -493,6 +496,7 @@ class Suite:
         self._routine_control()
         self._fault_memory()
         self._communication()
+        ServiceTests(self).add()
         self._reset()
         self._functional()
         self._timing()

@@ -183,6 +183,18 @@ class TestPlan:
             raise PlanError(f"the description {path} is not there")
         return load_description(path, self.variant or None)
 
+    def check(self):
+        """PlanError naming a setting that cannot be read (the routines to start, the memory ranges)."""
+        from canexpert.test_expert.generator import parse_routine_starts
+        from canexpert.test_expert.services import parse_memory_range
+        try:
+            parse_routine_starts(self.options.get("start_routines", ""))
+            parse_memory_range(self.options.get("download", ""))
+            parse_memory_range(self.options.get("memory", ""))
+        except ValueError as exc:
+            raise PlanError(str(exc)) from None
+        return self
+
     def make_options(self) -> Options:
         values = {name: self.options[name] for name in OPTION_NAMES if name in self.options}
         return Options(**values, key=self.key.function(self.folder()))

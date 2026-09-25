@@ -803,7 +803,11 @@ The tests are grouped as DiVa groups them; untick any you do not want.
 | Security access | sendKey before requestSeed (0x24), a seed, a wrong key (0x35), unlocking, the zero seed once unlocked, locked again by a new session; a level that does not exist |
 | Routines | each routine refused where it may not run (0x31) and while locked (0x33); a routine that does not exist; its stop and results asked before a start (0x24); the routines you allow **started**, their results asked and stopped |
 | Fault memory | 19 01, 19 02 and 19 0A answered in their format; a group of DTCs that does not exist (0x31) |
-| Communication | CommunicationControl and ControlDTCSetting answered, silent with the suppress bit, put back |
+| Communication | CommunicationControl and ControlDTCSetting answered, silent with the suppress bit, put back; CommunicationControl **stopping the ECU's own frames** — the frames it sends besides diagnostics stop while their transmission is disabled and come back once enabled (only this ECU should be on the bus; without frames of its own the test is skipped) |
+| Download and upload | TransferData and RequestTransferExit before a RequestDownload (0x24), RequestDownload while locked (0x33) and of a format the ECU does not take (0x31); with **Download** set and destructive tests, that download started — maxNumberOfBlockLength given — then a second RequestDownload (0x22), a wrong block counter (0x73) and RequestTransferExit before the data (0x24), and the default session to end it |
+| Memory by address | ReadMemoryByAddress of a format the ECU does not take (0x31); with **Memory** set, that memory read; with destructive tests too, written while locked (0x33) and written back with its own bytes |
+| Periodic data | for a DID of the periodic range (F2xx): sent at the fast rate, then stopped; an unknown periodic identifier and transmission mode (0x31) |
+| ResponseOnEvent | starting it with no event set up (0x24); an event on a DID that changes by itself — found by reading the DIDs twice — sends its answer unasked, then stopped and cleared |
 | Functional addressing | functional requests answered; 0x11, 0x12 and 0x31 not sent to them (ISO 14229-1 7.5) |
 | Timing | responses within the P2 the ECU announces, plus the margin; **S3** — a session ends after S3 without requests, and TesterPresent keeps it; with every step, a **response pending** (0x78) within P2, the next ones within P2*, the answer within P2* of the last |
 | Transport layer (ISO 15765-2) | a segmented request: the ECU's flow control within N_Bs (ContinueToSend, a valid STmin) and the whole request answered; a consecutive frame out of sequence or after N_Cr ends the request; a single frame in the middle of a segmented request replaces it; frames to ignore — consecutive frames and flow controls out of the blue, single frames of length 0 or longer than their frame, a first frame of a length a single frame carries, a functional first frame; a first frame of 4095 bytes gets ContinueToSend or Overflow. When a DID is answered in several frames, the ECU as the sender: it keeps to a block size of 1 and an STmin of 50 ms, waits after a flow control WAIT, stops on Overflow, on a reserved flow status and without a flow control |
@@ -823,6 +827,9 @@ On the **Settings** tab:
 - **S3 session timeout**: the two S3 tests, with **S3** (5 s by ISO 14229-2) — they take a few seconds.
 - **Transport layer (ISO 15765-2)**: its tests send their own frames on the request identifier, with the
   plan's padding; waiting past N_Cr and N_Bs, they take a few seconds.
+- **Download** and **Memory**: an address and a size in hex (`10000:300`) — a RequestDownload the ECU accepts,
+  and memory ReadMemoryByAddress may read — sent with the format 44 (four bytes each). Empty: those tests are
+  left out. A download is only started, and memory only written (with its own bytes), with destructive tests.
 - **Routines to start**: the routines a run may start — `0201`, or with an option record `FF00: 44 00 01 00 00
   00 00 00 04` — separated by `;`. A routine is never started otherwise.
 

@@ -74,8 +74,8 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
                 sessions = (sessions or set(ALL_SESSIONS)) & set(rule_sessions)
             if level:
                 level_needed = {level}
-        if sid in (0x34, 0x35):
-            level_needed = level_needed or set(levels)        # a transfer needs some level unlocked
+        if sid in (0x34, 0x35, 0x3D):
+            level_needed = level_needed or set(levels)        # a transfer or a memory write needs some level unlocked
         access = Access(sessions, level_needed)
         service = Service(sid, name, access)
         for sub in SUB_FUNCTIONS.get(sid, ()):

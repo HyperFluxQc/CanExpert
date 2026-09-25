@@ -426,7 +426,6 @@
             <PRE-CONDITION-STATE-REFS>
               <PRE-CONDITION-STATE-REF ID-REF="S.Programmingsession" />
               <PRE-CONDITION-STATE-REF ID-REF="S.Extendedsession" />
-              <PRE-CONDITION-STATE-REF ID-REF="S.Locked" />
               <PRE-CONDITION-STATE-REF ID-REF="S.UnlockedLevel1" />
             </PRE-CONDITION-STATE-REFS>
             <REQUEST-REF ID-REF="RQ.WriteMemoryByAddress" />

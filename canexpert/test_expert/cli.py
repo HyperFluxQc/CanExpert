@@ -119,7 +119,7 @@ def load_plan(arguments):
         connection.channel = arguments.channel
     if arguments.bitrate:
         connection.bitrate = arguments.bitrate
-    return plan
+    return plan.check()
 
 
 class DummyBench:

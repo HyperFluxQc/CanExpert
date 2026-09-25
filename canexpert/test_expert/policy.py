@@ -31,6 +31,13 @@ SITUATIONS = {
     "invalid_key": ("A wrong key", (0x35,)),
     "attempts_exceeded": ("The wrong key that starts the lockout", (0x36,)),
     "delay_not_expired": ("requestSeed during the lockout delay", (0x37,)),
+    "transfer_sequence": ("TransferData or RequestTransferExit out of order", (0x24,)),
+    "transfer_format": ("A RequestDownload of a format the ECU does not take", (0x31,)),
+    "transfer_active": ("A RequestDownload while one runs", (0x22,)),
+    "transfer_counter": ("TransferData with the wrong block sequence counter", (0x73,)),
+    "memory_format": ("A memory address and size of a format the ECU does not take", (0x31,)),
+    "periodic_mode": ("A periodic transmission mode that does not exist", (0x31,)),
+    "roe_sequence": ("startResponseOnEvent with no event set up", (0x24,)),
 }
 # What TestExpert accepted before it had a policy: a routine refused in the session with 0x7F or 0x7E.
 DEFAULT_EXTRA = {"routine_not_in_session": (0x7F, 0x7E)}

@@ -67,6 +67,7 @@ from canexpert.test_expert.policy import Deviation, today
 from canexpert.test_expert.policy_editor import PolicyEditor
 from canexpert.test_expert.sequence_editor import SequenceEditor
 from canexpert.test_expert.sequences import PRESETS, Attachment
+from canexpert.test_expert.services import parse_memory_range
 from canexpert.test_expert.tester import Tester
 from canexpert.test_expert.variant_dialog import IdentificationDialog
 from canexpert.test_expert.variants import Identification, identify, is_odx
@@ -551,6 +552,20 @@ class TestExpertWindow(QMainWindow):
         form.addRow("Margin over P2", self.margin)
         form.addRow("S3", self.s3_seconds)
         form.addRow("Routines to start", self.start_routines)
+        self.download = QLineEdit()
+        self.download.setPlaceholderText("none: no download is started")
+        self.memory = QLineEdit()
+        self.memory.setPlaceholderText("none: memory is not read")
+        for edit, tip in ((self.download, "A RequestDownload the ECU accepts (with Destructive tests): address:size in "
+                                          "hex, 10000:300 - the address and size as 4 bytes each (format 44)"),
+                          (self.memory, "Memory ReadMemoryByAddress may read (and, with Destructive tests, write "
+                                        "back): address:size in hex, F000:10")):
+            edit.setToolTip(tip)
+            edit.setProperty("tip", tip)
+            edit.editingFinished.connect(self.rebuild_tests)
+            edit.textChanged.connect(lambda text, edit=edit: self._check_memory(edit, text))
+        form.addRow("Download", self.download)
+        form.addRow("Memory", self.memory)
         self.key_source = QComboBox()
         self.key_source.addItems(KEY_SOURCES)
         self.mask = HexSpinBox(0xFF)
@@ -713,6 +728,24 @@ class TestExpertWindow(QMainWindow):
             return ""
         return text
 
+    def _memory_range(self, edit) -> str:
+        """A memory range as typed, or "" while it cannot be read."""
+        text = edit.text().strip()
+        try:
+            parse_memory_range(text)
+        except ValueError:
+            return ""
+        return text
+
+    def _check_memory(self, edit, text):
+        try:
+            parse_memory_range(text)
+            edit.setStyleSheet("")
+            edit.setToolTip(edit.property("tip"))
+        except ValueError as exc:
+            edit.setStyleSheet("background: #fecaca;")
+            edit.setToolTip(str(exc))
+
     def _check_routine_starts(self, text):
         try:
             parse_routine_starts(text)
@@ -759,7 +792,8 @@ class TestExpertWindow(QMainWindow):
                         "reset_time": self.reset_time.value(), "attempts": self.attempts.value(),
                         "lockout_seconds": self.lockout_seconds.value(), "s3_test": self.s3_test.isChecked(),
                         "s3_seconds": self.s3_seconds.value(), "start_routines": self._routine_starts(),
-                        "transport": self.transport.isChecked()}
+                        "transport": self.transport.isChecked(), "download": self._memory_range(self.download),
+                        "memory": self._memory_range(self.memory)}
         plan.options = {**options_dict(Options()), **plan.options}
         dll = self.dll_edit.text().strip()
         plan.key = KeySource("dll" if self.key_source.currentIndex() == 1 else "xor", self.mask.value(),
@@ -806,6 +840,8 @@ class TestExpertWindow(QMainWindow):
             box.blockSignals(False)
         self.s3_seconds.setValue(float(options.get("s3_seconds", 5.0)))
         self.start_routines.setText(str(options.get("start_routines", "") or ""))
+        self.download.setText(str(options.get("download", "") or ""))
+        self.memory.setText(str(options.get("memory", "") or ""))
         self.key_source.setCurrentIndex(1 if plan.key.kind == "dll" else 0)
         self.mask.setValue(plan.key.mask)
         self.dll_edit.setText(str(plan.resolve(plan.key.dll) or "") if plan.key.dll else "")

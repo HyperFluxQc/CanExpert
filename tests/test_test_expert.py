@@ -3,7 +3,7 @@ them against the Dummy ECU - passing when it keeps the rules, failing where it i
 post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
 the ECU has, comparing two runs, test plans and their run from the command line, a description's variants and
 telling which one the ECU is, CAN Expert's test modules run with the generated tests, the transport layer's tests,
-and the window."""
+the services taken further than their availability, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -43,6 +43,7 @@ from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPla
 from canexpert.test_expert.policy import Deviation, NrcPolicy, accept_function, parse_nrcs
 from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
                                              parse_frame, parse_hex, parse_script)
+from canexpert.test_expert.services import parse_memory_range
 from canexpert.test_expert.tester import Tester
 from canexpert.test_expert.transport import GROUP as TRANSPORT_GROUP
 from canexpert.test_expert.transport import Frame, Link, gap, st_min_seconds, valid_st_min
@@ -714,6 +715,73 @@ class TransportTest(unittest.TestCase):
         self.assertEqual(extended.segments(bytes(8))[0], bytes([0x10, 8]) + bytes(5))
 
 
+SERVICE_GROUPS = ("Download and upload", "Memory by address", "Periodic data", "ResponseOnEvent", "Communication")
+
+
+class ServicesTest(unittest.TestCase):
+    """Download, memory, periodic data, ResponseOnEvent and CommunicationControl taken further."""
+
+    OPTIONS = {"destructive": True, "download": "10000:300", "memory": "10000:10", "transport": False}
+
+    def run_groups(self, config=None, **options):
+        config = config or EcuConfig(lockout_seconds=1, require_erase=False)       # its frames too
+        bench = Bench(self, config)
+        suite = Suite(dummy_description(config), Options(key=key, s3_test=False, **{**self.OPTIONS, **options}))
+        suite.tester = Tester(bench.tester_bus, TRANSPORT, 0x7DF)
+        names = [case.name for case in suite.cases if suite.group_of[case.name] in SERVICE_GROUPS]
+        report = Runner(suite.module(names), send=suite.tester.send_frame).run(names)
+        return {case.title.split(": ", 1)[1]: case for case in report.cases}, report
+
+    def test_the_dummy_ecu_passes(self):
+        cases, report = self.run_groups()
+        self.assertEqual(report.verdict, "passed", failures(report))
+        self.assertEqual({title: case.verdict for title, case in cases.items() if case.verdict != "passed"}, {})
+        for title in ("A download started, then refused out of order", "WriteMemoryByAddress of the same bytes",
+                      "WriteMemoryByAddress while locked", "Periodic data of F201", "An event on a DID that changes",
+                      "CommunicationControl stops the ECU's own frames"):
+            self.assertIn(title, cases)
+        started = [step.description for step in cases["A download started, then refused out of order"].steps]
+        self.assertIn("a second RequestDownload while one runs: NRC 0x22", started)
+        self.assertIn("0100 changes by itself", [step.description for step in cases["An event on a DID that changes"].steps])
+
+    def test_what_they_need(self):
+        titles = [case.title for case in Suite(dummy_description(), Options(transport=False)).cases]
+        self.assertFalse([title for title in titles if "download started" in title or "plan's memory" in title
+                          or title.startswith("Memory by address: WriteMemoryByAddress")],
+                         "without the plan's ranges, or not destructive")
+        self.assertIn("Download and upload: RequestDownload of a format the ECU does not take", titles)
+        self.assertEqual(parse_memory_range(" 0x10000 : 300 "), (0x10000, 0x300))
+        self.assertIsNone(parse_memory_range(""))
+        for wrong in ("10000", "zz:1", "10000:0", "100000000:1"):
+            with self.assertRaises(ValueError, msg=wrong):
+                parse_memory_range(wrong)
+        plan = TestPlan()
+        plan.options["memory"] = "F000"
+        with self.assertRaises(PlanError):
+            plan.check()
+        with patch("sys.stdout"), tempfile.TemporaryDirectory() as folder:
+            plan.save(Path(folder) / "plan.json")
+            self.assertEqual(cli.main([str(Path(folder) / "plan.json"), "--run", "--dummy-ecu"]), cli.EXIT_NOT_RUN)
+
+    def test_an_ecu_that_breaks_the_rules_is_found(self):
+        from canexpert.simulator import ecu as ecu_module
+        config = EcuConfig(lockout_seconds=1, require_erase=False, forced_nrcs=[{"sid": 0x36, "nrc": 0x22}])
+        with patch.object(ecu_module.DummyEcu, "_service_28", lambda ecu, request: bytes([0x68, request[1]])), \
+                patch.object(ecu_module.DummyEcu, "_send_periodic", lambda ecu, now: None):
+            cases, report = self.run_groups(config)
+        self.assertEqual(cases["TransferData and RequestTransferExit before RequestDownload"].verdict, "failed")
+        self.assertEqual(cases["CommunicationControl stops the ECU's own frames"].verdict, "failed",
+                         "its frames go on")
+        self.assertEqual(cases["Periodic data of F201"].verdict, "failed", "no periodic data")
+        self.assertEqual(cases["RequestDownload of a format the ECU does not take"].verdict, "passed")
+
+    def test_without_frames_of_its_own(self):
+        cases, report = self.run_groups(EcuConfig(lockout_seconds=1, require_erase=False, broadcast_interval=0),
+                                        destructive=False)
+        self.assertEqual(cases["CommunicationControl stops the ECU's own frames"].verdict, "skipped")
+        self.assertEqual(report.verdict, "passed", failures(report))
+
+
 def TransportTestsRequest(description):
     from canexpert.test_expert.transport import TransportTests
     return TransportTests(Suite(description, Options(transport=False))).request
@@ -724,7 +792,7 @@ class Bench:
         channel = "te-" + str(uuid.uuid4())
         self.tester_bus = can.Bus(interface="virtual", channel=channel)
         ecu_bus = can.Bus(interface="virtual", channel=channel)
-        self.ecu = DummyEcu(ecu_bus, config or EcuConfig(broadcast_interval=0, lockout_seconds=1),
+        self.ecu = DummyEcu(ecu_bus, config or EcuConfig(lockout_seconds=1),        # its own frames too
                             log=lambda text: None)
         stop = threading.Event()
         threading.Thread(target=self.ecu.serve, args=(stop,), daemon=True).start()
@@ -1256,7 +1324,7 @@ class DeeperTest(unittest.TestCase):
     wrong order, S3, and responses pending."""
 
     def test_the_dummy_ecu_keeps_them(self):
-        bench = Bench(self, EcuConfig(broadcast_interval=0, s3_timeout=1.0, self_test_seconds=0.5))
+        bench = Bench(self, EcuConfig(s3_timeout=1.0, self_test_seconds=0.5))
         suite, report = bench.run(dummy_description(bench.ecu.config), destructive=True, start_routines="0201",
                                   s3_test=True, s3_seconds=1.0)
         self.assertEqual(failures(report), {})
@@ -1440,6 +1508,24 @@ class WindowTest(unittest.TestCase):
         window.modules_tab.module_list.item(0).setSelected(True)
         window.modules_tab._remove(window.modules_tab.module_list)
         self.assertEqual(len(window.suite.cases), count)
+
+    def test_the_download_and_memory_settings(self):
+        window = self.window
+        window.destructive.setChecked(True)
+        window.memory.setText("F000")
+        self.assertIn("background", window.memory.styleSheet(), "shown as wrong")
+        self.assertEqual(window.plan().options["memory"], "", "not taken while it cannot be read")
+        window.memory.setText("F000:10")
+        window.download.setText("10000:300")
+        window.rebuild_tests()
+        self.assertEqual(window.memory.styleSheet(), "")
+        plan = window.plan()
+        self.assertEqual((plan.options["memory"], plan.options["download"]), ("F000:10", "10000:300"))
+        self.assertIn("download_and_upload.a_download_started_then_refused_out_of_order", window._items)
+        window.close()                                                       # kept when it closes
+        other = window_module.TestExpertWindow(self.settings)
+        self.addCleanup(other.close)
+        self.assertEqual(other.memory.text(), "F000:10", "kept")
 
     def test_the_identification_dialog(self):
         from canexpert.test_expert.variant_dialog import IdentificationDialog

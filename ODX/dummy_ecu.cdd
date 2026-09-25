@@ -1373,7 +1373,7 @@
               <TUV xml:lang="en-US">WriteMemoryByAddress</TUV>
             </NAME>
             <QUAL>WriteMemoryByAddress</QUAL>
-            <SERVICE id="_sv0137" tmplref="_tt0134" mayBeExec="(2,3,4,5)" />
+            <SERVICE id="_sv0137" tmplref="_tt0134" mayBeExec="(2,3,5)" />
           </DIAGINST>
         </DIAGCLASS>
         <DIAGCLASS id="_dc0144" tmplref="_ct0141">
