@@ -730,12 +730,14 @@ tests the description calls for, runs them against the ECU and writes a report. 
 on CAN Expert's bus access, UDS client and reports; CAN Expert's window stays as it is.
 
 The **toolbar** holds what you use most, as CAN Expert's does: **Description** (open one), **Open plan**,
-**Save plan**, **Connect**/**Disconnect**, **Run**, **Stop**, **Discover**, **Compare** (two runs), **Report**
-(the last run's) and **Manual**. The **Run** menu has the same actions; each button's tooltip says its key.
+**Save plan**, **Connect**/**Disconnect**, **Run**, **Stop**, **Run failed** (the tests that did not pass in
+the last run, again), **Discover**, **Compare** (two runs), **Report** (the last run's) and **Manual**. The
+**Run** menu has the same actions; each button's tooltip says its key.
 
 | Key | Does |
 |---|---|
 | **F5** / **Shift+F5** | Run the ticked tests / Stop |
+| **Ctrl+F5** | Run the failed tests again |
 | **Ctrl+O** / **Ctrl+Shift+O** | Open a description / a test plan |
 | **Ctrl+S** / **Ctrl+Shift+S** / **Ctrl+N** | Save the plan / Save it as / New plan |
 | **F1** | TestExpert in the manual |
@@ -841,7 +843,15 @@ and then the answer, so a step expecting no answer accepts an answer that follow
 **Run** runs the ticked tests; each shows its verdict and, opened, every step with the request and the answer.
 A step that got another NRC than ISO 14229-1 asks for, but one the NRC policy accepts, passes with a note. **Stop** ends
 the run after the current step. Every run leaves an HTML and a JUnit XML report in `TestExpert/reports`
-(**Open report**), and its results as JSON for comparing runs.
+(**Open report**), and its results as JSON for comparing runs. The bar beside the status counts the tests done.
+
+- Right-click a test — or a group — for **Run this test** (**Run this group**), ticked or not.
+- **Run failed** (Ctrl+F5) runs again only the tests that failed, broke or were blocked in the last run.
+- **Run** on the Settings tab repeats the run: *N times*, one run after the other — each with its reports, each
+  compared with the one before, so a test that fails now and then shows up — and, ticked, *until a run fails*.
+  The status then gives how many runs passed.
+- The box above the tests **filters** them: type words of a test's name or group (`security`, `22 f190`); tick
+  **Not passed only** to see what the last run did not pass.
 
 ### Comparing runs
 
@@ -1006,13 +1016,18 @@ python test_expert.py nightly.json --run --dummy-ecu          # against a Dummy 
 python test_expert.py ODX/ecu.pdx --run --identify            # ask the ECU which variant it is, test that one
 python test_expert.py ODX/ecu.cdd --run --variant BOOT        # the file's variant BOOT
 python test_expert.py ODX/ecu.cdd --run --module TestModules/checks.py --symbols DBC/ecu.dbc   # a module too
+python test_expert.py nightly.json --run --test sessions --test security_access.level_0x01_27_01_02
+python test_expert.py nightly.json --run --repeat 50 --until-failure      # hunting a test that fails now and then
 ```
 
 Each test's verdict is printed as it ends, then the totals and the report files. The **exit code** says how it
 went: **0** every test passed, **1** one did not (failed, error or blocked), **2** the run could not start
 (the plan or its description cannot be read, the channel cannot be opened, the ECU's variant cannot be
 told). `--junit` also copies the JUnit
-report to a fixed file for the CI server; `--quiet` prints only the totals. A description instead of a plan
+report to a fixed file for the CI server; `--quiet` prints only the totals. `--test` runs only that test or group
+(the first part of its tests' names, as the results show them), even one the plan leaves out; `--repeat N` runs the
+tests N times, with `--until-failure` stopping at the first run that fails — the exit code is 1 when any run did
+not pass, and `--junit` copies the first such run's report. A description instead of a plan
 runs every test with the default settings. **TestExpert.exe** takes the same options; it prints into the
 console it was started from — in a batch file use `start /wait TestExpert.exe plan.json --run` to wait for its
 exit code.

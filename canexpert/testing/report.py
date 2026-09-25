@@ -167,11 +167,11 @@ def report_stem(report: TestReport) -> str:
     return f"{Path(report.path).stem}_{datetime.fromtimestamp(report.started).strftime('%Y%m%d-%H%M%S')}"
 
 
-def save_reports(report: TestReport, folder, facts=(), sections: str = "") -> tuple[Path, Path]:
-    """Write <module>_<date-time>.html and .xml into folder; returns their paths."""
+def save_reports(report: TestReport, folder, facts=(), sections: str = "", stem: str = "") -> tuple[Path, Path]:
+    """Write <module>_<date-time>.html and .xml (or <stem>.html and .xml) into folder; returns their paths."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    stem = report_stem(report)
+    stem = stem or report_stem(report)
     html_path, xml_path = folder / f"{stem}.html", folder / f"{stem}.xml"
     html_path.write_text(html_report(report, facts, sections), encoding="utf-8")
     xml_path.write_text(junit_report(report), encoding="utf-8")

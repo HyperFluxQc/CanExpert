@@ -10,6 +10,8 @@ for a bench script or a CI server, which read the exit code and the JUnit report
     python test_expert.py ecu.pdx --run --identify           ask the ECU which of the file's variants it is, test that one
     python test_expert.py ecu.cdd --run --variant BOOT       the file's variant BOOT
     python test_expert.py ecu.cdd --run --module checks.py   a CAN Expert test module too, after the generated tests
+    python test_expert.py nightly.json --run --test sessions --repeat 20 --until-failure
+                                                             one group, twenty times or until a run fails
     python test_expert.py --run --dummy-ecu                  the built-in description against a Dummy ECU in this process
     python test_expert.py nightly.json --discover            ask the ECU what it has; exit code 0 when it matches
                                                              the description, 1 when it does not
@@ -47,6 +49,13 @@ def parser() -> argparse.ArgumentParser:
                         help="with --run: a CAN Expert test module to run too, after the generated tests (repeatable)")
     parser.add_argument("--symbols", action="append", default=[], metavar="FILE",
                         help="with --run: a symbol database (DBC...) the modules' frames are decoded with (repeatable)")
+    parser.add_argument("--test", action="append", default=[], metavar="NAME",
+                        help="with --run: only this test (sessions.default_session_10_01) or group (sessions), "
+                             "left out by the plan or not; repeatable")
+    parser.add_argument("--repeat", type=int, metavar="N", help="with --run: run the tests N times, one run after "
+                                                                  "the other (each with its reports)")
+    parser.add_argument("--until-failure", action="store_true",
+                        help="with --repeat: stop after the first run that fails")
     parser.add_argument("--variant", help="the variant of the description to test (a CDD's VAR, an ODX variant)")
     parser.add_argument("--identify", action="store_true",
                         help="with --run or --discover: ask the ECU which of the description's variants it is, and "
@@ -156,6 +165,20 @@ def _open_bus(arguments, plan):
         return bench.tester_bus, bench
     connection = plan.connection
     return create_can_bus(connection.interface, parse_channel(connection.channel), connection.bitrate), None
+
+
+def selected(tests, cases) -> list[str]:
+    """The tests named on the command line: a test's name, or a group's - the first part of its tests' names.
+    PlanError for a name no test has."""
+    from canexpert.test_expert.plan import PlanError
+    chosen = []
+    for wanted in tests:
+        wanted = str(wanted).strip().rstrip(".")
+        found = [case.name for case in cases if case.name == wanted or case.name.startswith(wanted + ".")]
+        if not found:
+            raise PlanError(f"no test or group is named {wanted!r}")
+        chosen += [name for name in found if name not in chosen]
+    return chosen
 
 
 def _identified(plan, bus, description):
@@ -288,36 +311,56 @@ def run(arguments) -> int:
         _say(f"TestExpert: {description.name} - {description.summary()}")
         target = "a Dummy ECU (in this process)" if bench else plan.connection.text()
         tester_bus = bus
-        run_ = None
+        runs = max(1, getattr(arguments, "repeat", None) or plan.repeat)
+        until_failure = getattr(arguments, "until_failure", False) or plan.until_failure
+        verdicts, junit = [], None
         try:
             if plan.record:
                 folder.mkdir(parents=True, exist_ok=True)
                 recorder = Recorder(folder / f"traffic_{uuid.uuid4().hex[:8]}.blf")
                 tester_bus = RecordingBus(bus, recorder)
-            run_ = PlanRun(plan, description, tester_bus, on_event=on_event)
-            if not run_.names:
-                _say("TestExpert: no test to run")
-                return EXIT_NOT_RUN
-            _say(f"Running {len(run_.names)} tests against {target}")
-            report = run_.run()
+            names = None
+            if getattr(arguments, "test", None):
+                try:
+                    names = selected(arguments.test, PlanRun(plan, description, tester_bus).suite.cases)
+                except PlanError as exc:
+                    _say(f"TestExpert: {exc}")
+                    return EXIT_NOT_RUN
+            for index in range(1, runs + 1):
+                run_ = PlanRun(plan, description, tester_bus, names, on_event=on_event)
+                if not run_.names:
+                    _say("TestExpert: no test to run")
+                    return EXIT_NOT_RUN
+                prefix = f"Run {index} of {runs}: " if runs > 1 else ""
+                _say(f"{prefix}Running {len(run_.names)} tests against {target}")
+                report = run_.run()
+                paths = run_.save(folder, f"_run{index}" if runs > 1 else "")
+                _say(prefix + summary_text(report))
+                for path in paths:
+                    _say(f"  {path}")
+                verdicts.append(report.verdict)
+                if report.verdict != "passed" and junit is None:
+                    junit = paths[1]                         # the first run that did not pass, for the CI server
+                if report.stopped or (until_failure and report.verdict == "failed"):
+                    break
         finally:
             if recorder is not None:
                 recorder.stop()
-        paths = run_.save(folder)
         if recorder is not None:
             recording = folder / f"{report_stem(report)}.blf"
             try:
                 Path(recorder.path).replace(recording)
-                paths.append(recording)
             except OSError:
-                paths.append(Path(recorder.path))
+                recording = Path(recorder.path)
+            _say(f"  {recording}")
         if arguments.junit:
             Path(arguments.junit).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(paths[1], arguments.junit)
-        _say(summary_text(report))
-        for path in paths:
-            _say(f"  {path}")
-        return EXIT_PASSED if report.verdict == "passed" else EXIT_FAILED
+            shutil.copyfile(junit or paths[1], arguments.junit)
+        if runs > 1:
+            passed = verdicts.count("passed")
+            _say(f"{len(verdicts)} run{'s' if len(verdicts) != 1 else ''} of {runs}: {passed} passed, "
+                 f"{len(verdicts) - passed} did not")
+        return EXIT_PASSED if all(verdict == "passed" for verdict in verdicts) else EXIT_FAILED
     finally:
         if bench is not None:
             bench.close()

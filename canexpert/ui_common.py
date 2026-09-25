@@ -85,6 +85,7 @@ _PATHS = {
     "save": '<path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/><path d="M8 3v5h7V3M8 21v-6.5h8V21"/>',
     "run": '<path d="M7.5 4.5v15l12-7.5z"/>',
     "stop": '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    "rerun": '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 3.5v4h-4"/><path d="M10 9v6l5-3z"/>',
     "discover": '<circle cx="10" cy="10" r="6.5"/><path d="m15 15 6 6"/><rect x="7.5" y="7.5" width="5" height="5" rx="1"/>'
                 '<path d="M8.5 5.5v2M11.5 5.5v2M8.5 12.5v2M11.5 12.5v2"/>',
     "compare": '<path d="M4 7.5h14M15 4.5l3 3-3 3"/><path d="M20 16.5H6M9 13.5l-3 3 3 3"/>',
@@ -113,6 +114,7 @@ _COLORS = {
     "save": ("#1d4ed8", "#93c5fd"),
     "run": ("#15803d", "#6ee7a0"),
     "stop": ("#c43c3c", "#ff9696"),
+    "rerun": ("#c2410c", "#fdba74"),
     "discover": ("#0e7490", "#67e8f9"),
     "compare": ("#7c3aed", "#c4b5fd"),
     "report": ("#475569", "#cbd5e1"),

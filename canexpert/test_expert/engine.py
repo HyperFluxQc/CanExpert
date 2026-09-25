@@ -16,7 +16,7 @@ from canexpert.test_expert.modules import BusFrames, Symbols, load_modules
 from canexpert.test_expert.plan import TestPlan
 from canexpert.test_expert.policy import accept_function
 from canexpert.test_expert.tester import Tester
-from canexpert.testing.report import save_reports
+from canexpert.testing.report import report_stem, save_reports
 from canexpert.testing.runner import Runner, TestReport
 
 
@@ -96,10 +96,11 @@ class PlanRun:
         return results_dict(self.report, self.description, self.suite.identification, self.suite.coverage,
                             self.plan.path)
 
-    def save(self, folder) -> list[Path]:
+    def save(self, folder, suffix: str = "") -> list[Path]:
         """Write the run's HTML report (with its coverage), its JUnit report and its results (JSON) into
-        folder; returns their paths."""
-        html_path, xml_path = save_reports(self.report, Path(folder), self.facts(), self.coverage_html())
+        folder; returns their paths. suffix follows the name (the run's number, when a run is repeated)."""
+        html_path, xml_path = save_reports(self.report, Path(folder), self.facts(), self.coverage_html(),
+                                           report_stem(self.report) + suffix)
         results_path = html_path.with_suffix(".json")
         results_path.write_text(json.dumps(self.results(), indent=1), encoding="utf-8")
         return [html_path, xml_path, results_path]

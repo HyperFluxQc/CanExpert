@@ -3,7 +3,8 @@ them against the Dummy ECU - passing when it keeps the rules, failing where it i
 post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
 the ECU has, comparing two runs, test plans and their run from the command line, a description's variants and
 telling which one the ECU is, CAN Expert's test modules run with the generated tests, the transport layer's tests,
-the services taken further than their availability, security access taken further, and the window."""
+the services taken further than their availability, security access taken further, and the window - with its run control: a test or a group run from the tests'
+menu, the failed tests run again, runs repeated, their progress, the tests filtered."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -1355,6 +1356,39 @@ class PlanTest(unittest.TestCase):
         from_numbers = TestPlan.from_dict({"format": "TestExpert plan", "connection": {"request_id": 2016, "padding": "AA"}})
         self.assertEqual((from_numbers.connection.request_id, from_numbers.connection.padding), (0x7E0, 0xAA))
 
+    def test_tests_named_and_runs_repeated_on_the_command_line(self):
+        cases = Suite(dummy_description()).cases
+        self.assertEqual(cli.selected(["sessions.default_session_10_01"], cases), ["sessions.default_session_10_01"])
+        group = cli.selected(["sessions"], cases)
+        self.assertTrue(len(group) > 1 and all(name.startswith("sessions.") for name in group))
+        with self.assertRaises(PlanError):
+            cli.selected(["nothing"], cases)
+        path, reports = self.folder / "repeat.json", self.folder / "repeated"
+        plan = TestPlan("Repeat")
+        plan.options["s3_test"] = False
+        plan.save(path)
+        with patch("sys.stdout") as out:
+            code = cli.main([str(path), "--run", "--dummy-ecu", "--test", "sessions.default_session_10_01",
+                             "--repeat", "2", "--report-dir", str(reports)])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_PASSED, printed)
+        self.assertIn("Run 2 of 2: Running 1 tests", printed)
+        self.assertIn("2 runs of 2: 2 passed, 0 did not", printed)
+        self.assertEqual(sorted(item.stem[-5:] for item in reports.glob("*.html")), ["_run1", "_run2"])
+        with patch("sys.stdout"):
+            self.assertEqual(cli.main([str(path), "--run", "--dummy-ecu", "--test", "nothing"]), cli.EXIT_NOT_RUN)
+        plan.sequences = [Sequence("Unknown DID", [SequenceStep("request", "22 12 34", "positive")],
+                                   [Attachment("before", "each")])]
+        plan.save(path)
+        junit = self.folder / "junit.xml"
+        with patch("sys.stdout") as out:
+            code = cli.main([str(path), "--run", "--dummy-ecu", "--test", "sessions.default_session_10_01",
+                             "--repeat", "3", "--until-failure", "--report-dir", str(reports), "--junit", str(junit)])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_FAILED, printed)
+        self.assertIn("1 run of 3: 0 passed, 1 did not", printed)
+        self.assertTrue(junit.exists())
+
     def test_the_command_line(self):
         arguments = argparse.Namespace(file=None, interface="virtual", channel="7", bitrate=None)
         plan = cli.load_plan(arguments)
@@ -1634,6 +1668,71 @@ class WindowTest(unittest.TestCase):
         self.addCleanup(other.close)
         self.assertEqual(other.memory.text(), "F000:10", "kept")
 
+    def test_run_control(self):
+        window = self.window
+        window.transport.setChecked(False)
+        bench = Bench(self, EcuConfig(lockout_seconds=1, forced_nrcs=[{"sid": 0x3E, "nrc": 0x22}]))
+        window.request_id.setValue(0x7E0)
+        window.response_id.setValue(0x7E8)
+        self.assertTrue(window.connect_ecu(can.Bus(interface="virtual", channel=bench.channel)))
+        self.addCleanup(window.disconnect_ecu)
+
+        def finished():
+            return spin_until(lambda: window.run_action.isEnabled() and not (window.thread and window.thread.is_alive()),
+                              60)
+
+        window.filter_edit.setText("testerpresent")
+        self.assertFalse(window._group_items["TesterPresent"].isHidden())
+        self.assertTrue(window._group_items["Sessions"].isHidden(), "filtered out")
+        window.filter_edit.setText("")
+        self.assertFalse(window._group_items["Sessions"].isHidden())
+
+        test = window._items["sessions.default_session_10_01"]
+        run_test = next(action for action in window.sequence_menu(test).actions() if action.text() == "Run this test")
+        run_test.trigger()
+        self.assertTrue(finished(), window.log.toPlainText())
+        self.assertEqual([case.name for case in window.report.cases], ["sessions.default_session_10_01"])
+        self.assertEqual((window.progress.value(), window.progress.maximum()), (1, 1))
+        self.assertFalse(window.rerun_action.isEnabled(), "nothing failed")
+
+        group = window._group_items["TesterPresent"]
+        run_group = next(action for action in window.sequence_menu(group).actions()
+                         if action.text().startswith("Run this group"))
+        run_group.trigger()
+        self.assertTrue(finished(), window.log.toPlainText())
+        failed = [case.name for case in window.report.cases if case.verdict == "failed"]
+        self.assertTrue(failed, "TesterPresent refused with 0x22")
+        self.assertTrue(window.rerun_action.isEnabled())
+        window.not_passed_box.setChecked(True)
+        shown = [name for name, item in window._items.items() if not item.isHidden()]
+        self.assertEqual(shown, failed, "only what did not pass")
+        window.not_passed_box.setChecked(False)
+
+        window.rerun_action.trigger()
+        self.assertTrue(finished(), window.log.toPlainText())
+        self.assertEqual([case.name for case in window.report.cases], failed, "only the failed ones again")
+
+        reports = self.folder / "reports"
+        before = set(reports.glob("*.html"))
+        self.assertIsNotNone(window.run(["sessions.default_session_10_01"], repeat=3))
+        self.assertTrue(finished(), window.log.toPlainText())
+        self.assertEqual(window._run_index, 3)
+        self.assertIn("Run 3 of 3", window.log.toPlainText())
+        self.assertIn("3 runs of 3: 3 passed, 0 did not", window.log.toPlainText())
+        self.assertEqual(sorted(path.stem[-5:] for path in set(reports.glob("*.html")) - before),
+                         ["_run1", "_run2", "_run3"], "each run its reports")
+
+        self.assertIsNotNone(window.run(failed[:1], repeat=5, until_failure=True))
+        self.assertTrue(finished(), window.log.toPlainText())
+        self.assertIn("1 run of 5: 0 passed, 1 did not - stopped at the first that failed", window.log.toPlainText())
+
+        window.repeat.setValue(4)
+        window.until_failure.setChecked(True)
+        plan = window.plan()
+        self.assertEqual((plan.repeat, plan.until_failure), (4, True))
+        again = TestPlan.from_dict(plan.to_dict())
+        self.assertEqual((again.repeat, again.until_failure), (4, True))
+
     def test_the_identification_dialog(self):
         from canexpert.test_expert.variant_dialog import IdentificationDialog
         dialog = IdentificationDialog(["A", "B"], Identification(0xF1A0, {"A": "01"}))
@@ -1811,12 +1910,14 @@ class WindowTest(unittest.TestCase):
     def test_the_toolbar(self):
         window = self.window
         labels = [action.text() for action in window.toolbar.actions() if not action.isSeparator()]
-        self.assertEqual(len(labels), 10)
+        self.assertEqual(len(labels), 11)
         buttons = [widget.defaultAction().iconText() for widget in window.toolbar.findChildren(QToolButton)
                    if widget.defaultAction() is not None]
-        self.assertEqual(buttons, ["Description", "Open plan", "Save plan", "Connect", "Run", "Stop", "Discover",
-                                   "Compare", "Report", "Manual"])
+        self.assertEqual(buttons, ["Description", "Open plan", "Save plan", "Connect", "Run", "Stop", "Run failed",
+                                   "Discover", "Compare", "Report", "Manual"])
         self.assertEqual(window.run_action.shortcut().toString(), "F5")
+        self.assertEqual(window.rerun_action.shortcut().toString(), "Ctrl+F5")
+        self.assertFalse(window.rerun_action.isEnabled(), "no run yet")
         self.assertFalse(window.stop_action.isEnabled(), "nothing to stop")
         self.assertFalse(window.report_action.isEnabled(), "no report yet")
         self.assertIs(window.connect_btn.defaultAction(), window.connect_action, "the ECU tab's button is the same")

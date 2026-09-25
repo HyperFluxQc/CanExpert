@@ -140,6 +140,8 @@ class TestPlan:
     variant: str = ""                     # the variant of the description's file to read; "": its first
     modules: list = field(default_factory=list)        # CAN Expert test modules (.py) run after the generated tests
     symbols: list = field(default_factory=list)        # symbol databases (DBC...) the modules' frames are decoded with
+    repeat: int = 1                       # how many times the tests are run, one after the other
+    until_failure: bool = False           # ...stopping after the first run that fails
     path: Path | None = None              # where it was read from or saved to (not saved)
 
     # --- files -----------------------------------------------------------------------------------------
@@ -215,7 +217,8 @@ class TestPlan:
                 "discovery": {"sessions": [f"{session:02X}" for session in self.discovery.sessions],
                               "dids": self.discovery.dids, "rids": self.discovery.rids,
                               "services": self.discovery.services, "security": self.discovery.security},
-                "modules": list(self.modules), "symbols": list(self.symbols)}
+                "modules": list(self.modules), "symbols": list(self.symbols), "repeat": self.repeat,
+                "until_failure": self.until_failure}
 
     @classmethod
     def from_dict(cls, values: dict, path=None) -> "TestPlan":
@@ -240,6 +243,8 @@ class TestPlan:
                        variant=str(values.get("variant", "") or ""),
                        modules=[str(module) for module in values.get("modules", ()) if module],
                        symbols=[str(database) for database in values.get("symbols", ()) if database],
+                       repeat=max(1, int(values.get("repeat", 1) or 1)),
+                       until_failure=bool(values.get("until_failure", False)),
                        path=Path(path) if path is not None else None)
         except (TypeError, ValueError, AttributeError) as exc:
             raise PlanError(f"the plan cannot be read: {exc}") from None

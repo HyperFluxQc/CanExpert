@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -72,7 +73,7 @@ from canexpert.test_expert.tester import Tester
 from canexpert.test_expert.variant_dialog import IdentificationDialog
 from canexpert.test_expert.variants import Identification, identify, is_odx
 from canexpert.testing.report import COLOURS, summary_text
-from canexpert.testing.runner import INFO, PASS, PASSED
+from canexpert.testing.runner import BLOCKED, ERROR, FAILED, INFO, PASS, PASSED
 from canexpert.testing.window import MemorySettings, step_text
 from canexpert.ui_common import app_icon, app_settings, enable_maximize, is_dark_theme, toolbar_icon
 from canexpert.uds.observer import SERVICE_NAMES
@@ -96,6 +97,7 @@ TOOLBAR = (
     None,
     ("run", "Run", "run", "Run the ticked tests against the ECU"),
     ("stop", "Stop", "stop", "Stop after the current step (the clean-up still runs)"),
+    ("rerun", "Run failed", "rerun", "Run again the tests that did not pass in the last run"),
     None,
     ("discover", "Discover", "discover", "Ask the ECU what services, DIDs, routines and security levels it has, and "
                                          "compare them with the description"),
@@ -105,7 +107,8 @@ TOOLBAR = (
     ("manual", "Manual", "manual", "TestExpert in the manual"),
 )
 SHORTCUTS = {"open": QKeySequence.Open, "open_plan": "Ctrl+Shift+O", "save_plan": QKeySequence.Save, "run": "F5",
-             "stop": "Shift+F5", "manual": QKeySequence.HelpContents}
+             "stop": "Shift+F5", "rerun": "Ctrl+F5", "manual": QKeySequence.HelpContents}
+NOT_PASSED = (FAILED, ERROR, BLOCKED)       # what "Run failed" runs again
 TARGET = Qt.UserRole        # a tests tree item's ("test", name), ("group", name) or ("step", test name, description)
 
 
@@ -160,6 +163,8 @@ class TestExpertWindow(QMainWindow):
         self._running_item = None                     # the tests tree item of the test running
         self._cases_started = False
         self._hook_items = {}                         # "setup"/"teardown" -> the item of the run's own steps
+        self._run_names, self._runs, self._run_index = [], 1, 0     # the tests of a run, its repeats, which one
+        self._run_verdicts, self._until_failure, self._stopping = [], False, False
         self._build()
         self.run_event.connect(self._on_event)
         self.run_finished.connect(self._on_finished)
@@ -212,7 +217,7 @@ class TestExpertWindow(QMainWindow):
                       ("E&xit", self.close, QKeySequence("Ctrl+Q"))):
             self._menu_entry(menu, entry)
         run_menu = self.menuBar().addMenu("&Run")
-        for entry in ("connect", None, "run", "stop", None, "discover", "compare", "report"):
+        for entry in ("connect", None, "run", "rerun", "stop", None, "discover", "compare", "report"):
             self._menu_entry(run_menu, entry)
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.actions["manual"])
@@ -241,6 +246,13 @@ class TestExpertWindow(QMainWindow):
         bar = QHBoxLayout()
         self.status = QLabel("")
         bar.addWidget(self.status, 1)
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(240)
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("%v of %m")
+        self.progress.setValue(0)
+        self.progress.setVisible(False)
+        bar.addWidget(self.progress)
         self.connection_label = QLabel("Not connected")
         self.connection_label.setStyleSheet("color: gray;")
         bar.addWidget(self.connection_label)
@@ -255,7 +267,22 @@ class TestExpertWindow(QMainWindow):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
         self.results = QTabWidget()
-        self.results.addTab(self.tree, "Tests")
+        tests_page = QWidget()
+        tests_layout = QVBoxLayout(tests_page)
+        tests_layout.setContentsMargins(0, 0, 0, 0)
+        filter_row = QHBoxLayout()
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter the tests: a word of their name or group")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(lambda _text: self.apply_filter())
+        filter_row.addWidget(self.filter_edit, 1)
+        self.not_passed_box = QCheckBox("Not passed only")
+        self.not_passed_box.setToolTip("Show only the tests that failed, broke, were blocked or skipped in the last run")
+        self.not_passed_box.toggled.connect(lambda _on: self.apply_filter())
+        filter_row.addWidget(self.not_passed_box)
+        tests_layout.addLayout(filter_row)
+        tests_layout.addWidget(self.tree, 1)
+        self.results.addTab(tests_page, "Tests")
         self.coverage_view = QTextBrowser()
         self.coverage_view.setPlaceholderText("After a run: where each service, DID and routine was checked")
         self.results.addTab(self.coverage_view, "Coverage")
@@ -298,10 +325,11 @@ class TestExpertWindow(QMainWindow):
         """The actions of the toolbar, which the menus and the ECU tab share."""
         slots = {"open": lambda: self.open_description(), "open_plan": lambda: self.open_plan(),
                  "save_plan": self.save_plan, "connect": self.toggle_connection, "run": lambda: self.run(),
-                 "stop": self.stop, "discover": lambda: self.discover(), "compare": lambda: self.compare_runs(),
+                 "stop": self.stop, "rerun": lambda: self.run_failed(), "discover": lambda: self.discover(), "compare": lambda: self.compare_runs(),
                  "report": self.open_report, "manual": self.open_manual}
         menu_texts = {"open": "&Open description...", "open_plan": "Open &plan...", "save_plan": "&Save plan",
                       "connect": "&Connect", "run": "&Run the ticked tests", "stop": "S&top",
+                      "rerun": "Run the &failed tests again",
                       "discover": "&Discover the ECU...", "compare": "Co&mpare two runs...",
                       "report": "Open the &report", "manual": "TestExpert in the &manual"}
         self.actions = {}
@@ -321,9 +349,10 @@ class TestExpertWindow(QMainWindow):
             action.setStatusTip(tip.splitlines()[0])
             self.actions[name] = action
             self._icons[name] = icon
-        for name in ("stop", "report"):
+        for name in ("stop", "report", "rerun"):
             self.actions[name].setEnabled(False)
-        self.run_action, self.stop_action = self.actions["run"], self.actions["stop"]
+        self.run_action, self.stop_action, self.rerun_action = self.actions["run"], self.actions["stop"], \
+            self.actions["rerun"]
         self.report_action, self.discover_action = self.actions["report"], self.actions["discover"]
         self.connect_action = self.actions["connect"]
         self._refresh_icons()
@@ -516,6 +545,15 @@ class TestExpertWindow(QMainWindow):
         self.transport.setToolTip("Segmented requests and answers: flow control, sequence numbers, N_Cr and N_Bs, "
                                   "frames to ignore (a few seconds)")
         self.record = QCheckBox("Record the traffic (.blf)")
+        self.repeat = QSpinBox()
+        self.repeat.setRange(1, 10000)
+        self.repeat.setSuffix(" time(s)")
+        self.repeat.setToolTip("Run the tests this many times, one run after the other (each with its reports)")
+        self.until_failure = QCheckBox("until a run fails")
+        repeat_row = QHBoxLayout()
+        repeat_row.addWidget(self.repeat)
+        repeat_row.addWidget(self.until_failure)
+        repeat_row.addStretch()
         for box in (self.destructive, self.lockout, self.functional, self.s3_test, self.transport):
             box.toggled.connect(lambda _on: self.rebuild_tests())
         for box in (self.destructive, self.lockout, self.functional, self.s3_test, self.transport, self.record):
@@ -535,6 +573,7 @@ class TestExpertWindow(QMainWindow):
         self.margin.setRange(0, 5000)
         self.margin.setValue(50)
         self.margin.setSuffix(" ms")
+        form.addRow("Run", repeat_row)
         form.addRow("Wrong keys before the lockout", self.attempts)
         form.addRow("Lockout delay", self.lockout_seconds)
         self.s3_seconds = QDoubleSpinBox()
@@ -802,6 +841,7 @@ class TestExpertWindow(QMainWindow):
         plan.key = KeySource("dll" if self.key_source.currentIndex() == 1 else "xor", self.mask.value(),
                              plan.relative(dll) if dll else "", self.variant.text().strip())
         plan.record = self.record.isChecked()
+        plan.repeat, plan.until_failure = self.repeat.value(), self.until_failure.isChecked()
         reports = self.reports_edit.text().strip()
         plan.reports = plan.relative(reports) if reports else ""
         plan.excluded = [name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Unchecked]
@@ -850,6 +890,8 @@ class TestExpertWindow(QMainWindow):
         self.dll_edit.setText(str(plan.resolve(plan.key.dll) or "") if plan.key.dll else "")
         self.variant.setText(plan.key.variant)
         self.record.setChecked(plan.record)
+        self.repeat.setValue(plan.repeat)
+        self.until_failure.setChecked(plan.until_failure)
         self.reports_edit.setText(str(plan.resolve(plan.reports)) if plan.reports else "")
         self.sequence_editor.set_sequences(plan.sequences)
         self.policy_editor.set_policy(plan.nrc_policy)
@@ -954,6 +996,7 @@ class TestExpertWindow(QMainWindow):
                     item.setToolTip(COL_NAME, case.doc)
                 parent.addChild(item)
                 self._items[case.name] = item
+        self.apply_filter()
         self.sequence_editor.set_targets(list(self.suite.groups()), self.suite.titles())
         self.policy_editor.set_titles(self.suite.titles())
         self._show_sequences()
@@ -1011,6 +1054,11 @@ class TestExpertWindow(QMainWindow):
         scope, name = target
         menu = QMenu(self)
         what = "test" if scope == "test" else "group"
+        names = [name] if scope == "test" else [case.name for case in self.suite.groups().get(name, ())]
+        run = menu.addAction(f"Run this {what}" + (f" ({len(names)} tests)" if scope != "test" else ""))
+        run.triggered.connect(lambda: self.run(names))
+        run.setEnabled(self.mailbox is not None and not (self.thread is not None and self.thread.is_alive()))
+        menu.addSeparator()
         sequences = [sequence.name for sequence in self.sequence_editor.sequences()]
         for when, condition, text in (("before", "always", f"Before this {what}"),
                                       ("after", "always", f"After this {what}"),
@@ -1172,37 +1220,68 @@ class TestExpertWindow(QMainWindow):
 
     # --- running ---------------------------------------------------------------------------------------------
 
-    def run(self, names=None):
+    def run(self, names=None, repeat=None, until_failure=None):
+        """Run the ticked tests (or those named) on a thread, repeat times one after the other (the plan's by
+        default), stopping after the first run that fails when until_failure; returns the first run's thread."""
         if self.thread is not None and self.thread.is_alive():
             return None
         if self.mailbox is None:
             self._write("Connect to the ECU first.")
             return None
         self.rebuild_tests()
-        names = self.ticked() if names is None else list(names)
+        names = self.ticked() if names is None else [name for name in names if name in self._items]
         if not names:
             self._write("Tick at least one test.")
             return None
         plan = self.plan()
         self._save_settings()
-        self.runner = PlanRun(plan, self.description, self.mailbox, names,
-                              on_event=lambda kind, data: self.run_event.emit(kind, data))
+        self._run_names = names
+        self._runs = max(1, plan.repeat if repeat is None else int(repeat))
+        self._until_failure = plan.until_failure if until_failure is None else bool(until_failure)
+        self._run_index, self._run_verdicts, self._stopping = 0, [], False
         self._report_folder = plan.report_folder(TEST_EXPERT_DIR / "reports")
         if self.record.isChecked():
             self._report_folder.mkdir(parents=True, exist_ok=True)
             self.recorder = Recorder(self._report_folder / f"traffic_{datetime.now().strftime('%Y%m%d-%H%M%S')}.blf")
+        self.run_action.setEnabled(False)
+        self.rerun_action.setEnabled(False)
+        self.stop_action.setEnabled(True)
+        self.progress.setVisible(True)
+        self.results.setCurrentIndex(0)                  # the Tests tab, where the verdicts come
+        return self._next_run()
+
+    def _run_prefix(self) -> str:
+        return f"Run {self._run_index} of {self._runs}: " if self._runs > 1 else ""
+
+    def _next_run(self):
+        """Start the next of the runs asked for, on a thread; returns the thread."""
+        self._run_index += 1
+        names = self._run_names
+        self.runner = PlanRun(self.plan(), self.description, self.mailbox, names,
+                              on_event=lambda kind, data: self.run_event.emit(kind, data))
         self._cases_started = False
+        for item in self._hook_items.values():
+            item.takeChildren()
         for name in names:
             item = self._items[name]
             item.takeChildren()
             for column in (COL_VERDICT, COL_STEPS, COL_TIME):
                 item.setText(column, "")
-        self._write(f"Running {len(names)} tests of {self.description.name}")
-        self.run_action.setEnabled(False)
-        self.stop_action.setEnabled(True)
+        self.progress.setRange(0, len(names))
+        self.progress.setValue(0)
+        self.progress.setFormat(f"{self._run_prefix()}%v of %m")
+        self._write(f"{self._run_prefix()}Running {len(names)} tests of {self.description.name}")
         self.thread = threading.Thread(target=self._run, args=(self.runner,), daemon=True)
         self.thread.start()
         return self.thread
+
+    def run_failed(self):
+        """Run again the tests that did not pass (failed, broke or were blocked) in the last run."""
+        names = [case.name for case in self.report.cases if case.verdict in NOT_PASSED] if self.report else []
+        if not names:
+            self._write("No test of the last run is to be run again.")
+            return None
+        return self.run(names, repeat=1)
 
     def _run(self, run):
         report = None
@@ -1212,6 +1291,7 @@ class TestExpertWindow(QMainWindow):
             self.run_finished.emit(report)
 
     def stop(self):
+        self._stopping = True                   # and the runs still to come
         if self.runner is not None:
             self.runner.stop()
         self._discovery_stop.set()
@@ -1344,6 +1424,7 @@ class TestExpertWindow(QMainWindow):
                 parent.setExpanded(True)
         elif kind == "verdict":
             self._running_item = None
+            self.progress.setValue(min(self.progress.maximum(), self.progress.value() + 1))
             item = self._items.get(data.name)
             if item is not None:
                 item.setText(COL_VERDICT, data.verdict)
@@ -1355,10 +1436,34 @@ class TestExpertWindow(QMainWindow):
                     item.setToolTip(COL_VERDICT, data.error.strip().splitlines()[-1])
 
     def _on_finished(self, report):
-        self.run_action.setEnabled(True)
-        self.stop_action.setEnabled(False)
         run, self.runner = self.runner, None
         self.report = report
+        if report is not None:
+            self.coverage_view.setHtml(run.coverage_html())
+            for did, (name, value) in sorted(run.suite.identification.items()):
+                self._write(f"ECU: {did:04X} {name} = {value}")
+            try:
+                self.report_paths = run.save(self._report_folder, f"_run{self._run_index}" if self._runs > 1 else "")
+                self.report_action.setEnabled(True)
+                where = f"   Report: {self.report_paths[0]}"
+            except OSError as exc:
+                self.report_paths, where = None, f"   The report could not be written: {exc}"
+            if self.report_paths:
+                self._compare_with_previous(self.report_paths[2])
+            summary = self._run_prefix() + summary_text(report)
+            self.status.setText(f"<b style='color:{COLOURS.get(report.verdict, '#6b7280')}'>{summary}</b>")
+            self._write(summary + where)
+            self._run_verdicts.append(report.verdict)
+            self.apply_filter()
+            failed = report.verdict == FAILED
+            if self._run_index < self._runs and not self._stopping and not report.stopped and \
+                    not (self._until_failure and failed):
+                self._next_run()
+                return
+        self.run_action.setEnabled(True)
+        self.stop_action.setEnabled(False)
+        self.rerun_action.setEnabled(report is not None and any(case.verdict in NOT_PASSED for case in report.cases))
+        self.progress.setValue(self.progress.maximum())
         if self.recorder is not None:
             recording = self.recorder.path
             self.recorder.stop()
@@ -1367,20 +1472,39 @@ class TestExpertWindow(QMainWindow):
         if report is None:
             self.status.setText("The run failed; see the log.")
             return
-        self.coverage_view.setHtml(run.coverage_html())
-        for did, (name, value) in sorted(run.suite.identification.items()):
-            self._write(f"ECU: {did:04X} {name} = {value}")
-        try:
-            self.report_paths = run.save(self._report_folder)
-            self.report_action.setEnabled(True)
-            where = f"   Report: {self.report_paths[0]}"
-        except OSError as exc:
-            self.report_paths, where = None, f"   The report could not be written: {exc}"
-        if self.report_paths:
-            self._compare_with_previous(self.report_paths[2])
-        summary = summary_text(report)
-        self.status.setText(f"<b style='color:{COLOURS.get(report.verdict, '#6b7280')}'>{summary}</b>")
-        self._write(summary + where)
+        if self._runs > 1:
+            passed = self._run_verdicts.count(PASSED)
+            done = len(self._run_verdicts)
+            text = (f"{done} run{'s' if done != 1 else ''} of {self._runs}: {passed} passed, {done - passed} did not"
+                    + (" - stopped at the first that failed" if self._until_failure and done < self._runs
+                       and self._run_verdicts[-1] == FAILED else ""))
+            self._write(text)
+            colour = COLOURS.get(PASSED if passed == done else FAILED)
+            self.status.setText(f"<b style='color:{colour}'>{text}</b>")
+
+    # --- the filter ------------------------------------------------------------------------------------------
+
+    def apply_filter(self):
+        """Show the tests whose title, name or group holds the filter's words - with "Not passed only", those of
+        them the last run did not pass."""
+        words = self.filter_edit.text().lower().split()
+        not_passed = self.not_passed_box.isChecked()
+        titles = self.suite.titles() if self.suite is not None else {}
+        for group, parent in self._group_items.items():
+            shown = 0
+            for index in range(parent.childCount()):
+                item = parent.child(index)
+                target = item.data(COL_NAME, TARGET)
+                name = target[1] if target else ""
+                text = f"{group} {titles.get(name, '')} {name}".lower()
+                verdict = item.text(COL_VERDICT)
+                visible = all(word in text for word in words) and \
+                    (not not_passed or verdict in (*NOT_PASSED, "skipped"))
+                item.setHidden(not visible)
+                shown += visible
+            parent.setHidden(not shown)
+            if words and shown:
+                parent.setExpanded(True)
 
     # --- comparing runs ---------------------------------------------------------------------------------------
 

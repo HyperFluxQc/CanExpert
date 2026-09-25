@@ -238,6 +238,7 @@ leaves an HTML and a JUnit report. `ODX/dummy_ecu.cdd` describes the Dummy ECU, 
 ```bash
 python test_expert.py ODX/dummy_ecu.cdd
 python test_expert.py nightly.json --run --junit results.xml
+python test_expert.py nightly.json --run --test sessions --repeat 20 --until-failure
 ```
 
 ## Dummy ECU (no vehicle needed)
