@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from canexpert.uds.client import hex_text
+
 KINDS = {"request": "Request", "wait": "Wait", "keep_alive": "Keep alive", "session": "Session",
          "unlock": "Unlock", "reset": "ECU reset", "frame": "CAN frame", "script": "Python"}
 HINTS = {"request": "request bytes in hex: 11 01", "wait": "seconds: 2.5",
@@ -294,20 +296,20 @@ class SequenceRunner:
                 raise SequenceError("a request needs its bytes")
             expect, nrc = parse_expect(step.expect)
             if step.functional and tester.functional_id is None:
-                return False, f"{prefix}: {_hex(payload)} functional", "no functional request ID set"
+                return False, f"{prefix}: {hex_text(payload)} functional", "no functional request ID set"
             if expect == "none":
                 answer = tester.quiet(payload, step.functional)
-                return answer.raw is None, f"{prefix}: {_hex(payload)} is not answered", answer.text()
+                return answer.raw is None, f"{prefix}: {hex_text(payload)} is not answered", answer.text()
             answer = tester.ask(payload, step.functional)
             if expect == "ignore":
                 t.log(f"{prefix}: {answer.text()}")
                 return None
             if expect == "positive":
-                return answer.positive(), f"{prefix}: {_hex(payload)} answered positively", answer.text()
+                return answer.positive(), f"{prefix}: {hex_text(payload)} answered positively", answer.text()
             if expect == "any":
-                return answer.raw is not None, f"{prefix}: {_hex(payload)} answered", answer.text()
+                return answer.raw is not None, f"{prefix}: {hex_text(payload)} answered", answer.text()
             return (answer.nrc == nrc and answer.raw[1] == payload[0],
-                    f"{prefix}: {_hex(payload)} answered NRC 0x{nrc:02X}", answer.text())
+                    f"{prefix}: {hex_text(payload)} answered NRC 0x{nrc:02X}", answer.text())
         if kind == "wait":
             seconds = parse_seconds(step.value)
             t.log(f"{prefix}: wait {seconds:g} s")
@@ -324,7 +326,7 @@ class SequenceRunner:
         if kind == "frame":
             can_id, data, extended = parse_frame(step.value)
             t.send(can_id, data, extended)
-            t.log(f"{prefix}: frame {can_id:X} {_hex(data)} sent")
+            t.log(f"{prefix}: frame {can_id:X} {hex_text(data)} sent")
             return None
         if kind == "script":
             return self._script(t, step.value, prefix)
@@ -375,7 +377,7 @@ class SequenceRunner:
             return False, what, answer.text()
         t.wait(reset_time)
         back = None
-        for attempt in range(RESET_RETRIES):
+        for _ in range(RESET_RETRIES):
             back = tester.ask(b"\x10\x01", timeout=0.5)
             if back.positive():
                 return True, what, f"{answer.text()}; {back.text()}"
@@ -408,6 +410,3 @@ class SequenceRunner:
             self._modules[key] = module
         return self._modules[key]
 
-
-def _hex(data) -> str:
-    return bytes(data).hex(" ").upper()

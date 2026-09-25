@@ -10,12 +10,12 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QComboBox, QHeaderView, QPushButton, QTableWidget, QTableWidgetItem, QWidget
 
-from canexpert.simulator.dtc import status_text
 from canexpert.simulator.fields import (printable, forced_text, parse_sessions, format_sessions, number_text,
                                         parse_value_ranges, format_value_ranges)
 from canexpert.simulator.ecu import SERVICE_NAMES, EcuConfig
 from canexpert.simulator.signals import GENERATORS, SignalSimulation
 from canexpert.simulator.widgets import hint
+from canexpert.uds.dtc import status_text
 
 
 

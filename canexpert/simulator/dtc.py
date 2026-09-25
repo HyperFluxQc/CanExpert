@@ -24,15 +24,7 @@ NOT_COMPLETED_SINCE_CLEAR = 0x10
 FAILED_SINCE_CLEAR = 0x20
 NOT_COMPLETED_THIS_CYCLE = 0x40
 WARNING_INDICATOR = 0x80
-STATUS_BITS = ("testFailed", "testFailedThisOperationCycle", "pendingDTC", "confirmedDTC",
-               "testNotCompletedSinceLastClear", "testFailedSinceLastClear",
-               "testNotCompletedThisOperationCycle", "warningIndicatorRequested")
 ALL_GROUPS = 0xFFFFFF
-
-
-def status_text(status: int) -> str:
-    """"pendingDTC, confirmedDTC" - the bits of a status byte by name."""
-    return ", ".join(name for bit, name in enumerate(STATUS_BITS) if status & (1 << bit)) or "no bit set"
 
 
 class DtcMemory:

@@ -13,6 +13,7 @@ from collections import Counter
 
 from canexpert.odx_services import dtc_display
 from canexpert.test_expert.transport import Link
+from canexpert.uds.client import hex_text
 
 TRANSFER, MEMORY, PERIODIC, EVENTS, COMMUNICATION = ("Download and upload", "Memory by address", "Periodic data",
                                                      "ResponseOnEvent", "Communication")
@@ -54,9 +55,6 @@ def memory_request(sid: int, address: int, size: int, *before) -> bytes:
     and the size."""
     return bytes([sid, *before, ADDRESS_FORMAT]) + address.to_bytes(4, "big") + size.to_bytes(4, "big")
 
-
-def _hex(data) -> str:
-    return bytes(data).hex(" ").upper()
 
 
 class ServiceTests:
@@ -174,27 +172,27 @@ class ServiceTests:
         self._prepare(t, 0x34, unlock=False)
         address, size = self.download or PROBE_RANGE
         request = memory_request(0x34, address, size, 0x00)
-        self.s.negative(t, request, "locked", f"{_hex(request)} while locked: NRC 0x33")
+        self.s.negative(t, request, "locked", f"{hex_text(request)} while locked: NRC 0x33")
 
     def download_format(self, t):
         self._prepare(t, 0x34)
         address, size = self.download or PROBE_RANGE
         compressed = memory_request(0x34, address, size, 0xFF)
-        self.s.negative(t, compressed, "transfer_format", f"{_hex(compressed)}: compression method 0xFF, NRC 0x31")
+        self.s.negative(t, compressed, "transfer_format", f"{hex_text(compressed)}: compression method 0xFF, NRC 0x31")
         self.s.negative(t, b"\x34\x00\x00", "transfer_format", "34 00 00: an address and size of no bytes, NRC 0x31")
 
     def download_started(self, t):
         self._prepare(t, 0x34)
         address, size = self.download
         request = memory_request(0x34, address, size, 0x00)
-        raw = self.s.positive(t, request, f"{_hex(request)} is accepted")
+        raw = self.s.positive(t, request, f"{hex_text(request)} is accepted")
         if raw is None:
             return
         length = raw[1] >> 4 if len(raw) > 1 else 0
         well_formed = len(raw) == 2 + length and 1 <= length <= 4 and raw[1] & 0x0F == 0
         maximum = int.from_bytes(raw[2:2 + length], "big") if well_formed else 0
         t.check(well_formed and maximum >= 3, "74, the length of maxNumberOfBlockLength and a block length of 3 "
-                                              "bytes at least", f"{_hex(raw)}: {maximum} bytes per TransferData")
+                                              "bytes at least", f"{hex_text(raw)}: {maximum} bytes per TransferData")
         self.s.negative(t, request, "transfer_active", "a second RequestDownload while one runs: NRC 0x22")
         if 0x36 in self.s.d.services:
             self.s.negative(t, b"\x36\x02\x00", "transfer_counter", "36 02 as the first TransferData: NRC 0x73")
@@ -218,7 +216,7 @@ class ServiceTests:
         address, size = self.memory
         raw = self._read(t, f"23 44 {address:08X} {size:08X}: 63 and {size} bytes")
         if raw is not None:
-            t.log(f"{_hex(raw[1:17])}{' ...' if size > 16 else ''}")
+            t.log(f"{hex_text(raw[1:17])}{' ...' if size > 16 else ''}")
 
     def memory_locked(self, t):
         d = self.s.d
@@ -249,7 +247,7 @@ class ServiceTests:
         self._prepare(t, 0x23)
         after = self._read(t, "read again")
         if after is not None:
-            t.check(after == before, "the same bytes", f"{_hex(after[1:9])}...")
+            t.check(after == before, "the same bytes", f"{hex_text(after[1:9])}...")
 
     # --- periodic data -------------------------------------------------------------------------------------------
 
@@ -265,7 +263,7 @@ class ServiceTests:
             seen = self._watch(link, identifier, PERIODIC_WATCH)
         rate = f", every {PERIODIC_WATCH / len(seen) * 1000:.0f} ms" if seen else ""
         t.check(len(seen) >= 2, f"6A {identifier:02X} and the data come periodically",
-                f"{len(seen)} in {PERIODIC_WATCH:g} s{rate}" + (f": {_hex(seen[0])}" if seen else ""))
+                f"{len(seen)} in {PERIODIC_WATCH:g} s{rate}" + (f": {hex_text(seen[0])}" if seen else ""))
         self.s.positive(t, bytes([0x2A, PERIODIC_STOP, identifier]), f"2A 04 {identifier:02X} is answered 6A")
         with link.exchange():
             time.sleep(0.05)
@@ -322,7 +320,7 @@ class ServiceTests:
         self.s.tester.ask(bytes([0x86, 0x06, EVENT_WINDOW]))
         record = did.to_bytes(2, "big")
         setup = bytes([0x86, 0x03, EVENT_WINDOW]) + record + b"\x22" + record
-        if self.s.positive(t, setup, f"{_hex(setup)} (onChangeOfDataIdentifier) is accepted", echo=[0x03]) is None:
+        if self.s.positive(t, setup, f"{hex_text(setup)} (onChangeOfDataIdentifier) is accepted", echo=[0x03]) is None:
             return
         link = Link(self.s.tester)
         self.s.positive(t, bytes([0x86, 0x05, EVENT_WINDOW]), "86 05 (startResponseOnEvent) is accepted", echo=[0x05])
@@ -331,7 +329,7 @@ class ServiceTests:
             answer = link.answer(0x22, EVENT_WAIT)
         t.check(answer is not None and answer[:3] == b"\x62" + record,
                 f"the ECU sends 62 {did:04X} and its value unasked, within {EVENT_WAIT:g} s",
-                _hex(answer[:12]) if answer else "nothing came")
+                hex_text(answer[:12]) if answer else "nothing came")
         self.s.positive(t, bytes([0x86, 0x00, EVENT_WINDOW]), "86 00 (stopResponseOnEvent) is accepted", echo=[0x00])
         self.s.positive(t, bytes([0x86, 0x06, EVENT_WINDOW]), "86 06 (clearResponseOnEvent) is accepted", echo=[0x06])
 
@@ -349,7 +347,7 @@ class ServiceTests:
     def io_none(self, t, did):
         self._prepare(t, 0x2F)
         request = b"\x2f" + did.to_bytes(2, "big") + bytes([RETURN_CONTROL])
-        self.s.negative(t, request, "io_unknown", f"{_hex(request)}: NRC 0x31")
+        self.s.negative(t, request, "io_unknown", f"{hex_text(request)}: NRC 0x31")
 
     def io(self, t, did):
         entry = self.s.d.dids[did]
@@ -358,7 +356,7 @@ class ServiceTests:
         identifier = did.to_bytes(2, "big")
         if not parameters or RETURN_CONTROL in parameters:
             request = b"\x2f" + identifier + bytes([RETURN_CONTROL])
-            self.s.positive(t, request, f"{_hex(request)} (returnControlToECU) is answered 6F",
+            self.s.positive(t, request, f"{hex_text(request)} (returnControlToECU) is answered 6F",
                             echo=identifier + bytes([RETURN_CONTROL]))
         if not self.s.o.destructive or (parameters and SHORT_TERM not in parameters):
             return
@@ -368,10 +366,10 @@ class ServiceTests:
             t.log("its value could not be read: shortTermAdjustment is not tried")
             return
         request = b"\x2f" + identifier + bytes([SHORT_TERM]) + bytes(read[3:])
-        self.s.positive(t, request, f"{_hex(request)} (shortTermAdjustment to that value) is answered 6F",
+        self.s.positive(t, request, f"{hex_text(request)} (shortTermAdjustment to that value) is answered 6F",
                         echo=identifier + bytes([SHORT_TERM]))
         back = b"\x2f" + identifier + bytes([RETURN_CONTROL])
-        self.s.positive(t, back, f"{_hex(back)}: control given back", echo=identifier + bytes([RETURN_CONTROL]))
+        self.s.positive(t, back, f"{hex_text(back)}: control given back", echo=identifier + bytes([RETURN_CONTROL]))
 
     # --- the DTCs ---------------------------------------------------------------------------------------------------
 

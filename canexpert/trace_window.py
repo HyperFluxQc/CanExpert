@@ -338,7 +338,7 @@ class TraceWindow(ToolButtonsMixin, QDialog):
         return f"{frame[0] - first:.6f}"
 
     def _append_row(self, frame, previous):
-        timestamp, direction, can_id, data, extended = frame
+        _timestamp, direction, can_id, data, extended = frame
         name = self._name(can_id)
         label = name
         if extended and self.j1939_btn.isChecked():

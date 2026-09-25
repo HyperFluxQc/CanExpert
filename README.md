@@ -183,6 +183,7 @@ CanExpert/
 │   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable
 │   ├── transmit_pane.py        # The Transmit window: the message list and the simulated nodes
 │   ├── transmit_window.py      # Transmit list: one-shot and cyclic messages
+│   ├── cyclic.py, timing.py    # Cyclic frames sent on time: their thread, waits to the half millisecond
 │   ├── simulation_window.py    # Simulated nodes: a database's messages sent as those ECUs would
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service, ODX services, the fault memory
 │   ├── testing/                # Test modules: runner, HTML/JUnit reports, the Test window
@@ -195,13 +196,15 @@ CanExpert/
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
 │   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
-│   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions)
+│   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions),
+│   │                           # observer.py (ISO-TP read off the bus), dtc.py (the DTC status byte)
 │   └── simulator/              # ecu.py (the simulated ECU), signals.py (its frames), dtc.py (its fault
 │                               #   memory), window.py (its window; window_pages.py, window_tables.py,
 │                               #   fields.py, widgets.py)
 ├── Configurations/             # config_<name>.json, one per configuration
 ├── Databases/                  # <family>_<YYYY-MM-DD>.xml and matching _script.py
-├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files (ODX/dummy_ecu.odx-d: its DTC texts)
+├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files (ODX/: the Dummy ECU's DTC texts, and
+│                               # its description for TestExpert - dummy_ecu.cdd, dummy_ecu_services.odx-d)
 ├── examples/                   # Runnable panel + script pair, demo firmware
 ├── TestModules/                # Test modules (dummy_ecu_checks.py); reports/ of their runs
 ├── docs/                       # USER_MANUAL.md, DOCUMENTATION.md, REQUIREMENTS_STATUS.md

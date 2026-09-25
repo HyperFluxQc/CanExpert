@@ -286,14 +286,6 @@ class _Document:
         return raw
 
 
-def cdd_variants(path) -> list[str]:
-    """The qualifiers of a CDD's variants (VARs), in the file's order."""
-    root = ElementTree.parse(str(path)).getroot()
-    ecudoc = root.find("ECUDOC") if root.tag != "ECUDOC" else root
-    ecu = ecudoc.find("ECU") if ecudoc is not None else None
-    return [_name(var) for var in ecu.findall("VAR")] if ecu is not None else []
-
-
 def load_cdd(path, variant: str | None = None) -> EcuDescription:
     """The description of a CDD file; variant: the qualifier of the VAR to read (default: the first)."""
     try:

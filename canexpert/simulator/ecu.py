@@ -729,10 +729,6 @@ class DummyEcu:
             raise NegativeResponse(0x13)
         return request[1] & 0x7F, bool(request[1] & 0x80)
 
-    def _require_session(self, *sessions):
-        if self.state.session not in sessions:
-            raise NegativeResponse(0x7F)
-
     def _require_unlocked(self):
         if not self.state.unlocked:
             raise NegativeResponse(0x33)

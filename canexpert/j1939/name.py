@@ -5,7 +5,7 @@ identity number at the bottom. Sent little-endian in the Address Claimed message
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 # (field, bit, width), lowest bit first
 FIELDS = (("identity", 0, 21), ("manufacturer", 21, 11), ("ecu_instance", 32, 3), ("function_instance", 35, 5),
@@ -70,6 +70,3 @@ class Name:
         group = INDUSTRY_GROUPS.get(self.industry_group, f"industry group {self.industry_group}")
         return (f"{self.function_text()} #{self.function_instance}, manufacturer {self.manufacturer}, "
                 f"identity 0x{self.identity:05X}, {group}")
-
-    def as_dict(self) -> dict:
-        return asdict(self)

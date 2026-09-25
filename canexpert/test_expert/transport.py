@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import can
 
 from canexpert.test_expert.description import DEFAULT_SESSION
+from canexpert.uds.client import hex_text
 from canexpert.uds.isotp import FC_CONTINUE, FC_OVERFLOW, FC_WAIT, IsoTpError, drain, flow_control_frame, isotp_recv
 
 GROUP = "Transport layer (ISO 15765-2)"
@@ -42,9 +43,6 @@ def st_min_seconds(value: int) -> float:
     return 0x7F / 1000                  # a reserved value: the longest
 
 
-def _hex(data) -> str:
-    return bytes(data).hex(" ").upper()
-
 
 @dataclass
 class Frame:
@@ -64,7 +62,7 @@ class Frame:
         return self.data[0] & 0x0F
 
     def text(self) -> str:
-        return _hex(self.data)
+        return hex_text(self.data)
 
 
 def gap(earlier: Frame, later: Frame) -> float:
@@ -273,7 +271,7 @@ class TransportTests:
     def _answers_again(self, t):
         """A step: the ECU answers a request again."""
         request = self.short
-        self.s.positive(t, request, f"the ECU answers again ({_hex(request)})", echo=request[1:2])
+        self.s.positive(t, request, f"the ECU answers again ({hex_text(request)})", echo=request[1:2])
 
     def _start(self, t, link, payload):
         """Send a request's first frame and take the ECU's ContinueToSend; the test ends without it."""
@@ -281,7 +279,7 @@ class TransportTests:
         link.drain()
         link.send(first)
         flow = link.continue_to_send()
-        t.require(flow is not None, f"the first frame of {_hex(payload[:3])}... ({len(payload)} bytes) is "
+        t.require(flow is not None, f"the first frame of {hex_text(payload[:3])}... ({len(payload)} bytes) is "
                                     f"answered by ContinueToSend", flow.text() if flow else "none came")
         return flow, consecutive
 
@@ -311,7 +309,7 @@ class TransportTests:
     def _whole(self, t, data, total):
         what = f"the answer is whole: 62 {self.long_did:04X} and {total - 3} bytes"
         t.check(len(data) >= total and bytes(data[:3]) == b"\x62" + self.long_did.to_bytes(2, "big"), what,
-                f"{len(data)} of {total} bytes: {_hex(data[:12])}{' ...' if len(data) > 12 else ''}")
+                f"{len(data)} of {total} bytes: {hex_text(data[:12])}{' ...' if len(data) > 12 else ''}")
 
     # --- the ECU receiving -------------------------------------------------------------------------------------
 
@@ -323,7 +321,7 @@ class TransportTests:
             link.drain()
             sent = link.send(first)
             flow = link.flow_control()
-            t.require(flow is not None, f"the first frame of {_hex(payload[:3])}... ({len(payload)} bytes) is "
+            t.require(flow is not None, f"the first frame of {hex_text(payload[:3])}... ({len(payload)} bytes) is "
                                         f"answered by a flow control within N_Bs ({N_BS * 1000:.0f} ms)",
                       f"{flow.text()} after {(flow.read - sent) * 1000:.0f} ms" if flow else "none came")
             waits = 0
@@ -341,12 +339,12 @@ class TransportTests:
             t.require(not why, "the consecutive frames are taken, block by block", why)
             answer = link.answer(payload[0])
             t.check(answer is not None, "the whole request is answered",
-                    _hex(answer[:16]) + (" ..." if answer and len(answer) > 16 else "") if answer else "no answer")
+                    hex_text(answer[:16]) + (" ..." if answer and len(answer) > 16 else "") if answer else "no answer")
 
     def wrong_sequence(self, t):
         link = self._link()
         with link.exchange():
-            flow, consecutive = self._start(t, link, self.request)
+            _flow, consecutive = self._start(t, link, self.request)
             wrong = bytes([0x20 | ((consecutive[0][0] + 1) & 0x0F)]) + consecutive[0][1:]
             link.send(wrong)
             self._silent(t, link, f"a consecutive frame numbered {wrong[0] & 0x0F} instead of "
@@ -356,7 +354,7 @@ class TransportTests:
     def late(self, t):
         link = self._link()
         with link.exchange():
-            flow, consecutive = self._start(t, link, self.request)
+            _flow, consecutive = self._start(t, link, self.request)
             t.log(f"the consecutive frames held back {LATE:.2f} s (N_Cr {N_CR * 1000:.0f} ms)")
             t.wait(LATE)
             for body in consecutive:
@@ -368,12 +366,12 @@ class TransportTests:
         link = self._link()
         short = self.short
         with link.exchange():
-            flow, consecutive = self._start(t, link, self.request)
+            _flow, consecutive = self._start(t, link, self.request)
             link.send(bytes([len(short)]) + short)
             answer = link.answer(short[0])
             t.check(answer is not None and answer[0] == short[0] + 0x40,
-                    f"a single frame ({_hex(short)}) in the middle of a segmented request is taken",
-                    _hex(answer) if answer else "no answer")
+                    f"a single frame ({hex_text(short)}) in the middle of a segmented request is taken",
+                    hex_text(answer) if answer else "no answer")
             for body in consecutive:
                 link.send(body)
             self._silent(t, link, "the rest of the dropped request is ignored: it is not answered")
@@ -392,7 +390,7 @@ class TransportTests:
             for body, pad, what in cases:
                 link.drain()
                 link.send(body, pad=pad)
-                self._silent(t, link, f"{what} ({_hex(body)}) is ignored")
+                self._silent(t, link, f"{what} ({hex_text(body)}) is ignored")
             if self.s.o.functional and link.functional_id is not None:
                 link.drain()
                 first, _ = link.segments(self.request)
@@ -446,7 +444,7 @@ class TransportTests:
     def st_min(self, t):
         link = self._link()
         with link.exchange():
-            first, total, data = self._ask_long(t, link)
+            _first, total, data = self._ask_long(t, link)
             link.send(flow_control_frame(0, ST_MIN))
             frames = []
             while len(data) < total:
@@ -465,7 +463,7 @@ class TransportTests:
     def wait(self, t):
         link = self._link()
         with link.exchange():
-            first, total, data = self._ask_long(t, link)
+            _first, total, data = self._ask_long(t, link)
             link.send(flow_control_frame(0, 0, FC_WAIT))
             early = link.receive(WAIT_HOLD)
             t.check(early is None, f"after a WAIT the ECU sends nothing ({WAIT_HOLD * 1000:.0f} ms)",

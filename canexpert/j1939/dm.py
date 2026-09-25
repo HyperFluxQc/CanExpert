@@ -8,8 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 LAMPS = ("Malfunction indicator", "Red stop", "Amber warning", "Protect")      # the order of their bit pairs
-LAMP_STATES = {0: "off", 1: "on", 2: "error", 3: "not available"}
-FLASH_STATES = {0: "slow flash", 1: "fast flash", 2: "reserved", 3: "no flash"}
 FMI_TEXT = {
     0: "Above normal range - most severe", 1: "Below normal range - most severe",
     2: "Erratic, intermittent or incorrect", 3: "Voltage above normal or shorted to high source",
@@ -47,7 +45,7 @@ class J1939Dtc:
 @dataclass
 class DiagnosticMessage:
     lamps: tuple = (3, 3, 3, 3)           # LAMPS' states: 0 off, 1 on, 2 error, 3 not available
-    flash: tuple = (3, 3, 3, 3)
+    flash: tuple = (3, 3, 3, 3)           # 0 slow flash, 1 fast flash, 2 reserved, 3 no flash
     dtcs: list = field(default_factory=list)
 
     def lamps_text(self) -> str:

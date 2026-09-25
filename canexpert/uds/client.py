@@ -120,6 +120,11 @@ def _accepts_pending(request) -> bool:
     return len(positional) >= 4 or any(p.kind == p.VAR_POSITIONAL for p in parameters)
 
 
+def hex_text(data) -> str:
+    """"22 F1 90": bytes as a request or an answer is written."""
+    return bytes(data).hex(" ").upper()
+
+
 def _positive(reply: bytes | None, sid: int) -> bool:
     return bool(reply) and reply[0] == sid + 0x40
 

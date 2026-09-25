@@ -28,7 +28,7 @@ from canexpert.simulator.ecu import BOOT_VERSION, DummyEcu, EcuConfig
 from canexpert.test_expert import cli
 from canexpert.test_expert import odx as odx_loader
 from canexpert.test_expert import window as window_module
-from canexpert.test_expert.cdd import CddError, cdd_variants, load_cdd
+from canexpert.test_expert.cdd import CddError, load_cdd
 from canexpert.test_expert.compare import (answer_of, compare_runs, comparison_page, load_results, previous_results,
                                            results_dict)
 from canexpert.test_expert.coverage import Coverage, coverage_html, untested
@@ -357,7 +357,6 @@ class VariantTest(unittest.TestCase):
 
     def test_a_cdds_variants(self):
         path = self.two_variants()
-        self.assertEqual(cdd_variants(path), ["COMMON", "BOOT"])
         first = load_cdd(path)
         self.assertEqual((first.variants, first.variant), (["COMMON", "BOOT"], "COMMON"), "the first, unless chosen")
         self.assertIn(0x1234, first.dids)

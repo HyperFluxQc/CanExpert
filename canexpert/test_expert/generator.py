@@ -26,7 +26,7 @@ from canexpert.test_expert.sequences import LABELS, SequenceRunner, due
 from canexpert.test_expert.services import ServiceTests
 from canexpert.test_expert.transport import TransportTests
 from canexpert.testing.runner import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, TestCase, TestModule, call_hook
-from canexpert.uds.client import UdsFunctions
+from canexpert.uds.client import UdsFunctions, hex_text
 from canexpert.uds.observer import SERVICE_NAMES
 
 # Identifiers that are hardly ever used: the ones the tests send expecting "not supported", when free.
@@ -90,9 +90,6 @@ def parse_routine_starts(text: str) -> dict:
     return starts
 
 
-def _hex(data) -> str:
-    return bytes(data).hex(" ").upper()
-
 
 def _hook_failure(hook, verdict, why) -> str:
     last = why.strip().splitlines()[-1] if why.strip() else ""
@@ -108,7 +105,7 @@ def value_text(data: bytes) -> str:
     trimmed = bytes(data).rstrip(b"\x00\xff ")
     if trimmed and all(0x20 <= byte < 0x7F for byte in trimmed):
         return trimmed.decode("ascii")
-    return _hex(data) if data else "(empty)"
+    return hex_text(data) if data else "(empty)"
 
 
 class Suite:
@@ -357,7 +354,7 @@ class Suite:
         detail = (f"{len(answer.pending)} response pending: the first after {answer.pending[0] * 1000:.0f} ms "
                   f"(P2 {self.p2 * 1000:.0f} ms)" + (f", the longest gap {max(gaps) * 1000:.0f} ms" if gaps else "")
                   + f", the answer {last * 1000:.0f} ms after the last (P2* {self.p2_star * 1000:.0f} ms)")
-        t.check(ok, f"{_hex(answer.request[:4])}: response pending within P2, then P2*", detail)
+        t.check(ok, f"{hex_text(answer.request[:4])}: response pending within P2, then P2*", detail)
 
     def _covered(self, t, answer, verdict=None):
         """The step just checked (the last of t) counts for what answer asked, in the session it was sent in."""
@@ -617,9 +614,9 @@ class Suite:
                     name = self.d.session_name(session)
                     if not service.access.allows(session):
                         self.negative(t, request, "service_not_in_session",
-                                      f"{name}: {_hex(request)} is refused, NRC 0x7F")
+                                      f"{name}: {hex_text(request)} is refused, NRC 0x7F")
                     elif harmless:
-                        self.available(t, request, f"{name}: {_hex(request)} is answered")
+                        self.available(t, request, f"{name}: {hex_text(request)} is answered")
             self._add(group, f"{service.name} ({sid:02X}) by session", case)
 
     def _nrc_order(self):
@@ -681,7 +678,7 @@ class Suite:
                     self.unlock(t, min(service.access.levels))
                 for request in wrong:
                     self.negative(t, request, "incorrect_length",
-                                  f"{self.d.session_name(session)}: {_hex(request)} has an incorrect length")
+                                  f"{self.d.session_name(session)}: {hex_text(request)} has an incorrect length")
         if checks:
             self._add("Message length", "Requests too short or too long", case)
 
@@ -700,10 +697,10 @@ class Suite:
             checks.append((sid, session, bytes([sid, unused]) + tail))
 
         def case(t):
-            for sid, session, request in checks:
+            for _sid, session, request in checks:
                 self.enter(t, session)
                 self.negative(t, request, "sub_function_not_supported",
-                              f"{self.d.session_name(session)}: {_hex(request)}: no such sub-function")
+                              f"{self.d.session_name(session)}: {hex_text(request)}: no such sub-function")
         if checks:
             self._add("Sub-functions", "Sub-functions the ECU does not have", case)
 
@@ -871,7 +868,7 @@ class Suite:
                 seed = self.positive(t, bytes([0x27, level]), "requestSeed answers a seed", echo=[level])
                 if seed is None:
                     return
-                t.check(len(seed) > 2 and any(seed[2:]), "the seed is not empty and not zero while locked", _hex(seed))
+                t.check(len(seed) > 2 and any(seed[2:]), "the seed is not empty and not zero while locked", hex_text(seed))
                 wrong = bytes(byte ^ 0xFF for byte in (self.o.key(level, seed[2:]) if self.o.key else seed[2:]))
                 self.negative(t, bytes([0x27, level + 1]) + wrong, "invalid_key", "a wrong key: NRC 0x35 invalidKey")
                 if self.o.key is None:
@@ -880,12 +877,12 @@ class Suite:
                 self.unlock(t, level)
                 raw = self.positive(t, bytes([0x27, level]), "unlocked, requestSeed answers a zero seed", echo=[level])
                 if raw is not None:
-                    t.check(not any(raw[2:]), "the seed is zero", _hex(raw))
+                    t.check(not any(raw[2:]), "the seed is zero", hex_text(raw))
                 self.enter(t, DEFAULT_SESSION)
                 self.enter(t, session)
                 raw = self.positive(t, bytes([0x27, level]), "a new session locks again: a seed", echo=[level])
                 if raw is not None:
-                    t.check(any(raw[2:]), "the seed is not zero", _hex(raw))
+                    t.check(any(raw[2:]), "the seed is not zero", hex_text(raw))
             self._add("Security access", f"{name} (27 {level:02X} / {level + 1:02X})", case)
 
             def seeds(t, level=level, session=session):
@@ -901,7 +898,7 @@ class Suite:
                     t.log(f"seeds of {len(found[0])} byte: they may repeat by chance")
                     return
                 t.check(len(set(found)) == len(found), f"{len(found)} seeds, each for a new attempt, all different",
-                        ", ".join(_hex(seed) for seed in found))
+                        ", ".join(hex_text(seed) for seed in found))
             self._add("Security access", f"{name}: seeds do not repeat", seeds,
                       "requestSeed in a new session each time: every seed is new.")
 
@@ -990,7 +987,7 @@ class Suite:
             raw = self.positive(t, bytes([0x27, other]), f"level 0x{first:02X} unlocked: requestSeed 0x{other:02X}",
                                 echo=[other])
             if raw is not None:
-                t.check(any(raw[2:]), f"level 0x{other:02X} is still locked: its seed is not zero", _hex(raw))
+                t.check(any(raw[2:]), f"level 0x{other:02X} is still locked: its seed is not zero", hex_text(raw))
             if needs_other is not None:
                 _service, did = needs_other
                 self.negative(t, b"\x22" + did.to_bytes(2, "big"), "locked",
@@ -1100,11 +1097,11 @@ class Suite:
                     raw = self.positive(t, b"\x19\x02\xff", "19 02 FF: the DTCs by status mask", echo=[0x02])
                     if raw is not None:
                         t.check(len(raw) >= 3 and (len(raw) - 3) % 4 == 0,
-                                "availability mask, then four bytes a DTC", _hex(raw))
+                                "availability mask, then four bytes a DTC", hex_text(raw))
                 if 0x0A in subs:
                     raw = self.positive(t, b"\x19\x0a", "19 0A: every supported DTC", echo=[0x0A])
                     if raw is not None:
-                        t.check((len(raw) - 3) % 4 == 0, "availability mask, then four bytes a DTC", _hex(raw))
+                        t.check((len(raw) - 3) % 4 == 0, "availability mask, then four bytes a DTC", hex_text(raw))
             if session is not None:
                 self._add("Fault memory", "ReadDTCInformation (19)", read)
         clear = self.d.service(0x14)
@@ -1122,7 +1119,7 @@ class Suite:
             self._add("Fault memory", "ClearDiagnosticInformation (14)", clear_case)
 
     def _communication(self):
-        for sid, enable, other, response in ((0x28, b"\x00\x01", None, 0x68), (0x85, b"\x01", b"\x02", 0xC5)):
+        for sid, enable, other in ((0x28, b"\x00\x01", None), (0x85, b"\x01", b"\x02")):
             service = self.d.service(sid)
             if service is None:
                 continue
@@ -1132,9 +1129,9 @@ class Suite:
 
             def case(t, sid=sid, enable=enable, other=other, session=session):
                 self.enter(t, session)
-                self.positive(t, bytes([sid]) + enable, f"{sid:02X} {_hex(enable)} is answered", echo=enable[:1])
+                self.positive(t, bytes([sid]) + enable, f"{sid:02X} {hex_text(enable)} is answered", echo=enable[:1])
                 if other is not None:
-                    self.positive(t, bytes([sid]) + other, f"{sid:02X} {_hex(other)} is answered", echo=other[:1])
+                    self.positive(t, bytes([sid]) + other, f"{sid:02X} {hex_text(other)} is answered", echo=other[:1])
                 self.silent(t, bytes([sid, enable[0] | 0x80]) + enable[1:], "the suppress bit set: no answer")
                 self.positive(t, bytes([sid]) + enable, "back as it was", echo=enable[:1])
             self._add("Communication", f"{SERVICE_NAMES.get(sid, '')} ({sid:02X})", case)
@@ -1158,7 +1155,7 @@ class Suite:
             if active is not None and active.read is not None:
                 raw = self.positive(t, b"\x22\xf1\x86", "after the reset: the active session (F186)", echo=[0xF1, 0x86])
                 if raw is not None:
-                    t.check(raw[3:4] == bytes([DEFAULT_SESSION]), "the default session", _hex(raw))
+                    t.check(raw[3:4] == bytes([DEFAULT_SESSION]), "the default session", hex_text(raw))
             else:
                 self.positive(t, b"\x10\x01", "after the reset: the ECU answers", echo=[0x01])
             self.enter(t, session)
@@ -1204,7 +1201,7 @@ class Suite:
                 answer = self.tester.ask(request)
                 first = answer.first if answer.first is not None else answer.elapsed     # 0x78 counts
                 t.check(answer.positive() and first <= limit,
-                        f"{_hex(request)} answered within P2 ({self.p2 * 1000:.0f} ms + {self.o.timing_margin_ms} ms)",
+                        f"{hex_text(request)} answered within P2 ({self.p2 * 1000:.0f} ms + {self.o.timing_margin_ms} ms)",
                         answer.text())
                 self._covered(t, answer)
         self._add("Timing", "Responses within P2", case)
@@ -1226,7 +1223,7 @@ class Suite:
             raw = self.positive(t, b"\x22\xf1\x86", what, echo=b"\xf1\x86")
             if raw is not None:
                 t.check(raw[3:4] == bytes([session]), f"the {self.d.session_name(session)} (F186 = {session:02X})",
-                        _hex(raw))
+                        hex_text(raw))
         elif session == DEFAULT_SESSION:
             self.negative(t, self.minimal(probe), "service_not_in_session", f"{what}: {probe:02X} is refused again")
         else:
