@@ -6,70 +6,123 @@
     </DESC>
     <PROTOCOLSTANDARD>UDS</PROTOCOLSTANDARD>
     <DATATYPES>
-      <IDENT id="_dt0208">
+      <LINCOMP id="_dt0208">
         <NAME>
-          <TUV xml:lang="en-US">Bytes4</TUV>
+          <TUV xml:lang="en-US">Seconds</TUV>
         </NAME>
-        <QUAL>Bytes4</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="4" maxsz="4" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
-      </IDENT>
-      <IDENT id="_dt0212">
+        <QUAL>Seconds</QUAL>
+        <CVALUETYPE bl="32" bo="21" enc="uns" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="s" />
+        <COMP s="0" e="4294967295" f="1" o="0" />
+      </LINCOMP>
+      <LINCOMP id="_dt0212">
         <NAME>
-          <TUV xml:lang="en-US">Bytes2</TUV>
+          <TUV xml:lang="en-US">Temperature</TUV>
         </NAME>
-        <QUAL>Bytes2</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="2" maxsz="2" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
-      </IDENT>
-      <IDENT id="_dt0219">
+        <QUAL>Temperature</QUAL>
+        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="degC" />
+        <COMP s="0" e="65535" f="0.1" o="0" />
+      </LINCOMP>
+      <LINCOMP id="_dt0216">
         <NAME>
-          <TUV xml:lang="en-US">Bytes8</TUV>
+          <TUV xml:lang="en-US">Pressure</TUV>
         </NAME>
-        <QUAL>Bytes8</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="8" maxsz="8" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
-      </IDENT>
-      <IDENT id="_dt0223">
+        <QUAL>Pressure</QUAL>
+        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="bar" />
+        <COMP s="0" e="65535" f="0.01" o="0" />
+      </LINCOMP>
+      <LINCOMP id="_dt0220">
         <NAME>
-          <TUV xml:lang="en-US">Bytes1</TUV>
+          <TUV xml:lang="en-US">Speed</TUV>
         </NAME>
-        <QUAL>Bytes1</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="1" maxsz="1" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
-      </IDENT>
-      <IDENT id="_dt0227">
+        <QUAL>Speed</QUAL>
+        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="rpm" />
+        <COMP s="600" e="1200" f="1" o="0" />
+      </LINCOMP>
+      <IDENT id="_dt0225">
         <NAME>
-          <TUV xml:lang="en-US">Bytes15</TUV>
+          <TUV xml:lang="en-US">Text8</TUV>
         </NAME>
-        <QUAL>Bytes15</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="15" maxsz="15" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
+        <QUAL>Text8</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="8" maxsz="8" />
+        <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
-      <IDENT id="_dt0231">
+      <TEXTTBL id="_dt0229">
         <NAME>
-          <TUV xml:lang="en-US">Bytes11</TUV>
+          <TUV xml:lang="en-US">SessionTable</TUV>
         </NAME>
-        <QUAL>Bytes11</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="11" maxsz="11" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
-      </IDENT>
-      <IDENT id="_dt0235">
+        <QUAL>SessionTable</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+        <PVALUETYPE bl="0" bo="21" enc="asc" sz="yes" qty="field" />
+        <TEXTMAP s="1" e="1">
+          <TEXT>
+            <TUV xml:lang="en-US">Default</TUV>
+          </TEXT>
+        </TEXTMAP>
+        <TEXTMAP s="2" e="2">
+          <TEXT>
+            <TUV xml:lang="en-US">Programming</TUV>
+          </TEXT>
+        </TEXTMAP>
+        <TEXTMAP s="3" e="3">
+          <TEXT>
+            <TUV xml:lang="en-US">Extended</TUV>
+          </TEXT>
+        </TEXTMAP>
+      </TEXTTBL>
+      <IDENT id="_dt0233">
         <NAME>
-          <TUV xml:lang="en-US">Bytes17</TUV>
+          <TUV xml:lang="en-US">Text15</TUV>
         </NAME>
-        <QUAL>Bytes17</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="17" maxsz="17" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
+        <QUAL>Text15</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="15" maxsz="15" />
+        <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
-      <IDENT id="_dt0240">
+      <IDENT id="_dt0237">
         <NAME>
-          <TUV xml:lang="en-US">Bytes9</TUV>
+          <TUV xml:lang="en-US">Text11</TUV>
         </NAME>
-        <QUAL>Bytes9</QUAL>
-        <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="field" minsz="9" maxsz="9" />
-        <PVALUETYPE bl="8" bo="21" enc="uns" sz="no" />
+        <QUAL>Text11</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="11" maxsz="11" />
+        <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
+      <IDENT id="_dt0241">
+        <NAME>
+          <TUV xml:lang="en-US">Text17</TUV>
+        </NAME>
+        <QUAL>Text17</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="17" maxsz="17" />
+        <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
+      </IDENT>
+      <IDENT id="_dt0246">
+        <NAME>
+          <TUV xml:lang="en-US">Text9</TUV>
+        </NAME>
+        <QUAL>Text9</QUAL>
+        <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="9" maxsz="9" />
+        <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
+      </IDENT>
+      <LINCOMP id="_dt0250">
+        <NAME>
+          <TUV xml:lang="en-US">Temperature</TUV>
+        </NAME>
+        <QUAL>Temperature</QUAL>
+        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="degC" />
+        <COMP s="0" e="65535" f="0.1" o="0" />
+      </LINCOMP>
+      <LINCOMP id="_dt0254">
+        <NAME>
+          <TUV xml:lang="en-US">Pressure</TUV>
+        </NAME>
+        <QUAL>Pressure</QUAL>
+        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="bar" />
+        <COMP s="0" e="65535" f="0.01" o="0" />
+      </LINCOMP>
     </DATATYPES>
     <STATEGROUPS>
       <STATEGROUP id="_sg0001" spec="session">
@@ -496,87 +549,87 @@
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="_ps0248" func="1" phys="1">
+      <PROTOCOLSERVICE id="_ps0256" func="1" phys="1">
         <NAME>
           <TUV xml:lang="en-US">StartRoutine</TUV>
         </NAME>
         <QUAL>StartRoutine</QUAL>
         <REQ>
-          <CONSTCOMP id="_cc0249" bl="8" v="49">
+          <CONSTCOMP id="_cc0257" bl="8" v="49">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <CONSTCOMP id="_cc0250" bl="8" v="1">
+          <CONSTCOMP id="_cc0258" bl="8" v="1">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <STATICCOMP id="_sc0251" bl="16">
+          <STATICCOMP id="_sc0259" bl="16">
             <NAME>
               <TUV xml:lang="en-US">RID</TUV>
             </NAME>
             <QUAL>RID</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0252" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0260" dest="data" />
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="_ps0253" func="1" phys="1">
+      <PROTOCOLSERVICE id="_ps0261" func="1" phys="1">
         <NAME>
           <TUV xml:lang="en-US">StopRoutine</TUV>
         </NAME>
         <QUAL>StopRoutine</QUAL>
         <REQ>
-          <CONSTCOMP id="_cc0254" bl="8" v="49">
+          <CONSTCOMP id="_cc0262" bl="8" v="49">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <CONSTCOMP id="_cc0255" bl="8" v="2">
+          <CONSTCOMP id="_cc0263" bl="8" v="2">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <STATICCOMP id="_sc0256" bl="16">
+          <STATICCOMP id="_sc0264" bl="16">
             <NAME>
               <TUV xml:lang="en-US">RID</TUV>
             </NAME>
             <QUAL>RID</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0257" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0265" dest="data" />
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="_ps0258" func="1" phys="1">
+      <PROTOCOLSERVICE id="_ps0266" func="1" phys="1">
         <NAME>
           <TUV xml:lang="en-US">ResultsRoutine</TUV>
         </NAME>
         <QUAL>ResultsRoutine</QUAL>
         <REQ>
-          <CONSTCOMP id="_cc0259" bl="8" v="49">
+          <CONSTCOMP id="_cc0267" bl="8" v="49">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <CONSTCOMP id="_cc0260" bl="8" v="3">
+          <CONSTCOMP id="_cc0268" bl="8" v="3">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <STATICCOMP id="_sc0261" bl="16">
+          <STATICCOMP id="_sc0269" bl="16">
             <NAME>
               <TUV xml:lang="en-US">RID</TUV>
             </NAME>
             <QUAL>RID</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0262" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0270" dest="data" />
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -881,33 +934,33 @@
           <QUAL>Write</QUAL>
         </DCLSRVTMPL>
       </DCLTMPL>
-      <DCLTMPL id="_ct0263">
+      <DCLTMPL id="_ct0271">
         <NAME>
           <TUV xml:lang="en-US">Routine</TUV>
         </NAME>
         <QUAL>Routine</QUAL>
-        <SHSTATIC id="_sh0264">
+        <SHSTATIC id="_sh0272">
           <NAME>
             <TUV xml:lang="en-US">RID</TUV>
           </NAME>
           <QUAL>RID</QUAL>
-          <STATICCOMPREF idref="_sc0251" />
-          <STATICCOMPREF idref="_sc0256" />
-          <STATICCOMPREF idref="_sc0261" />
+          <STATICCOMPREF idref="_sc0259" />
+          <STATICCOMPREF idref="_sc0264" />
+          <STATICCOMPREF idref="_sc0269" />
         </SHSTATIC>
-        <DCLSRVTMPL id="_tt0265" tmplref="_ps0248">
+        <DCLSRVTMPL id="_tt0273" tmplref="_ps0256">
           <NAME>
             <TUV xml:lang="en-US">Start</TUV>
           </NAME>
           <QUAL>Start</QUAL>
         </DCLSRVTMPL>
-        <DCLSRVTMPL id="_tt0266" tmplref="_ps0253">
+        <DCLSRVTMPL id="_tt0274" tmplref="_ps0261">
           <NAME>
             <TUV xml:lang="en-US">Stop</TUV>
           </NAME>
           <QUAL>Stop</QUAL>
         </DCLSRVTMPL>
-        <DCLSRVTMPL id="_tt0267" tmplref="_ps0258">
+        <DCLSRVTMPL id="_tt0275" tmplref="_ps0266">
           <NAME>
             <TUV xml:lang="en-US">Results</TUV>
           </NAME>
@@ -1297,175 +1350,189 @@
             <STATICVALUE shstaticref="_sh0202" v="256" />
             <SIMPLECOMPCONT>
               <DATAOBJ id="_do0207" dtref="_dt0208">
-                <QUAL>Data</QUAL>
+                <QUAL>Seconds</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
             <SERVICE id="_sv0209" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
           <DIAGINST id="_di0210">
             <NAME>
-              <TUV xml:lang="en-US">DID_0x0101</TUV>
+              <TUV xml:lang="en-US">Temperature</TUV>
             </NAME>
-            <QUAL>DID_0x0101</QUAL>
+            <QUAL>Temperature</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="257" />
             <SIMPLECOMPCONT>
               <DATAOBJ id="_do0211" dtref="_dt0212">
-                <QUAL>Data</QUAL>
+                <QUAL>Temperature</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
             <SERVICE id="_sv0213" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
           <DIAGINST id="_di0214">
             <NAME>
-              <TUV xml:lang="en-US">DID_0x0102</TUV>
+              <TUV xml:lang="en-US">Pressure</TUV>
             </NAME>
-            <QUAL>DID_0x0102</QUAL>
+            <QUAL>Pressure</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="258" />
             <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0215" dtref="_dt0212">
-                <QUAL>Data</QUAL>
+              <DATAOBJ id="_do0215" dtref="_dt0216">
+                <QUAL>Pressure</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0216" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0217" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0217">
+          <DIAGINST id="_di0218">
             <NAME>
-              <TUV xml:lang="en-US">DID_0x0200</TUV>
+              <TUV xml:lang="en-US">IdleSpeedTarget</TUV>
             </NAME>
-            <QUAL>DID_0x0200</QUAL>
+            <QUAL>IdleSpeedTarget</QUAL>
+            <STATICVALUE shstaticref="_sh0202" v="272" />
+            <SIMPLECOMPCONT>
+              <DATAOBJ id="_do0219" dtref="_dt0220">
+                <QUAL>Speed</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+            <SERVICE id="_sv0221" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0222" tmplref="_tt0204" mayBeExec="(2,3,5)" />
+          </DIAGINST>
+          <DIAGINST id="_di0223">
+            <NAME>
+              <TUV xml:lang="en-US">CalibrationId</TUV>
+            </NAME>
+            <QUAL>CalibrationId</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="512" />
             <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0218" dtref="_dt0219">
-                <QUAL>Data</QUAL>
+              <DATAOBJ id="_do0224" dtref="_dt0225">
+                <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0220" tmplref="_tt0203" mayBeExec="(3,5)" />
+            <SERVICE id="_sv0226" tmplref="_tt0203" mayBeExec="(3,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0221">
+          <DIAGINST id="_di0227">
             <NAME>
               <TUV xml:lang="en-US">ActiveDiagnosticSession</TUV>
             </NAME>
             <QUAL>ActiveDiagnosticSession</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="61830" />
             <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0222" dtref="_dt0223">
-                <QUAL>Data</QUAL>
+              <DATAOBJ id="_do0228" dtref="_dt0229">
+                <QUAL>Session</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0224" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0230" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0225">
+          <DIAGINST id="_di0231">
             <NAME>
-              <TUV xml:lang="en-US">DID_0xF187</TUV>
+              <TUV xml:lang="en-US">SparePartNumber</TUV>
             </NAME>
-            <QUAL>DID_0xF187</QUAL>
+            <QUAL>SparePartNumber</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="61831" />
             <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0226" dtref="_dt0227">
-                <QUAL>Data</QUAL>
+              <DATAOBJ id="_do0232" dtref="_dt0233">
+                <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0228" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0234" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0229">
+          <DIAGINST id="_di0235">
             <NAME>
-              <TUV xml:lang="en-US">DID_0xF18C</TUV>
+              <TUV xml:lang="en-US">ECUSerialNumber</TUV>
             </NAME>
-            <QUAL>DID_0xF18C</QUAL>
+            <QUAL>ECUSerialNumber</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="61836" />
             <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0230" dtref="_dt0231">
-                <QUAL>Data</QUAL>
+              <DATAOBJ id="_do0236" dtref="_dt0237">
+                <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0232" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0238" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0233">
+          <DIAGINST id="_di0239">
             <NAME>
-              <TUV xml:lang="en-US">DID_0xF190</TUV>
+              <TUV xml:lang="en-US">VIN</TUV>
             </NAME>
-            <QUAL>DID_0xF190</QUAL>
+            <QUAL>VIN</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="61840" />
             <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0234" dtref="_dt0235">
-                <QUAL>Data</QUAL>
+              <DATAOBJ id="_do0240" dtref="_dt0241">
+                <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0236" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
-            <SERVICE id="_sv0237" tmplref="_tt0204" mayBeExec="(2,3,5)" />
+            <SERVICE id="_sv0242" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0243" tmplref="_tt0204" mayBeExec="(2,3,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0238">
+          <DIAGINST id="_di0244">
             <NAME>
-              <TUV xml:lang="en-US">DID_0xF195</TUV>
+              <TUV xml:lang="en-US">SoftwareVersion</TUV>
             </NAME>
-            <QUAL>DID_0xF195</QUAL>
+            <QUAL>SoftwareVersion</QUAL>
             <STATICVALUE shstaticref="_sh0202" v="61845" />
             <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0239" dtref="_dt0240">
-                <QUAL>Data</QUAL>
-              </DATAOBJ>
-            </SIMPLECOMPCONT>
-            <SERVICE id="_sv0241" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
-          </DIAGINST>
-          <DIAGINST id="_di0242">
-            <NAME>
-              <TUV xml:lang="en-US">DID_0xF201</TUV>
-            </NAME>
-            <QUAL>DID_0xF201</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61953" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0243" dtref="_dt0212">
-                <QUAL>Data</QUAL>
-              </DATAOBJ>
-            </SIMPLECOMPCONT>
-            <SERVICE id="_sv0244" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
-          </DIAGINST>
-          <DIAGINST id="_di0245">
-            <NAME>
-              <TUV xml:lang="en-US">DID_0xF202</TUV>
-            </NAME>
-            <QUAL>DID_0xF202</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61954" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0246" dtref="_dt0212">
-                <QUAL>Data</QUAL>
+              <DATAOBJ id="_do0245" dtref="_dt0246">
+                <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
             <SERVICE id="_sv0247" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
+          <DIAGINST id="_di0248">
+            <NAME>
+              <TUV xml:lang="en-US">PeriodicTemperature</TUV>
+            </NAME>
+            <QUAL>PeriodicTemperature</QUAL>
+            <STATICVALUE shstaticref="_sh0202" v="61953" />
+            <SIMPLECOMPCONT>
+              <DATAOBJ id="_do0249" dtref="_dt0250">
+                <QUAL>Temperature</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+            <SERVICE id="_sv0251" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+          </DIAGINST>
+          <DIAGINST id="_di0252">
+            <NAME>
+              <TUV xml:lang="en-US">PeriodicPressure</TUV>
+            </NAME>
+            <QUAL>PeriodicPressure</QUAL>
+            <STATICVALUE shstaticref="_sh0202" v="61954" />
+            <SIMPLECOMPCONT>
+              <DATAOBJ id="_do0253" dtref="_dt0254">
+                <QUAL>Pressure</QUAL>
+              </DATAOBJ>
+            </SIMPLECOMPCONT>
+            <SERVICE id="_sv0255" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+          </DIAGINST>
         </DIAGCLASS>
-        <DIAGCLASS id="_dc0268" tmplref="_ct0263">
+        <DIAGCLASS id="_dc0276" tmplref="_ct0271">
           <NAME>
             <TUV xml:lang="en-US">Routines</TUV>
           </NAME>
           <QUAL>Routines</QUAL>
-          <DIAGINST id="_di0269">
+          <DIAGINST id="_di0277">
             <NAME>
               <TUV xml:lang="en-US">SelfTest</TUV>
             </NAME>
             <QUAL>SelfTest</QUAL>
-            <STATICVALUE shstaticref="_sh0264" v="513" />
-            <SERVICE id="_sv0270" tmplref="_tt0265" mayBeExec="(3,4,5)" />
-            <SERVICE id="_sv0271" tmplref="_tt0266" mayBeExec="(3,4,5)" />
-            <SERVICE id="_sv0272" tmplref="_tt0267" mayBeExec="(3,4,5)" />
+            <STATICVALUE shstaticref="_sh0272" v="513" />
+            <SERVICE id="_sv0278" tmplref="_tt0273" mayBeExec="(3,4,5)" />
+            <SERVICE id="_sv0279" tmplref="_tt0274" mayBeExec="(3,4,5)" />
+            <SERVICE id="_sv0280" tmplref="_tt0275" mayBeExec="(3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0273">
+          <DIAGINST id="_di0281">
             <NAME>
               <TUV xml:lang="en-US">EraseMemory</TUV>
             </NAME>
             <QUAL>EraseMemory</QUAL>
-            <STATICVALUE shstaticref="_sh0264" v="65280" />
-            <SERVICE id="_sv0274" tmplref="_tt0265" mayBeExec="(2,5)" />
-            <SERVICE id="_sv0275" tmplref="_tt0267" mayBeExec="(2,5)" />
+            <STATICVALUE shstaticref="_sh0272" v="65280" />
+            <SERVICE id="_sv0282" tmplref="_tt0273" mayBeExec="(2,5)" />
+            <SERVICE id="_sv0283" tmplref="_tt0275" mayBeExec="(2,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0276">
+          <DIAGINST id="_di0284">
             <NAME>
               <TUV xml:lang="en-US">CheckProgrammingDependencies</TUV>
             </NAME>
             <QUAL>CheckProgrammingDependencies</QUAL>
-            <STATICVALUE shstaticref="_sh0264" v="65281" />
-            <SERVICE id="_sv0277" tmplref="_tt0265" mayBeExec="(2,5)" />
-            <SERVICE id="_sv0278" tmplref="_tt0267" mayBeExec="(2,5)" />
+            <STATICVALUE shstaticref="_sh0272" v="65281" />
+            <SERVICE id="_sv0285" tmplref="_tt0273" mayBeExec="(2,5)" />
+            <SERVICE id="_sv0286" tmplref="_tt0275" mayBeExec="(2,5)" />
           </DIAGINST>
         </DIAGCLASS>
       </VAR>

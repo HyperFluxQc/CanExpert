@@ -13,7 +13,8 @@ What it simulates (each value is a setting in the window, or in a profile saved 
 - Sessions (0x10, announcing P2/P2*), TesterPresent (0x3E), ECUReset (0x11), S3 session timeout,
   a processing delay answered with response pending (NRC 0x78) beyond P2
 - ReadDataByIdentifier (0x22) / WriteDataByIdentifier (0x2E) on a table of DIDs, each writable or not,
-  each readable in some sessions only or after unlocking a security level; a DID can follow a signal
+  each readable in some sessions only or after unlocking a security level, each with the values it accepts
+  (others written get NRC 0x31); a DID can follow a signal
 - ReadDataByPeriodicIdentifier (0x2A): F2xx DIDs sent slow, medium or fast, as 6A frames on the response
   ID or as frames of their own ID; ResponseOnEvent (0x86) on a DID change or a DTC status change
 - InputOutputControlByIdentifier (0x2F): a DID that follows a signal takes it over, and the application
@@ -100,6 +101,7 @@ DEFAULT_DIDS = (
     {"did": 0xF201, "data": "00d7", "writable": False, "signal": "EngineData.Temperature"},   # periodic (2A 01)
     {"did": 0xF202, "data": "0064", "writable": False, "signal": "EngineData.Pressure"},      # periodic (2A 02)
     {"did": 0x0200, "data": b"CAL-0042".hex(), "writable": False, "sessions": [EXTENDED_SESSION], "level": 0x01},
+    {"did": 0x0110, "data": "0320", "writable": True, "valid": [[0x0258, 0x04B0]]},   # idle speed, 600-1200 rpm
 )
 # snapshot: what follows the record number in 59 04 (number of identifiers, then DID and data - here
 # one identifier, F40D vehicle speed, 50 km/h); extended: what follows it in 59 06 (occurrence counter).
@@ -118,6 +120,8 @@ EVENT_CHECK_INTERVAL = 0.1            # how often DIDs are compared for onChange
 STALL_SECONDS = N_CR_TIMEOUT + 0.2    # a consecutive frame held back past the tester's N_Cr
 ERROR_KINDS = ("error_refuse", "error_no_answer", "error_wrong_id", "error_drop_frame", "error_wrong_sequence",
                "error_stall")
+# Services whose sub-function byte carries suppressPosRspMsgIndicationBit.
+SUPPRESSIBLE = {0x10, 0x11, 0x19, 0x27, 0x28, 0x31, 0x3E, 0x85, 0x86}
 
 
 class NegativeResponse(Exception):
@@ -220,6 +224,7 @@ class DataTables(NamedTuple):
     dids: dict        # DID -> bytes (for a DID that follows a signal: its length, and its value without one)
     writable: set
     access: dict      # DID -> (signal "Message.Signal" or "", sessions it is read in (empty: any), level or 0)
+    valid: dict       # DID -> [(low, high)]: the values (its data as a number) it may be written with
     statuses: dict    # DTC -> status byte at power-on
     records: dict     # DTC -> (snapshot record 01, extended data record 01)
     forced: dict      # SID -> forced NRC
@@ -234,18 +239,23 @@ def _sessions(value, what: str) -> tuple:
 
 def data_tables(config: EcuConfig) -> DataTables:
     """The tables of a configuration; ValueError naming the entry that is wrong."""
-    dids, writable, access = {}, set(), {}
+    dids, writable, access, valid = {}, set(), {}, {}
     for item in config.dids:
         try:
             did, data = int(item["did"]), bytes.fromhex(str(item.get("data", "")))
             level = int(item.get("level", 0) or 0)
+            ranges = [(int(low), int(high)) for low, high in item.get("valid", ()) or ()]
         except (KeyError, TypeError, ValueError):
             raise ValueError(f"DID entry {item}: needs a DID and its data as hex bytes") from None
         if not 0 <= did <= 0xFFFF or not data:
             raise ValueError(f"DID {did:04X}: a DID is 0000-FFFF and has at least one byte of data")
         if not 0 <= level <= 0x7F:
             raise ValueError(f"DID {did:04X}: the security level is 01-7F, or none")
+        if any(low > high for low, high in ranges):
+            raise ValueError(f"DID {did:04X}: a range of valid values ends before it starts")
         dids[did] = data
+        if ranges:
+            valid[did] = ranges
         if item.get("writable"):
             writable.add(did)
         access[did] = (str(item.get("signal", "") or ""), _sessions(item.get("sessions"), f"DID {did:04X}"), level)
@@ -269,7 +279,7 @@ def data_tables(config: EcuConfig) -> DataTables:
         if not 0 <= sid <= 0xFF or not 0 <= nrc <= 0xFF:
             raise ValueError(f"Forced NRC {sid:X}/{nrc:X}: service and NRC are one byte each")
         forced[sid] = nrc
-    return DataTables(dids, writable, access, statuses, records, forced)
+    return DataTables(dids, writable, access, valid, statuses, records, forced)
 
 
 def security_levels(config: EcuConfig) -> dict:
@@ -465,6 +475,7 @@ class DummyEcu:
         are edited). What WriteDataByIdentifier wrote, ClearDTC cleared and the faults did is forgotten."""
         tables = data_tables(self.config)
         self.dids, self.writable, self.did_access = tables.dids, tables.writable, tables.access
+        self.did_valid = tables.valid
         self.dtc_memory = DtcMemory(tables.statuses, tables.records, self.config.confirm_cycles,
                                     self.config.aging_cycles, capture=self._capture_snapshot)
         self.dtc_memory.set_frozen(not self.state.dtc_setting_on)
@@ -659,7 +670,11 @@ class DummyEcu:
                 self.log(f"<- {name} {shown}  => NRC 0x{self.config.error_refuse_nrc:02X} (error on purpose)")
                 self.respond(bytes([0x7F, sid, self.config.error_refuse_nrc]), errors=True)
                 return
-            self._busy(self.config.response_delay_ms / 1000, sid)
+            delay = self.config.response_delay_ms / 1000
+            if delay > self.config.p2_ms / 1000 and sid in SUPPRESSIBLE and len(request) > 1 and request[1] & 0x80:
+                # ISO 14229-1: a response pending lifts suppressPosRspMsgIndicationBit - the answer follows it
+                request = bytes([sid, request[1] & 0x7F]) + request[2:]
+            self._busy(delay, sid)
             reply = getattr(self, f"_service_{sid:02x}")(request)
         except NegativeResponse as exc:
             self.log(f"<- {name} {shown}  => NRC 0x{exc.nrc:02X}")
@@ -905,6 +920,10 @@ class DummyEcu:
             self._require_unlocked()
         if len(request) - 3 != len(self.dids[did]):        # a DID keeps its length, as the VIN its 17 bytes
             raise NegativeResponse(0x13)
+        ranges = self.did_valid.get(did)
+        value = int.from_bytes(request[3:], "big")
+        if ranges and not any(low <= value <= high for low, high in ranges):
+            raise NegativeResponse(0x31)                   # a value the DID does not take
         self.dids[did] = bytes(request[3:])
         return b"\x6E" + request[1:3]
 
@@ -1300,6 +1319,7 @@ class DummyEcu:
             address, size = self._memory_range(request, 4)
             self._check_range(address, size)
             self._busy(self.config.erase_seconds, 0x31, pending=True)  # erasing takes longer than P2
+            suppress = suppress and self.config.erase_seconds <= 0     # after a response pending, the answer
             self._invalidate_application()
             self.state.erased.append((address, address + size))
             for start in [a for a in self.state.memory if address <= a < address + size]:

@@ -1,7 +1,7 @@
 """
 What an ECU's diagnostics are, as TestExpert tests them: its sessions, security levels, services with their
-sub-functions, data identifiers and routines, and in which sessions and at which security level each may be
-used.
+sub-functions, data identifiers (with the fields of their data: where each is, how it is coded, which values
+are valid) and routines, and in which sessions and at which security level each may be used.
 
 The loaders (cdd.py, odx.py, dummy.py) all describe services the same way - the constant bytes a request
 starts with, the states it may be executed in, the state transitions it causes - and build_description()
@@ -62,6 +62,115 @@ class Service:
     sub_functions: dict = field(default_factory=dict)   # sub-function -> Access, for a service that has them
 
 
+ENCODINGS = ("unsigned", "signed", "bcd", "ascii", "bytes")
+
+
+@dataclass
+class DataField:
+    """A value in a DID's data record: its bits (position of the first, most significant, from the record's
+    start), how they are coded, the coded values that are valid ([] any; a text table's own values when it has
+    one), and how the report shows it (text, or coded * scale + shift and the unit)."""
+    name: str
+    position: int
+    bits: int
+    encoding: str = "unsigned"
+    valid: list = field(default_factory=list)          # [(low, high)] of coded values
+    texts: dict = field(default_factory=dict)          # coded value -> text
+    scale: float = 1.0
+    shift: float = 0.0
+    unit: str = ""
+
+    @property
+    def numeric(self) -> bool:
+        return self.encoding in ("unsigned", "signed", "bcd") and self.bits <= 64
+
+    def limits(self) -> list:
+        """The valid coded ranges: its own, else its text table's values."""
+        if self.valid:
+            return [tuple(pair) for pair in self.valid]
+        return [(value, value) for value in sorted(self.texts)]
+
+    def coded(self, record: bytes):
+        """Its coded value in record: an int for a number (a BCD's digits as they read), bytes for text and
+        bytes; None when the record is too short, or a BCD has a nibble above 9."""
+        record = bytes(record)
+        end = self.position + self.bits
+        if self.bits <= 0 or end > len(record) * 8:
+            return None
+        if not self.numeric:
+            if self.position % 8 or self.bits % 8:
+                return None
+            return record[self.position // 8:end // 8]
+        value = (int.from_bytes(record, "big") >> (len(record) * 8 - end)) & ((1 << self.bits) - 1)
+        if self.encoding == "signed" and value >> (self.bits - 1):
+            value -= 1 << self.bits
+        if self.encoding == "bcd":
+            digits = f"{value:0{(self.bits + 3) // 4}X}"
+            return int(digits) if digits.isdigit() else None
+        return value
+
+    def encode(self, record: bytes, value: int) -> bytes:
+        """record with this field set to the coded value."""
+        record = bytes(record)
+        if self.encoding == "bcd":
+            value = int(str(value), 16)
+        value &= (1 << self.bits) - 1
+        shift = len(record) * 8 - self.position - self.bits
+        whole = int.from_bytes(record, "big")
+        whole = (whole & ~(((1 << self.bits) - 1) << shift)) | (value << shift)
+        return whole.to_bytes(len(record), "big")
+
+    def shown(self, value) -> str:
+        """The value as a person reads it: the text table's text, else its physical value and unit."""
+        if isinstance(value, bytes):
+            trimmed = value.rstrip(b"\x00\xff ")
+            if self.encoding == "ascii" and all(0x20 <= byte < 0x7F for byte in trimmed):
+                return f'"{trimmed.decode("ascii")}"'
+            return value.hex(" ").upper()
+        if value in self.texts:
+            return f"{self.texts[value]} ({value})"
+        physical = value * self.scale + self.shift
+        text = f"{physical:g}" if (self.scale, self.shift) != (1.0, 0.0) else str(value)
+        return f"{text} {self.unit}".strip()
+
+    def check(self, record: bytes) -> tuple[bool, str]:
+        """Whether its value in record is valid, and what the report says of it."""
+        value = self.coded(record)
+        if value is None:
+            return False, "not in the record" if self.position + self.bits > len(record) * 8 else \
+                "not a BCD number"
+        if isinstance(value, bytes):
+            trimmed = value.rstrip(b"\x00\xff ")
+            if self.encoding == "ascii" and not all(0x20 <= byte < 0x7F for byte in trimmed):
+                return False, f"{value.hex(' ').upper()}: not printable ASCII"
+            return True, self.shown(value)
+        limits = self.limits()
+        ok = not limits or any(low <= value <= high for low, high in limits)
+        allowed = ", ".join(self.shown(low) if low == high else f"{self.shown(low)} to {self.shown(high)}"
+                            for low, high in limits)
+        return ok, self.shown(value) + ("" if ok else f": not a valid value ({allowed})")
+
+    def to_dict(self) -> dict:
+        values = {"name": self.name, "position": self.position, "bits": self.bits, "encoding": self.encoding}
+        if self.valid:
+            values["valid"] = [list(pair) for pair in self.valid]
+        if self.texts:
+            values["texts"] = {str(key): text for key, text in sorted(self.texts.items())}
+        if (self.scale, self.shift) != (1.0, 0.0):
+            values.update(scale=self.scale, shift=self.shift)
+        if self.unit:
+            values["unit"] = self.unit
+        return values
+
+    @classmethod
+    def from_dict(cls, values: dict) -> "DataField":
+        return cls(str(values.get("name", "")), int(values.get("position", 0)), int(values.get("bits", 8)),
+                   str(values.get("encoding", "unsigned")),
+                   [tuple(int(v) for v in pair) for pair in values.get("valid", ())],
+                   {int(key): str(text) for key, text in (values.get("texts") or {}).items()},
+                   float(values.get("scale", 1.0)), float(values.get("shift", 0.0)), str(values.get("unit", "")))
+
+
 @dataclass
 class DataIdentifier:
     did: int
@@ -69,6 +178,7 @@ class DataIdentifier:
     length: int | None = None    # bytes of its data record, when the description says
     read: Access | None = None   # None: not readable
     write: Access | None = None  # None: not writable
+    fields: list = field(default_factory=list)          # DataField, where the description says
 
 
 @dataclass
@@ -127,7 +237,8 @@ class EcuDescription:
             "services": [{"sid": s.sid, "name": s.name, "access": s.access.to_dict(),
                           "sub_functions": [{"id": sub, **a.to_dict()} for sub, a in sorted(s.sub_functions.items())]}
                          for s in sorted(self.services.values(), key=lambda s: s.sid)],
-            "dids": [{"did": d.did, "name": d.name, "length": d.length, "read": access(d.read), "write": access(d.write)}
+            "dids": [{"did": d.did, "name": d.name, "length": d.length, "read": access(d.read), "write": access(d.write),
+                      **({"fields": [item.to_dict() for item in d.fields]} if d.fields else {})}
                      for d in sorted(self.dids.values(), key=lambda d: d.did)],
             "routines": [{"rid": r.rid, "name": r.name,
                           "sub_functions": [{"id": sub, **a.to_dict()} for sub, a in sorted(r.sub_functions.items())]}
@@ -154,7 +265,8 @@ class EcuDescription:
         for item in values.get("dids", ()):
             did = int(item["did"])
             description.dids[did] = DataIdentifier(did, item.get("name", ""), item.get("length"),
-                                                   access(item.get("read")), access(item.get("write")))
+                                                   access(item.get("read")), access(item.get("write")),
+                                                   [DataField.from_dict(part) for part in item.get("fields", ())])
         for item in values.get("routines", ()):
             rid = int(item["rid"])
             description.routines[rid] = Routine(rid, item.get("name", ""),
@@ -184,6 +296,7 @@ class RawService:
     allowed: list | None = None
     transitions: list = field(default_factory=list)
     length: int | None = None     # a DID's data length, where the loader knows it
+    fields: list = field(default_factory=list)   # a DID's DataFields, where the loader knows them
 
 
 @dataclass
@@ -264,6 +377,8 @@ def build_description(raw_services, states: dict, name: str = "ECU", source: str
             entry = description.dids.setdefault(did, DataIdentifier(did, raw.name or f"DID 0x{did:04X}"))
             if raw.length is not None and entry.length is None:
                 entry.length = raw.length
+            if raw.fields and not entry.fields:
+                entry.fields = list(raw.fields)
             if sid == 0x22:
                 entry.read = entry.read.merged(access) if entry.read else access
             else:

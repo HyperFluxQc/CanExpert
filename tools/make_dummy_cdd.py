@@ -63,6 +63,46 @@ class Writer:
             self.lengths[length] = element.get("id")
         return self.lengths[length]
 
+    def field_type(self, field):
+        """The data type of a DID's field: a text table (TEXTTBL with TEXTMAPs), a linear type with its valid
+        ranges (LINCOMP with COMPs), text (IDENT of ASCII characters) or a plain number."""
+        encoding = {"signed": "sgn", "ascii": "asc", "bcd": "bcd"}.get(field.encoding, "uns")
+        if field.texts:
+            element = ElementTree.SubElement(self.datatypes, "TEXTTBL", id=self._id("dt"))
+            self._named(element, f"{field.name}Table")
+            ElementTree.SubElement(element, "CVALUETYPE", bl=str(field.bits), bo="21", enc=encoding, sz="no",
+                                   qty="atom")
+            ElementTree.SubElement(element, "PVALUETYPE", bl="0", bo="21", enc="asc", sz="yes", qty="field")
+            for value, text in sorted(field.texts.items()):
+                textmap = ElementTree.SubElement(element, "TEXTMAP", s=str(value), e=str(value))
+                ElementTree.SubElement(ElementTree.SubElement(textmap, "TEXT"), "TUV", {"xml:lang": "en-US"}).text = text
+        elif field.numeric and (field.valid or field.unit or (field.scale, field.shift) != (1.0, 0.0)):
+            element = ElementTree.SubElement(self.datatypes, "LINCOMP", id=self._id("dt"))
+            self._named(element, field.name)
+            ElementTree.SubElement(element, "CVALUETYPE", bl=str(field.bits), bo="21", enc=encoding, sz="no",
+                                   qty="atom")
+            physical = {"bl": "64", "bo": "21", "enc": "flt", "sz": "no", "qty": "atom"}
+            if field.unit:
+                physical["unit"] = field.unit
+            ElementTree.SubElement(element, "PVALUETYPE", physical)
+            high = (1 << field.bits) - 1
+            for low, top in field.valid or [(0, high)]:
+                ElementTree.SubElement(element, "COMP", s=str(low), e=str(top), f=f"{field.scale:g}",
+                                       o=f"{field.shift:g}")
+        elif not field.numeric:
+            element = ElementTree.SubElement(self.datatypes, "IDENT", id=self._id("dt"))
+            self._named(element, f"{field.name}{field.bits // 8}")
+            ElementTree.SubElement(element, "CVALUETYPE", bl="8", bo="21", enc=encoding, sz="no", qty="field",
+                                   minsz=str(field.bits // 8), maxsz=str(field.bits // 8))
+            ElementTree.SubElement(element, "PVALUETYPE", bl="8", bo="21", enc=encoding, sz="no")
+        else:
+            element = ElementTree.SubElement(self.datatypes, "IDENT", id=self._id("dt"))
+            self._named(element, field.name)
+            ElementTree.SubElement(element, "CVALUETYPE", bl=str(field.bits), bo="21", enc=encoding, sz="no",
+                                   qty="atom")
+            ElementTree.SubElement(element, "PVALUETYPE", bl=str(field.bits), bo="21", enc=encoding, sz="no")
+        return element.get("id")
+
     def write_states(self):
         sessions = ElementTree.SubElement(self.groups, "STATEGROUP", id=self._id("sg"), spec="session")
         self._named(sessions, "Session")
@@ -123,13 +163,19 @@ class Writer:
             service_templates[service_qual] = service_template.get("id")
         return shstatics, service_templates, element.get("id")
 
-    def instance(self, diag_class, qual, values, services, length=None):
-        """A DIAGINST: values {SHSTATIC id: v}, services [(DCLSRVTMPL id, mayBeExec, trans or None)]."""
+    def instance(self, diag_class, qual, values, services, length=None, fields=()):
+        """A DIAGINST: values {SHSTATIC id: v}, services [(DCLSRVTMPL id, mayBeExec, trans or None)]; a DID's
+        data as its fields' DATAOBJs, or one byte field of length bytes."""
         element = ElementTree.SubElement(diag_class, "DIAGINST", id=self._id("di"))
         self._named(element, qual)
         for static, value in values.items():
             ElementTree.SubElement(element, "STATICVALUE", shstaticref=static, v=str(value))
-        if length:
+        if fields:
+            container = ElementTree.SubElement(element, "SIMPLECOMPCONT")
+            for field in fields:
+                data = ElementTree.SubElement(container, "DATAOBJ", id=self._id("do"), dtref=self.field_type(field))
+                ElementTree.SubElement(data, "QUAL").text = field.name
+        elif length:
             container = ElementTree.SubElement(element, "SIMPLECOMPCONT")
             data = ElementTree.SubElement(container, "DATAOBJ", id=self._id("do"), dtref=self.datatype(length))
             ElementTree.SubElement(data, "QUAL").text = "Data"
@@ -207,7 +253,8 @@ class Writer:
                 services.append((templates["Read"], self.may_be_exec(entry.read), None))
             if entry.write is not None:
                 services.append((templates["Write"], self.may_be_exec(entry.write), None))
-            self.instance(diag_class, entry.name.replace(" ", "_"), {shstatics["DID"]: did}, services, entry.length)
+            self.instance(diag_class, entry.name.replace(" ", "_"), {shstatics["DID"]: did}, services, entry.length,
+                          entry.fields)
         # Routines: startRoutine, stopRoutine and requestRoutineResults, where each routine has them.
         if d.routines:
             controls = {0x01: "Start", 0x02: "Stop", 0x03: "Results"}

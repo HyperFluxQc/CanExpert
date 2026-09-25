@@ -49,14 +49,37 @@ IDENTIFICATION = {
 
 @dataclass
 class Options:
-    destructive: bool = False     # ECU reset, clearing DTCs, writing DIDs (their own value back)
+    destructive: bool = False     # ECU reset, clearing DTCs, writing DIDs (their value back, their limits)
     lockout: bool = False         # wrong keys until the lockout, then its delay (slow)
     functional: bool = True       # functionally addressed requests (needs the functional ID)
     key: object = None            # key(level, seed) -> bytes; None: what needs an unlocked ECU is skipped
-    timing_margin_ms: int = 50    # tolerance over P2 for the response time
+    timing_margin_ms: int = 50    # tolerance over P2 (and P2*) for the response time
     reset_time: float = 1.0       # seconds an ECU reset takes
     attempts: int = 3             # wrong keys before the lockout
     lockout_seconds: float = 10.0
+    s3_test: bool = True          # the session ends after S3 without requests, and TesterPresent keeps it
+    s3_seconds: float = 5.0       # S3server (ISO 14229-2: 5 s)
+    start_routines: str = ""      # routines that may be started: "0201; FF00: 44 00 01 00 00 00 00 00 04"
+
+
+def parse_routine_starts(text: str) -> dict:
+    """"0201; FF00: 44 00 01" -> {0x0201: b"", 0xFF00: b"\x44\x00\x01"}: the routines a run may start, with
+    the option record each is started with. ValueError naming what is wrong."""
+    starts = {}
+    for part in str(text or "").replace(",", ";").split(";"):
+        if not part.strip():
+            continue
+        rid, _, record = part.partition(":")
+        try:
+            number = int(rid.strip().lower().removeprefix("0x"), 16)
+            data = bytes.fromhex(record.replace(" ", "")) if record.strip() else b""
+        except ValueError:
+            raise ValueError(f"a routine to start is its identifier and, after a colon, its option record in "
+                             f"hex: {part.strip()!r}") from None
+        if not 0 <= number <= 0xFFFF:
+            raise ValueError(f"a routine identifier is 16 bits: {rid.strip()}")
+        starts[number] = data
+    return starts
 
 
 def _hex(data) -> str:
@@ -89,6 +112,7 @@ class Suite:
         self.sequence_runner = SequenceRunner(self, base_dir)
         self.tester = None
         self.p2 = 0.05                     # the P2 the ECU announces in its default session answer
+        self.p2_star = 5.0                 # and its P2*
         self.cases: list[TestCase] = []
         self.group_of: dict[str, str] = {}      # test case name -> its group
         self._build()
@@ -184,6 +208,7 @@ class Suite:
             detail += f" - {len(raw)} bytes, {length} expected"
         t.check(ok, what, detail)
         self._covered(t, answer)
+        self._pending(t, answer)
         return raw if ok else None
 
     def negative(self, t, payload, situation, what, functional=False):
@@ -200,12 +225,17 @@ class Suite:
             wanted = " or ".join(nrc_text(code) for code in accepted)
             verdict = t.check(good, what, answer.text() if good else f"{answer.text()} - expected NRC {wanted}")
         self._covered(t, answer)
+        self._pending(t, answer)
         return verdict
 
     def silent(self, t, payload, what, functional=False):
-        """A step: no answer at all."""
+        """A step: no answer at all - but an ECU that needed more time and sent a response pending must then
+        send its positive answer (ISO 14229-1: 0x78 lifts suppressPosRspMsgIndicationBit)."""
         answer = self.tester.quiet(payload, functional)
-        verdict = t.check(answer.raw is None, what, answer.text())
+        if answer.raw is not None and answer.pending and answer.positive():
+            verdict = t.check(True, what, f"{answer.text()} - after a response pending the answer is sent")
+        else:
+            verdict = t.check(answer.raw is None, what, answer.text())
         self._covered(t, answer)
         return verdict
 
@@ -215,7 +245,23 @@ class Suite:
         ok = answer.raw is not None and answer.nrc not in (0x11, 0x7F)
         verdict = t.check(ok, what, answer.text())
         self._covered(t, answer)
+        self._pending(t, answer)
         return verdict
+
+    def _pending(self, t, answer):
+        """ISO 14229-2 when the ECU needs time: the first response pending (0x78) within P2, the next ones
+        within P2* of each other, and the answer within P2* of the last."""
+        if not answer.pending:
+            return
+        margin = self.o.timing_margin_ms / 1000
+        gaps = [later - earlier for earlier, later in zip(answer.pending, answer.pending[1:])]
+        last = answer.elapsed - answer.pending[-1]
+        ok = answer.pending[0] <= self.p2 + margin and all(gap <= self.p2_star + margin for gap in gaps) and \
+            answer.raw is not None and last <= self.p2_star + margin
+        detail = (f"{len(answer.pending)} response pending: the first after {answer.pending[0] * 1000:.0f} ms "
+                  f"(P2 {self.p2 * 1000:.0f} ms)" + (f", the longest gap {max(gaps) * 1000:.0f} ms" if gaps else "")
+                  + f", the answer {last * 1000:.0f} ms after the last (P2* {self.p2_star * 1000:.0f} ms)")
+        t.check(ok, f"{_hex(answer.request[:4])}: response pending within P2, then P2*", detail)
 
     def _covered(self, t, answer, verdict=None):
         """The step just checked (the last of t) counts for what answer asked, in the session it was sent in."""
@@ -262,6 +308,12 @@ class Suite:
             if 0 < p2 < 5:
                 self.p2 = p2
                 t.log(f"P2 {p2 * 1000:.0f} ms, as the ECU announces")
+        if answer.raw is not None and len(answer.raw) >= 6:
+            p2_star = int.from_bytes(answer.raw[4:6], "big") / 100
+            if 0 < p2_star <= 600:
+                self.p2_star = p2_star
+                self.tester.pending_timeout = max(10.0, 2 * p2_star)
+                t.log(f"P2* {p2_star * 1000:.0f} ms, as the ECU announces")
         self._identify(t)
 
     def _identify(self, t):
@@ -274,9 +326,8 @@ class Suite:
             answer = self.tester.ask(b"\x22" + did.to_bytes(2, "big"))
             if not answer.positive() or answer.raw[1:3] != did.to_bytes(2, "big"):
                 continue
-            name = entry.name if entry.name and not entry.name.startswith("DID") else iso_name
-            self.identification[did] = (name, value_text(answer.raw[3:]))
-            t.log(f"ECU identification: {did:04X} {name} = {self.identification[did][1]}")
+            self.identification[did] = (iso_name, value_text(answer.raw[3:]))       # ISO's name: runs compare
+            t.log(f"ECU identification: {did:04X} {iso_name} = {self.identification[did][1]}")
 
     def _teardown(self, t):
         self._default()
@@ -341,13 +392,16 @@ class Suite:
         self._message_length()
         self._sub_functions()
         self._data_identifiers()
+        self._did_values()
         self._security()
         self._routines()
+        self._routine_control()
         self._fault_memory()
         self._communication()
         self._reset()
         self._functional()
         self._timing()
+        self._s3()
 
     def _sessions(self):
         group = "Sessions"
@@ -609,6 +663,78 @@ class Suite:
                               "one byte too many: NRC 0x13")
             self._add(group, f"Write {entry.name} ({did:04X}) back", write)
 
+    def _did_values(self):
+        """Each DID the description gives fields for: its values valid (their limits, their text table, text
+        that is text); with destructive tests, a writable one written at its limits and out of them (0x31)."""
+        group = "Data identifiers"
+        for did, entry in sorted(self.d.dids.items()):
+            checked = [item for item in entry.fields if item.limits() or item.encoding == "ascii"]
+            session = self.first_session(entry.read) if entry.read is not None else None
+            if not checked or session is None:
+                continue
+
+            def values(t, did=did, entry=entry, checked=checked, session=session):
+                self.enter(t, session)
+                if entry.read.levels:
+                    self.unlock(t, min(entry.read.levels))
+                identifier = did.to_bytes(2, "big")
+                raw = self.positive(t, b"\x22" + identifier, f"{self.d.session_name(session)}: read",
+                                    echo=identifier)
+                if raw is None:
+                    return
+                for item in checked:
+                    ok, shown = item.check(raw[3:])
+                    t.check(ok, f"{item.name}: a valid value", shown)
+            self._add(group, f"Values of {entry.name} ({did:04X})", values,
+                      "Each field of the DID's data record within its limits, in its text table, or text.")
+
+        if not self.o.destructive or 0x2E not in self.d.services:
+            return
+        for did, entry in sorted(self.d.dids.items()):
+            limited = [item for item in entry.fields if item.numeric and item.limits()]
+            if entry.write is None or entry.read is None or not limited:
+                continue
+            session = self.first_session(entry.write)
+            if session is None or not entry.read.allows(session):
+                continue
+
+            def limits(t, did=did, entry=entry, item=limited[0], session=session):
+                self.enter(t, session)
+                levels = entry.write.levels | self.d.services[0x2E].access.levels
+                if levels:
+                    self.unlock(t, min(levels))
+                identifier = did.to_bytes(2, "big")
+                raw = self.positive(t, b"\x22" + identifier, "its value, read first", echo=identifier)
+                if raw is None:
+                    t.fail("the DID could not be read")
+                original = raw[3:]
+                ranges = item.limits()
+                low, high = min(pair[0] for pair in ranges), max(pair[1] for pair in ranges)
+                try:
+                    for value in dict.fromkeys((low, high)):
+                        record = item.encode(original, value)
+                        self.positive(t, b"\x2e" + identifier + record, f"{item.name} = {item.shown(value)}: written",
+                                      echo=identifier)
+                        self.positive(t, b"\x22" + identifier, "and read back", echo=identifier + record)
+                    top = (1 << (item.bits - 1)) - 1 if item.encoding == "signed" else (1 << item.bits) - 1
+                    bottom = -(1 << (item.bits - 1)) if item.encoding == "signed" else 0
+                    wrong = next((value for value in (high + 1, low - 1) if bottom <= value <= top and
+                                  not any(a <= value <= b for a, b in ranges)), None)
+                    if item.encoding == "bcd" and wrong is not None and wrong > int("9" * ((item.bits + 3) // 4)):
+                        wrong = None
+                    if wrong is None:
+                        t.log(f"{item.name}: every coded value is valid, none out of range to write")
+                    else:
+                        self.negative(t, b"\x2e" + identifier + item.encode(original, wrong), "did_out_of_range",
+                                      f"{item.name} out of range ({item.shown(wrong)}): refused, NRC 0x31")
+                        self.positive(t, b"\x22" + identifier, "nothing written",
+                                      echo=identifier + item.encode(original, high))
+                finally:
+                    self.positive(t, b"\x2e" + identifier + original, "its own value written back", echo=identifier)
+            self._add(group, f"Write {entry.name} ({did:04X}): its limits, and out of them", limits,
+                      "The lowest and highest valid values written and read back, a value out of range refused "
+                      "with 0x31, and the DID's value put back.")
+
     def _security(self):
         if 0x27 not in self.d.services:
             return
@@ -693,6 +819,57 @@ class Suite:
                 self.negative(t, b"\x31\x01" + unknown.to_bytes(2, "big"), "routine_unknown",
                               f"routine {unknown:04X} does not exist")
             self._add("Routines", f"A routine that does not exist ({unknown:04X})", unknown_routine)
+
+    def _routine_control(self):
+        """Routines with a stop or results: asked before a start (0x24); the ones a run may start, started,
+        asked for their results and stopped."""
+        if 0x31 not in self.d.services:
+            return
+        starts = parse_routine_starts(self.o.start_routines)
+        for rid, routine in sorted(self.d.routines.items()):
+            controls = [sub for sub in (0x03, 0x02) if sub in routine.sub_functions]
+            access = routine.sub_functions.get(controls[0]) if controls else None
+            session = self.first_session(access) if access is not None else None
+            if session is None:
+                continue
+            identifier = rid.to_bytes(2, "big")
+
+            def sequence(t, rid=rid, routine=routine, controls=controls, access=access, session=session,
+                         identifier=identifier):
+                self.enter(t, session)
+                if access.levels:
+                    self.unlock(t, min(access.levels))
+                for sub in controls:
+                    what = "its results" if sub == 0x03 else "a stop"
+                    self.negative(t, b"\x31" + bytes([sub]) + identifier, "routine_sequence",
+                                  f"{what} before a start: NRC 0x24 requestSequenceError")
+            self._add("Routines", f"{routine.name} ({rid:04X}): stop and results before a start", sequence)
+
+        for rid, record in starts.items():
+            routine = self.d.routines.get(rid)
+            start = routine.sub_functions.get(0x01) if routine else None
+            session = self.first_session(start) if start is not None else None
+            if session is None:
+                continue
+            identifier = rid.to_bytes(2, "big")
+
+            def run(t, rid=rid, routine=routine, start=start, session=session, record=record, identifier=identifier):
+                self.enter(t, session)
+                if start.levels:
+                    self.unlock(t, min(start.levels))
+                raw = self.positive(t, b"\x31\x01" + identifier + record, "started (31 01)",
+                                    echo=b"\x01" + identifier)
+                if raw is None:
+                    return
+                if 0x03 in routine.sub_functions:
+                    self.positive(t, b"\x31\x03" + identifier, "its results (31 03)", echo=b"\x03" + identifier)
+                if 0x02 in routine.sub_functions:
+                    self.positive(t, b"\x31\x02" + identifier, "stopped (31 02)", echo=b"\x02" + identifier)
+                    if 0x03 in routine.sub_functions:
+                        self.positive(t, b"\x31\x03" + identifier, "its results after the stop",
+                                      echo=b"\x03" + identifier)
+            self._add("Routines", f"Start {routine.name} ({rid:04X})", run,
+                      "The routine started with its option record, its results asked for, and stopped.")
 
     def _fault_memory(self):
         service = self.d.service(0x19)
@@ -816,3 +993,59 @@ class Suite:
                         answer.text())
                 self._covered(t, answer)
         self._add("Timing", "Responses within P2", case)
+
+    def _session_probe(self, session):
+        """How to tell whether the ECU is in session rather than the default one: reading F186, else a
+        harmless request of a service allowed there and not in the default session. None: no way."""
+        active = self.d.dids.get(0xF186)
+        if active is not None and active.read is not None and not active.read.levels and \
+                active.read.allows(DEFAULT_SESSION) and active.read.allows(session):
+            return "did"
+        sid = next((sid for sid in sorted(HARMLESS) if sid in self.d.services and self.allowed(sid, session)
+                    and not self.allowed(sid, DEFAULT_SESSION) and not self.d.services[sid].access.levels), None)
+        return sid
+
+    def _in_session(self, t, probe, session, what):
+        """A step: the ECU is in session (by the probe of _session_probe)."""
+        if probe == "did":
+            raw = self.positive(t, b"\x22\xf1\x86", what, echo=b"\xf1\x86")
+            if raw is not None:
+                t.check(raw[3:4] == bytes([session]), f"the {self.d.session_name(session)} (F186 = {session:02X})",
+                        _hex(raw))
+        elif session == DEFAULT_SESSION:
+            self.negative(t, self.minimal(probe), "service_not_in_session", f"{what}: {probe:02X} is refused again")
+        else:
+            self.available(t, self.minimal(probe), f"{what}: {probe:02X} is still answered")
+
+    def _s3(self):
+        """S3 (ISO 14229-2): a session other than the default one ends after S3 without a request, and
+        TesterPresent keeps it."""
+        if not self.o.s3_test:
+            return
+        session = next((s for s in self.sessions() if s != DEFAULT_SESSION and self._session_probe(s) is not None),
+                       None)
+        if session is None:
+            return
+        probe = self._session_probe(session)
+        margin = self.o.timing_margin_ms / 1000
+        name = self.d.session_name(session)
+
+        def timeout(t):
+            self.enter(t, session)
+            t.log(f"No request for {self.o.s3_seconds + 0.5 + margin:.1f} s (S3 {self.o.s3_seconds:g} s)")
+            t.wait(self.o.s3_seconds + 0.5 + margin)
+            self._in_session(t, probe, DEFAULT_SESSION, "after S3 without a request, the default session")
+        self._add("Timing", f"S3: the {name} ends without requests", timeout)
+        if 0x3E not in self.d.services:
+            return
+
+        def kept(t):
+            self.enter(t, session)
+            period = max(0.5, self.o.s3_seconds / 2.5)
+            deadline = time.monotonic() + self.o.s3_seconds + 1.0
+            t.log(f"TesterPresent (3E 80) every {period:.1f} s for {self.o.s3_seconds + 1:.1f} s")
+            while time.monotonic() < deadline:
+                self.tester.quiet(b"\x3e\x80")
+                t.wait(min(period, max(0.0, deadline - time.monotonic())))
+            self._in_session(t, probe, session, f"with TesterPresent, still the {name}")
+        self._add("Timing", f"S3: TesterPresent keeps the {name}", kept)

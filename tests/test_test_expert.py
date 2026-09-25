@@ -27,11 +27,12 @@ from canexpert.test_expert import odx as odx_loader
 from canexpert.test_expert import window as window_module
 from canexpert.test_expert.cdd import CddError, load_cdd
 from canexpert.test_expert.coverage import Coverage, coverage_html, untested
-from canexpert.test_expert.description import (Access, EcuDescription, RawService, RawState, build_description)
+from canexpert.test_expert.description import (Access, DataField, EcuDescription, RawService, RawState,
+                                               build_description)
 from canexpert.test_expert.discovery import (Discovery, DiscoveryOptions, DiscoveryResult, compare, discovery_page,
                                              expand, parse_ranges)
 from canexpert.test_expert.dummy import dummy_description
-from canexpert.test_expert.generator import Options, Suite
+from canexpert.test_expert.generator import Options, Suite, parse_routine_starts
 from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file
 from canexpert.test_expert.policy import Deviation, NrcPolicy, accept_function, parse_nrcs
 from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
@@ -104,8 +105,9 @@ class CddTest(unittest.TestCase):
         self.assertEqual(cdd.warnings, [])
         self.assertEqual({s: (x.access, x.sub_functions) for s, x in cdd.services.items()},
                          {s: (x.access, x.sub_functions) for s, x in dummy.services.items()})
-        self.assertEqual({d: (x.length, x.read, x.write) for d, x in cdd.dids.items()},
-                         {d: (x.length, x.read, x.write) for d, x in dummy.dids.items()})
+        self.assertEqual({d: (x.name, x.length, x.read, x.write, x.fields) for d, x in cdd.dids.items()},
+                         {d: (x.name, x.length, x.read, x.write, x.fields) for d, x in dummy.dids.items()},
+                         "the fields too: text tables, ranges, scales, units, text")
         self.assertEqual(cdd.routines, dummy.routines)
         self.assertEqual({s: x.entered_from for s, x in cdd.sessions.items()},
                          {s: x.entered_from for s, x in dummy.sessions.items()})
@@ -126,7 +128,7 @@ class CddTest(unittest.TestCase):
         root = ElementTree.fromstring(text.split("?>", 1)[1])
         protocol = next(p for p in root.iter("PROTOCOLSERVICE") if p.findtext("QUAL") == "ReadDataByIdentifier")
         protocol.find("REQ").find("CONSTCOMP").set("v", "0x22")                 # a hexadecimal constant
-        instance = next(i for i in root.iter("DIAGINST") if i.findtext("QUAL") == "DID_0xF190")
+        instance = next(i for i in root.iter("DIAGINST") if i.findtext("QUAL") == "VIN")
         instance.append(ElementTree.fromstring('<SERVICE tmplref="nowhere" mayBeExec="(1)"/>'))
         path = Path(tempfile.mkdtemp()) / "edited.cdd"
         path.write_text(ElementTree.tostring(root, encoding="unicode"), encoding="utf-8")
@@ -137,6 +139,36 @@ class CddTest(unittest.TestCase):
         broken.write_text("<CANDELA/>", encoding="utf-8")
         with self.assertRaises(CddError):
             load_cdd(broken)
+
+
+class DataFieldTest(unittest.TestCase):
+    def test_values_and_their_limits(self):
+        temperature = DataField("Temperature", 0, 16, "signed", [(-400, 1500)], scale=0.1, unit="degC")
+        self.assertEqual(temperature.check(bytes.fromhex("00d7")), (True, "21.5 degC"))
+        self.assertEqual(temperature.check(bytes.fromhex("07d0")),
+                         (False, "200 degC: not a valid value (-40 degC to 150 degC)"))
+        self.assertEqual(temperature.coded(bytes.fromhex("ff00")), -256, "two's complement")
+        session = DataField("Session", 0, 8, texts={1: "Default", 3: "Extended"})
+        self.assertEqual(session.check(b"\x03"), (True, "Extended (3)"))
+        self.assertFalse(session.check(b"\x02")[0], "not in the text table")
+        self.assertEqual(DataField("VIN", 0, 136, "ascii").check(b"WVWZZZ1KZAW000001"), (True, '"WVWZZZ1KZAW000001"'))
+        self.assertFalse(DataField("Name", 0, 32, "ascii").check(b"AB\x01\x02")[0])
+        self.assertEqual(DataField("Name", 0, 32, "ascii").check(b"AB\x00\x00"), (True, '"AB"'), "padded")
+        date = DataField("Day", 8, 16, "bcd")
+        self.assertEqual(date.coded(bytes.fromhex("202409")), 2409)
+        self.assertEqual(date.check(bytes.fromhex("20240A")), (False, "not a BCD number"))
+        self.assertEqual(date.encode(bytes(3), 1234).hex(), "001234")
+        nibble = DataField("Nibble", 4, 8)
+        self.assertEqual((nibble.encode(bytes.fromhex("ffff"), 0x12).hex(), nibble.coded(bytes.fromhex("f12f"))),
+                         ("f12f", 0x12))
+        self.assertEqual(DataField("Short", 0, 32).check(b"\x01"), (False, "not in the record"))
+        described = dummy_description()
+        again = EcuDescription.from_dict(json.loads(json.dumps(described.to_dict())))
+        self.assertEqual(again.dids[0x0110].fields, described.dids[0x0110].fields)
+        self.assertEqual(described.dids[0x0110].fields[0].valid, [(600, 1200)])
+        self.assertEqual(parse_routine_starts("0201; FF00: 44 00 01"), {0x0201: b"", 0xFF00: b"\x44\x00\x01"})
+        with self.assertRaises(ValueError):
+            parse_routine_starts("0201: zz")
 
 
 class OdxTest(unittest.TestCase):
@@ -162,6 +194,38 @@ class OdxTest(unittest.TestCase):
         self.assertEqual(d.dids[0xF190].write, Access({3}, {1}))
         self.assertEqual(d.services[0x27].access, Access({3}, set()))
 
+    def test_a_dids_fields(self):
+        def limit(value):
+            return SimpleNamespace(value=value)
+
+        def dop(bits, base, compu=None, constr=None, unit=None):
+            return SimpleNamespace(diag_coded_type=SimpleNamespace(bit_length=bits, base_data_type=base),
+                                   compu_method=compu, internal_constr=constr, unit=unit)
+        texts = SimpleNamespace(category="CompuCategory.TEXTTABLE", compu_internal_to_phys=SimpleNamespace(
+            compu_scales=[SimpleNamespace(lower_limit=limit(1), upper_limit=limit(1), compu_const=SimpleNamespace(vt="Default")),
+                          SimpleNamespace(lower_limit=limit(3), upper_limit=limit(3), compu_const=SimpleNamespace(vt="Extended"))]))
+        linear = SimpleNamespace(category="LINEAR", compu_internal_to_phys=SimpleNamespace(compu_scales=[
+            SimpleNamespace(compu_rational_coeffs=SimpleNamespace(numerators=[-40, 0.5], denominators=[1]))]))
+        parameters = [SimpleNamespace(short_name="SID", parameter_type="CODED-CONST", byte_position=0),
+                      SimpleNamespace(short_name="DID", parameter_type="CODED-CONST", byte_position=1),
+                      SimpleNamespace(short_name="Session", parameter_type="VALUE", byte_position=3, bit_position=0,
+                                      dop=dop(8, "DataType.A_UINT32", texts)),
+                      SimpleNamespace(short_name="Temperature", parameter_type="VALUE", byte_position=4, bit_position=4,
+                                      dop=dop(4, "DataType.A_UINT32", linear, SimpleNamespace(lower_limit=limit(0),
+                                                                                              upper_limit=limit(9)),
+                                              SimpleNamespace(display_name="degC"))),
+                      SimpleNamespace(short_name="Name", parameter_type="VALUE", byte_position=5,
+                                      dop=dop(32, "DataType.A_ASCIISTRING"))]
+        service = SimpleNamespace(positive_responses=[SimpleNamespace(parameters=parameters)])
+        fields = odx_loader.did_fields(service)
+        self.assertEqual([(f.name, f.position, f.bits, f.encoding) for f in fields],
+                         [("Session", 0, 8, "unsigned"), ("Temperature", 8, 4, "unsigned"), ("Name", 16, 32, "ascii")])
+        self.assertEqual(fields[0].texts, {1: "Default", 3: "Extended"})
+        self.assertEqual((fields[1].scale, fields[1].shift, fields[1].valid, fields[1].unit), (0.5, -40.0, [(0, 9)], "degC"))
+        broken = SimpleNamespace(positive_responses=[SimpleNamespace(parameters=[
+            SimpleNamespace(short_name="X", parameter_type="VALUE", byte_position=None, dop=dop(8, "A_UINT32"))])])
+        self.assertEqual(odx_loader.did_fields(broken), [], "a field without its place: none at all")
+
     def test_by_extension(self):
         self.assertEqual(odx_loader.load_description(DUMMY_CDD).name, "DummyECU (CommonDiagnostics)")
 
@@ -186,6 +250,7 @@ class Bench:
 
     def run(self, description, names=None, sequences=(), base_dir=None, policy=None, deviations=(), **options):
         options.setdefault("key", key)
+        options.setdefault("s3_test", False)
         suite = Suite(description, Options(**options), sequences, base_dir, policy)
         suite.tester = Tester(self.tester_bus, TRANSPORT, 0x7DF)
         runner = Runner(suite.module(names), send=suite.tester.send_frame, accept=accept_function(deviations))
@@ -219,7 +284,11 @@ class AgainstTheDummyEcuTest(unittest.TestCase):
     def test_without_a_key_the_unlocking_is_skipped(self):
         bench = Bench(self)
         _suite, report = bench.run(dummy_description(bench.ecu.config), key=None)
-        self.assertEqual(failures(report), {})
+        skipped = {case.title: case.error for case in report.cases if case.verdict == "skipped"}
+        self.assertEqual(set(skipped.values()), {"no key source set for SecurityAccess"})
+        self.assertIn("Data identifiers: Values of CalibrationId (0200)", skipped, "a DID read once unlocked")
+        self.assertIn("Routines: EraseMemory (FF00): stop and results before a start", skipped)
+        self.assertEqual({title: steps for title, steps in failures(report).items() if title not in skipped}, {})
         security = next(case for case in report.cases if case.title.startswith("Security access"))
         self.assertIn("No key source", [step.description for step in security.steps][-1])
 
@@ -231,7 +300,7 @@ class AgainstTheDummyEcuTest(unittest.TestCase):
         _suite, report = bench.run(description)
         found = failures(report)
         self.assertIn("Communication: ControlDTCSetting (85)", found)
-        self.assertIn("Read DID 0xF190 (F190)", "".join(found))
+        self.assertIn("Read VIN (F190)", "".join(found))
         self.assertTrue(any("17 bytes" in step.detail or "20 bytes" in step.detail
                             for case in report.cases for step in case.failures()))
 
@@ -429,14 +498,14 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(missing["Service 11 ECUReset"], "ECU reset is a destructive test: tick Destructive tests")
         self.assertEqual(missing["Routine FF00 EraseMemory: started"],
                          "routines are not started (only refused where they may not run)")
-        self.assertIn("DID F187 DID 0xF187: read", missing)
+        self.assertIn("DID F187 SparePartNumber: read", missing)
         page = coverage_html(coverage, described, Options())
         self.assertIn("<h2>Coverage</h2>", page)
-        self.assertIn("F190 DID 0xF190</td><td>write</td>", page)
+        self.assertIn("F190 VIN</td><td>write</td>", page)
 
     def test_a_run_counts_what_it_checked(self):
         bench = Bench(self)
-        names = ["testerpresent.testerpresent_3e", "data_identifiers.read_did_0xf190_f190",
+        names = ["testerpresent.testerpresent_3e", "data_identifiers.read_vin_f190",
                  "service_availability.securityaccess_27_by_session"]
         suite, report = bench.run(dummy_description(bench.ecu.config), names)
         self.assertEqual(report.verdict, "passed", failures(report))
@@ -446,7 +515,7 @@ class CoverageTest(unittest.TestCase):
         self.assertIn("service_availability.securityaccess_27_by_session", coverage.services[(0x27, 0x03)].tests)
         self.assertEqual({key[1] for key in coverage.dids if key[0] == 0xF190}, {0x01, 0x02, 0x03})
         self.assertEqual(suite.identification[0xF195], ("systemSupplierECUSoftwareVersionNumber", "APP-1.0.0"),
-                         "read at the start, with ISO's name where the description has none")
+                         "read at the start, with ISO's name")
         self.assertEqual(suite.identification[0xF190][1], "WVWZZZ1KZAW000001")
         self.assertIn("ECU identification: F195 systemSupplierECUSoftwareVersionNumber = APP-1.0.0",
                       [step.description for step in report.setup.steps])
@@ -483,7 +552,7 @@ class DiscoveryTest(unittest.TestCase):
         self.assertFalse(bench.ecu.state.routines, "nothing was started")
         findings = {(finding.kind, finding.what) for finding in compare(result, description)}
         self.assertEqual(findings, {("undocumented", "Service 86 ResponseOnEvent"), ("undocumented", "DID F18C"),
-                                    ("different", "DID F190"), ("missing", "DID F1A0 Ghost")})
+                                    ("different", "DID F190 VIN"), ("missing", "DID F1A0 Ghost")})
         again = DiscoveryResult.from_dict(json.loads(json.dumps(result.to_dict())))
         self.assertEqual(again.to_dict(), result.to_dict())
         page = discovery_page(result, description)
@@ -618,7 +687,7 @@ class PlanTest(unittest.TestCase):
                              "--report-dir", str(reports), "--save-description", str(self.folder / "found.json")])
         printed = "".join(call.args[0] for call in out.write.call_args_list)
         self.assertEqual(code, cli.EXIT_FAILED, printed)
-        self.assertIn("DIFFERENT    DID F190: the ECU answers 17 bytes, the description says 16", printed)
+        self.assertIn("DIFFERENT    DID F190 VIN: the ECU answers 17 bytes, the description says 16", printed)
         self.assertTrue(list(reports.glob("discovery_*.html")) and list(reports.glob("discovery_*.json")))
         self.assertEqual(EcuDescription.load(self.folder / "found.json").dids[0xF190].length, 17)
         with patch("sys.stdout"):
@@ -628,6 +697,60 @@ class PlanTest(unittest.TestCase):
         with patch("sys.stdout"):
             self.assertEqual(cli.main([str(path), "--run", "--dummy-ecu"]), cli.EXIT_NOT_RUN)
             self.assertEqual(cli.main([str(DUMMY_CDD), "--run", "--interface", "no-such-interface"]), cli.EXIT_NOT_RUN)
+
+
+class DeeperTest(unittest.TestCase):
+    """Values against the description's fields, writes at and beyond their limits, routines started and in the
+    wrong order, S3, and responses pending."""
+
+    def test_the_dummy_ecu_keeps_them(self):
+        bench = Bench(self, EcuConfig(broadcast_interval=0, s3_timeout=1.0, self_test_seconds=0.5))
+        suite, report = bench.run(dummy_description(bench.ecu.config), destructive=True, start_routines="0201",
+                                  s3_test=True, s3_seconds=1.0)
+        self.assertEqual(failures(report), {})
+        steps = {case.title: [step.description for step in case.steps] for case in report.cases}
+        self.assertIn("Speed out of range (1201 rpm): refused, NRC 0x31",
+                      steps["Data identifiers: Write IdleSpeedTarget (0110): its limits, and out of them"])
+        self.assertEqual(steps["Routines: Start SelfTest (0201)"],
+                         ["started (31 01)", "its results (31 03)", "stopped (31 02)", "its results after the stop"])
+        self.assertIn("Routines: SelfTest (0201): stop and results before a start", steps)
+        self.assertIn("after S3 without a request, the default session",
+                      steps["Timing: S3: the Extended session ends without requests"])
+        self.assertIn("Session: a valid value", steps["Data identifiers: Values of ActiveDiagnosticSession (F186)"])
+
+    def test_what_is_wrong_is_found(self):
+        config = EcuConfig(broadcast_interval=0, s3_timeout=3.0, self_test_seconds=0.5)
+        for item in config.dids:
+            if item["did"] == 0x0110:
+                item["data"], item["valid"] = "0100", []           # 256 rpm, and any value taken
+        bench = Bench(self, config)
+        bench.ecu.state.routines[0x0201] = {"status": 0x00, "until": None}     # results kept from before
+        description = dummy_description(EcuConfig())
+        names = [case.name for case in Suite(description, Options(destructive=True, s3_test=True)).cases
+                 if "0110" in case.title or "S3: the" in case.title]
+        _suite, report = bench.run(description, names, destructive=True, s3_test=True, s3_seconds=1.0)
+        found = {case.title: [(step.description, step.detail) for step in case.failures()] for case in report.cases}
+        self.assertIn(("Speed: a valid value", "256 rpm: not a valid value (600 rpm to 1200 rpm)"),
+                      found["Data identifiers: Values of IdleSpeedTarget (0110)"])
+        self.assertEqual([step for step, _detail in found["Data identifiers: Write IdleSpeedTarget (0110): its "
+                                                          "limits, and out of them"]],
+                         ["Speed out of range (1201 rpm): refused, NRC 0x31", "nothing written"])
+        self.assertTrue(found["Timing: S3: the Extended session ends without requests"], "S3 3 s, not 1 s")
+
+    def test_responses_pending(self):
+        names = ["testerpresent.testerpresent_3e"]
+        bench = Bench(self, EcuConfig(broadcast_interval=0, response_delay_ms=120))
+        _suite, report = bench.run(dummy_description(bench.ecu.config), names)
+        (case,) = report.cases
+        self.assertEqual(case.verdict, "passed", failures(report))
+        pending = [step for step in case.steps if "response pending within P2" in step.description]
+        self.assertTrue(pending and all(step.verdict == "pass" for step in pending))
+        suppressed = next(step for step in case.steps if step.description.startswith("3E 80"))
+        self.assertIn("after a response pending the answer is sent", suppressed.detail)
+        slow = Bench(self, EcuConfig(broadcast_interval=0, response_delay_ms=700, pending_interval=0.5, p2_star_ms=300))
+        _suite, report = slow.run(dummy_description(slow.ecu.config), names)
+        failed = [step.detail for step in report.cases[0].failures()]
+        self.assertTrue(failed and all("(P2* 300 ms)" in detail for detail in failed), failed)
 
 
 class WindowTest(unittest.TestCase):
@@ -641,6 +764,7 @@ class WindowTest(unittest.TestCase):
         self.settings = MemorySettings()
         self.window = window_module.TestExpertWindow(self.settings)
         self.addCleanup(self.window.close)
+        self.window.s3_test.setChecked(False)                                # a few seconds of waiting
 
     def test_a_description_and_its_tests(self):
         self.assertEqual(self.window.description.name, "Dummy ECU", "the Dummy ECU without a file")
@@ -732,6 +856,13 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(other._items[name].checkState(0), 0, "left out, as the plan says")
         self.assertEqual([sequence.name for sequence in other.sequence_editor.sequences()], ["Hard reset"])
         self.assertEqual(other.plan(path).to_dict(), saved.to_dict())
+        other.start_routines.setText("0201: zz")
+        self.assertEqual(other.plan().options["start_routines"], "", "not readable: none")
+        other.start_routines.setText("0201")
+        other.s3_seconds.setValue(2.5)
+        self.assertEqual((other.plan().options["start_routines"], other.plan().options["s3_seconds"]), ("0201", 2.5))
+        other.rebuild_tests()
+        self.assertIn("Routines: Start SelfTest (0201)", [case.title for case in other.suite.cases])
         other.new_plan()
         self.assertEqual((other.description.name, other.sequence_editor.sequences(), other.plan_path),
                          ("Dummy ECU", [], None))

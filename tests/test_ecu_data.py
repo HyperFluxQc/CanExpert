@@ -136,10 +136,15 @@ class DataTabTest(unittest.TestCase):
 
     def test_the_tables_show_the_ecus_data(self):
         dids = [self.window.did_table.item(row, 0).text() for row in range(self.window.did_table.rowCount())]
-        self.assertEqual(dids, ["F187", "F18C", "F190", "F195", "0101", "0102", "F201", "F202", "0200"])
+        self.assertEqual(dids, ["F187", "F18C", "F190", "F195", "0101", "0102", "F201", "F202", "0200", "0110"])
         self.assertEqual(self.window.did_table.item(2, 2).text(), "WVWZZZ1KZAW000001")
         self.assertEqual(self.window.did_table.item(2, 3).checkState(), Qt.Checked)
         self.assertEqual(self.window.dtc_table.item(0, 0).text(), "010100")
+        self.assertEqual(self.window.did_table.item(9, 7).text(), "0258-04B0", "the values 0110 takes")
+        self.window.did_table.item(9, 7).setText("0300-0400, 0500")
+        self.assertEqual(self.window.ecu.did_valid[0x0110], [(0x300, 0x400), (0x500, 0x500)])
+        self.window.did_table.item(9, 7).setText("0400-0300")
+        self.assertIn("Not applied", self.window.statusBar().currentMessage())
 
     def test_an_edit_applies_to_the_running_ecu_at_once(self):
         self.window.did_table.item(3, 1).setText("41 50 50 2D 32")               # F195 = "APP-2"

@@ -53,7 +53,7 @@ from canexpert.test_expert.discovery import Discovery, compare, discovery_html, 
 from canexpert.test_expert.discovery_view import DiscoveryDialog, DiscoveryView
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.engine import PlanRun
-from canexpert.test_expert.generator import Options, Suite
+from canexpert.test_expert.generator import Options, Suite, parse_routine_starts
 from canexpert.test_expert.odx import load_description
 from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file, options_dict
 from canexpert.test_expert.policy import Deviation, today
@@ -84,6 +84,19 @@ def access_text(access) -> str:
     sessions = ", ".join(f"{s:02X}" for s in sorted(access.sessions)) or "every session"
     levels = f", level {', '.join(f'{level:02X}' for level in sorted(access.levels))}" if access.levels else ""
     return sessions + levels
+
+
+def field_text(item) -> str:
+    """What a DID's field may hold: its valid values or text table, its scale and unit."""
+    if item.texts:
+        return ", ".join(f"{value}: {text}" for value, text in sorted(item.texts.items()))
+    parts = []
+    if item.valid:
+        parts.append(", ".join(item.shown(low) if low == high else f"{item.shown(low)} to {item.shown(high)}"
+                               for low, high in item.valid))
+    elif item.numeric and ((item.scale, item.shift) != (1.0, 0.0) or item.unit):
+        parts.append(f"x {item.scale:g} + {item.shift:g} {item.unit}".strip())
+    return "; ".join(parts) or ("text" if item.encoding == "ascii" else "")
 
 
 class TestExpertWindow(QMainWindow):
@@ -321,15 +334,19 @@ class TestExpertWindow(QMainWindow):
         self.plan_name.setPlaceholderText("the plan's file name")
         form.addRow("Plan name", self.plan_name)
         self.destructive = QCheckBox("Destructive tests")
-        self.destructive.setToolTip("ECU reset, clearing every DTC, writing DIDs (their own value back)")
+        self.destructive.setToolTip("ECU reset, clearing every DTC, writing DIDs (their own value back, their "
+                                    "limits and a value out of them)")
         self.lockout = QCheckBox("Security lockout")
         self.lockout.setToolTip("Wrong keys until the ECU locks out, then its delay")
         self.functional = QCheckBox("Functional requests")
         self.functional.setChecked(True)
+        self.s3_test = QCheckBox("S3 session timeout")
+        self.s3_test.setChecked(True)
+        self.s3_test.setToolTip("A session ends after S3 without requests, and TesterPresent keeps it (a few seconds)")
         self.record = QCheckBox("Record the traffic (.blf)")
-        for box in (self.destructive, self.lockout, self.functional):
+        for box in (self.destructive, self.lockout, self.functional, self.s3_test):
             box.toggled.connect(lambda _on: self.rebuild_tests())
-        for box in (self.destructive, self.lockout, self.functional, self.record):
+        for box in (self.destructive, self.lockout, self.functional, self.s3_test, self.record):
             form.addRow("", box)
         self.attempts = QSpinBox()
         self.attempts.setRange(1, 20)
@@ -348,8 +365,21 @@ class TestExpertWindow(QMainWindow):
         self.margin.setSuffix(" ms")
         form.addRow("Wrong keys before the lockout", self.attempts)
         form.addRow("Lockout delay", self.lockout_seconds)
+        self.s3_seconds = QDoubleSpinBox()
+        self.s3_seconds.setRange(0.5, 60)
+        self.s3_seconds.setValue(5.0)
+        self.s3_seconds.setSuffix(" s")
+        self.s3_seconds.setToolTip("S3server: ISO 14229-2 fixes it at 5 s")
+        self.start_routines = QLineEdit()
+        self.start_routines.setPlaceholderText("none: routines are not started")
+        self.start_routines.setToolTip("Routines a run may start, with the option record each is started with: "
+                                       "0201; FF00: 44 00 01 00 00 00 00 00 04")
+        self.start_routines.editingFinished.connect(self.rebuild_tests)
+        self.start_routines.textChanged.connect(self._check_routine_starts)
         form.addRow("ECU reset time", self.reset_time)
         form.addRow("Margin over P2", self.margin)
+        form.addRow("S3", self.s3_seconds)
+        form.addRow("Routines to start", self.start_routines)
         self.key_source = QComboBox()
         self.key_source.addItems(KEY_SOURCES)
         self.mask = HexSpinBox(0xFF)
@@ -428,8 +458,13 @@ class TestExpertWindow(QMainWindow):
         branch("Services", [(f"{sid:02X} {SERVICE_NAMES.get(sid, s.name)}"
                              + (f" [{', '.join(f'{sub:02X}' for sub in sorted(s.sub_functions))}]" if s.sub_functions else ""),
                              access_text(s.access)) for sid, s in sorted(d.services.items())])
-        branch("DIDs", [(f"{did:04X} {e.name} ({e.length if e.length else '?'} bytes)",
-                         f"read: {access_text(e.read)}; write: {access_text(e.write)}") for did, e in sorted(d.dids.items())])
+        dids = branch("DIDs", [(f"{did:04X} {e.name} ({e.length if e.length else '?'} bytes)",
+                                f"read: {access_text(e.read)}; write: {access_text(e.write)}")
+                               for did, e in sorted(d.dids.items())])
+        for index, entry in enumerate(e for _did, e in sorted(d.dids.items())):
+            for item in entry.fields:
+                dids.child(index).addChild(QTreeWidgetItem([f"{item.name} ({item.bits} bits, {item.encoding})",
+                                                            field_text(item)]))
         branch("Routines", [(f"{rid:04X} {r.name}", "; ".join(f"{sub:02X}: {access_text(a)}" for sub, a in sorted(r.sub_functions.items())))
                             for rid, r in sorted(d.routines.items())])
         if d.warnings:
@@ -451,6 +486,25 @@ class TestExpertWindow(QMainWindow):
 
     def options(self) -> Options:
         return self.plan().make_options()
+
+    def _routine_starts(self) -> str:
+        """The routines to start as typed, or "" while they cannot be read."""
+        text = self.start_routines.text().strip()
+        try:
+            parse_routine_starts(text)
+        except ValueError:
+            return ""
+        return text
+
+    def _check_routine_starts(self, text):
+        try:
+            parse_routine_starts(text)
+            self.start_routines.setStyleSheet("")
+            self.start_routines.setToolTip("Routines a run may start, with the option record each is started with: "
+                                           "0201; FF00: 44 00 01 00 00 00 00 00 04")
+        except ValueError as exc:
+            self.start_routines.setStyleSheet("background: #fecaca;")
+            self.start_routines.setToolTip(str(exc))
 
     def _browse_dll(self):
         path, _ = QFileDialog.getOpenFileName(self, "Seed & key DLL", "", "DLL (*.dll);;All files (*.*)")
@@ -483,7 +537,8 @@ class TestExpertWindow(QMainWindow):
         plan.options = {"destructive": self.destructive.isChecked(), "lockout": self.lockout.isChecked(),
                         "functional": self.functional.isChecked(), "timing_margin_ms": self.margin.value(),
                         "reset_time": self.reset_time.value(), "attempts": self.attempts.value(),
-                        "lockout_seconds": self.lockout_seconds.value()}
+                        "lockout_seconds": self.lockout_seconds.value(), "s3_test": self.s3_test.isChecked(),
+                        "s3_seconds": self.s3_seconds.value(), "start_routines": self._routine_starts()}
         plan.options = {**options_dict(Options()), **plan.options}
         dll = self.dll_edit.text().strip()
         plan.key = KeySource("dll" if self.key_source.currentIndex() == 1 else "xor", self.mask.value(),
@@ -522,6 +577,11 @@ class TestExpertWindow(QMainWindow):
         self.reset_time.setValue(float(options.get("reset_time", 1.0)))
         self.attempts.setValue(int(options.get("attempts", 3)))
         self.lockout_seconds.setValue(float(options.get("lockout_seconds", 10.0)))
+        self.s3_test.blockSignals(True)
+        self.s3_test.setChecked(bool(options.get("s3_test", True)))
+        self.s3_test.blockSignals(False)
+        self.s3_seconds.setValue(float(options.get("s3_seconds", 5.0)))
+        self.start_routines.setText(str(options.get("start_routines", "") or ""))
         self.key_source.setCurrentIndex(1 if plan.key.kind == "dll" else 0)
         self.mask.setValue(plan.key.mask)
         self.dll_edit.setText(str(plan.resolve(plan.key.dll) or "") if plan.key.dll else "")

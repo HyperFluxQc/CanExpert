@@ -11,7 +11,8 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QComboBox, QHeaderView, QPushButton, QTableWidget, QTableWidgetItem, QWidget
 
 from canexpert.simulator.dtc import status_text
-from canexpert.simulator.fields import printable, forced_text, parse_sessions, format_sessions, number_text
+from canexpert.simulator.fields import (printable, forced_text, parse_sessions, format_sessions, number_text,
+                                        parse_value_ranges, format_value_ranges)
 from canexpert.simulator.ecu import SERVICE_NAMES, EcuConfig
 from canexpert.simulator.signals import GENERATORS, SignalSimulation
 from canexpert.simulator.widgets import hint
@@ -22,7 +23,7 @@ BUILTIN_DBC_TEXT = "Built-in: DBC/dummy_ecu.dbc (0x300 EngineData, 0x301 EcuStat
 GENERATOR_TEXT = {"constant": "Constant", "ramp": "Ramp", "sine": "Sine", "square": "Square", "random": "Random",
                   "counter": "Counter", "running": "Engine running", "logging": "Logging", "session": "Session"}
 # Columns of the tables
-DID_DID, DID_DATA, DID_TEXT, DID_WRITABLE, DID_SIGNAL, DID_SESSIONS, DID_LEVEL = range(7)
+DID_DID, DID_DATA, DID_TEXT, DID_WRITABLE, DID_SIGNAL, DID_SESSIONS, DID_LEVEL, DID_VALID = range(8)
 DTC_DTC, DTC_STATUS, DTC_NOW, DTC_FAULT, DTC_SNAPSHOT, DTC_EXTENDED = range(6)
 SIG_NAME, SIG_UNIT, SIG_KIND, SIG_LOW, SIG_HIGH, SIG_PERIOD, SIG_NOW = range(7)
 MSG_NAME, MSG_ID, MSG_PERIOD, MSG_SEND = range(4)
@@ -69,8 +70,8 @@ class Tables:
 
     def _data_page(self):
         dids, form = self._group("DIDs: ReadDataByIdentifier (0x22) and WriteDataByIdentifier (0x2E)")
-        self.did_table = self._table(["DID", "Data (hex)", "As text", "Writable", "Signal", "Sessions", "Level"],
-                                     stretch_column=DID_DATA)
+        self.did_table = self._table(["DID", "Data (hex)", "As text", "Writable", "Signal", "Sessions", "Level",
+                                      "Valid (hex)"], stretch_column=DID_DATA)
         form.addRow(self.did_table)
         self.did_buttons = self._table_buttons(self.did_table, lambda: self._add_did({"did": 0x0000, "data": "00"}))
         form.addRow(self.did_buttons)
@@ -78,8 +79,9 @@ class Tables:
                          "session once security access is unlocked. Signal (Message.Signal): the DID answers "
                          "that signal's raw value in as many bytes as its data has, and 2F controls it. "
                          "Sessions: where it can be read (and written), empty for any - elsewhere NRC 0x31; "
-                         "Level: the security level it needs - otherwise NRC 0x33. F186 (session) and 0100 "
-                         "(uptime) are always there; F2xx DIDs are the periodic ones."))
+                         "Level: the security level it needs - otherwise NRC 0x33. Valid: the values it may "
+                         "be written with, its data as one number (0258-04B0) - others get NRC 0x31. F186 "
+                         "(session) and 0100 (uptime) are always there; F2xx DIDs are the periodic ones."))
         dtcs, form = self._group("DTCs: ReadDTCInformation (0x19) and ClearDiagnosticInformation (0x14)")
         self.dtc_table = self._table(["DTC", "Status", "Now", "Fault", "Snapshot record 01 (hex)",
                                       "Extended data 01 (hex)"], stretch_column=DTC_SNAPSHOT)
@@ -152,7 +154,8 @@ class Tables:
                                       self._check_cell(bool(item.get("writable"))),
                                       self._cell(str(item.get("signal", "") or "")),
                                       self._cell(format_sessions(item.get("sessions"))),
-                                      self._cell(f"{level:02X}" if level else "")])
+                                      self._cell(f"{level:02X}" if level else ""),
+                                      self._cell(format_value_ranges(item.get("valid")))])
 
     def _add_dtc(self, dtc, status, snapshot, extended):
         now = self._cell(f"{status:02X}", editable=False)
@@ -336,6 +339,16 @@ class Tables:
         self._mark(item, None)
         return sessions
 
+    def _value_ranges(self, table, row, column):
+        item = table.item(row, column)
+        try:
+            ranges = parse_value_ranges(item.text())
+        except ValueError as exc:
+            self._mark(item, f"Valid values in row {row + 1}: {exc} (hex ranges, e.g. 0258-04B0)")
+            return []
+        self._mark(item, None)
+        return ranges
+
     def _read_tables(self):
         """The data tables as configuration lists; ValueError naming the bad cell."""
         dids = []
@@ -346,8 +359,9 @@ class Tables:
             signal = self.did_table.item(row, DID_SIGNAL).text().strip()
             sessions = self._session_list(self.did_table, row, DID_SESSIONS)
             level = self._number(self.did_table, row, DID_LEVEL, "The level", 0x7F, optional=True)
+            valid = self._value_ranges(self.did_table, row, DID_VALID)
             entry.update({key: value for key, value in (("signal", signal), ("sessions", sessions),
-                                                        ("level", level)) if value})
+                                                        ("level", level), ("valid", valid)) if value})
             dids.append(entry)
         dtcs = [{"dtc": self._number(self.dtc_table, row, DTC_DTC, "The DTC", 0xFFFFFF),
                  "status": self._number(self.dtc_table, row, DTC_STATUS, "The status", 0xFF),

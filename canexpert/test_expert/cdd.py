@@ -9,14 +9,17 @@ The chain from a variant to request bytes is the one CANdelaStudio writes:
 
 States are ECUDOC/STATEGROUPS/STATEGROUP (spec "session" or "security") / STATE, numbered from 1 across all
 groups; a SERVICE's mayBeExec="(1,2,4)" lists the states it may be executed in, its trans="(1,2,3,2)" the
-(from, to) transitions it causes. A DID's data length comes from the DATAOBJs of its instance.
+(from, to) transitions it causes. A DID's data length comes from the DATAOBJs of its instance, and its fields
+from their data types (DATATYPES): the coded value's CVALUETYPE (bl bits, enc uns/sgn/asc/bcd, qty field with
+minsz/maxsz), a text table's TEXTMAP s/e and TEXT, a linear type's COMP s/e (the valid coded values), f and o
+(factor and offset), and the unit of its PVALUETYPE.
 """
 from __future__ import annotations
 
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
-from canexpert.test_expert.description import EcuDescription, RawService, RawState, build_description
+from canexpert.test_expert.description import DataField, EcuDescription, RawService, RawState, build_description
 
 
 class CddError(ValueError):
@@ -145,6 +148,60 @@ class _Document:
             bits += width * count
         return (bits + 7) // 8 if bits else None
 
+    def _objects(self, instance) -> list:
+        objects = instance.findall("SIMPLECOMPCONT/DATAOBJ") + instance.findall("SIMPLECOMPCONT/STRUCT/DATAOBJ")
+        for reference in instance.findall("SIMPLECOMPCONT/DIDDATAREF"):
+            shared = self.by_id.get(reference.get("didRef", ""))
+            if shared is not None:
+                objects += shared.findall("STRUCTURE/DATAOBJ")
+        return objects
+
+    def data_fields(self, instance) -> list[DataField]:
+        """The fields of an instance's data record, one per DATAOBJ in order; [] when one has no fixed size."""
+        fields, position = [], 0
+        for data in self._objects(instance):
+            datatype = self.datatypes.get(data.get("dtref", ""))
+            coded = datatype.find("CVALUETYPE") if datatype is not None else None
+            if coded is None:
+                return []
+            try:
+                width = int(coded.get("bl", "0"))
+                if coded.get("qty") == "field":
+                    if coded.get("minsz") != coded.get("maxsz"):
+                        return []                                 # a variable length
+                    width *= int(coded.get("maxsz", "1"))
+            except ValueError:
+                return []
+            encoding = {"sgn": "signed", "asc": "ascii", "bcd": "bcd"}.get(coded.get("enc", "uns"), "unsigned")
+            if coded.get("qty") == "field" and encoding != "ascii":
+                encoding = "bytes"
+            texts, valid, scale, shift = {}, [], 1.0, 0.0
+            for mapping in datatype.findall("TEXTMAP"):
+                try:
+                    low, high = int(mapping.get("s")), int(mapping.get("e"))
+                except (TypeError, ValueError):
+                    continue
+                valid.append((low, high))
+                if low == high:
+                    texts[low] = _text(mapping, "TEXT/TUV")
+            for comp in datatype.findall("COMP"):
+                try:
+                    valid.append((int(comp.get("s")), int(comp.get("e"))))
+                    scale, shift = float(comp.get("f", scale)), float(comp.get("o", shift))
+                except (TypeError, ValueError):
+                    continue
+            if texts and all(low == high for low, high in valid):
+                valid = []                                      # the text table's own values
+            full = (0, (1 << width) - 1) if encoding == "unsigned" else None
+            if valid == [full]:
+                valid = []                                      # any value: no limit
+            physical = datatype.find("PVALUETYPE")
+            unit = physical.get("unit", "") if physical is not None else ""
+            fields.append(DataField(_name(data) or f"Field{len(fields) + 1}", position, width, encoding, valid,
+                                    texts, scale, shift, unit))
+            position += width
+        return fields
+
     def services(self, variant) -> list[RawService]:
         raw = []
         instances = []
@@ -175,8 +232,10 @@ class _Document:
                 if trans is None and service_template is not None:
                     trans = _numbers(service_template.get("trans"))
                 pairs = list(zip(trans[0::2], trans[1::2])) if trans else []
+                did = prefix[0] in (0x22, 0x2E)
                 raw.append(RawService(prefix, _label(instance), allowed, pairs,
-                                      self.data_length(instance) if prefix[0] in (0x22, 0x2E) else None))
+                                      self.data_length(instance) if did else None,
+                                      self.data_fields(instance) if did else []))
         return raw
 
 
