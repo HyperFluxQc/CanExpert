@@ -726,6 +726,17 @@ the UDS rules of ISO 14229-1, as Vector DiVa does: it reads the ECU's diagnostic
 tests the description calls for, runs them against the ECU and writes a report. It is a program of its own,
 on CAN Expert's bus access, UDS client and reports; CAN Expert's window stays as it is.
 
+The **toolbar** holds what you use most, as CAN Expert's does: **Description** (open one), **Open plan**,
+**Save plan**, **Connect**/**Disconnect**, **Run**, **Stop**, **Discover**, **Compare** (two runs), **Report**
+(the last run's) and **Manual**. The **Run** menu has the same actions; each button's tooltip says its key.
+
+| Key | Does |
+|---|---|
+| **F5** / **Shift+F5** | Run the ticked tests / Stop |
+| **Ctrl+O** / **Ctrl+Shift+O** | Open a description / a test plan |
+| **Ctrl+S** / **Ctrl+Shift+S** / **Ctrl+N** | Save the plan / Save it as / New plan |
+| **F1** | TestExpert in the manual |
+
 ### The description
 
 **Open...** (Ctrl+O) reads a **CDD** (CANdelaStudio), an **ODX** or **PDX** file, or a description TestExpert
@@ -748,7 +759,8 @@ gives the description as text: correct it and open it again.
 ### Connecting
 
 On the **ECU** tab, choose the interface, the channel (**Detect**) and the bit rate, and the request, response
-and functional identifiers — or take them from one of CAN Expert's configurations — and press **Connect**.
+and functional identifiers — or take them from one of CAN Expert's configurations — and press **Connect**
+(on the tab or the toolbar).
 TestExpert sends no TesterPresent of its own: every test starts from the default session.
 
 ### The tests

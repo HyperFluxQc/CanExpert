@@ -14,9 +14,10 @@ from datetime import datetime
 from pathlib import Path
 
 import can
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QSize, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QDesktopServices, QKeySequence
 from PyQt5.QtWidgets import (
+    QAction,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -36,6 +37,8 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTextBrowser,
+    QToolBar,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -66,7 +69,7 @@ from canexpert.test_expert.tester import Tester
 from canexpert.testing.report import COLOURS, summary_text
 from canexpert.testing.runner import INFO, PASS, PASSED
 from canexpert.testing.window import MemorySettings, step_text
-from canexpert.ui_common import app_icon, app_settings, enable_maximize
+from canexpert.ui_common import app_icon, app_settings, enable_maximize, is_dark_theme, toolbar_icon
 from canexpert.uds.observer import SERVICE_NAMES
 
 TEST_EXPERT_DIR = APP_DIR / "TestExpert"          # reports/ and the recordings of the runs
@@ -77,6 +80,27 @@ FILE_FILTER = "Diagnostic descriptions (*.cdd *.odx *.odx-d *.pdx *.json);;All f
 PLAN_FILTER = "TestExpert plans (*.json);;All files (*.*)"
 PREFIX = "test_expert/"                           # the settings TestExpert keeps
 COL_NAME, COL_VERDICT, COL_STEPS, COL_TIME, COL_SEQUENCES = range(5)
+# The toolbar: action name -> (label, icon, what it does); None: a separator.
+TOOLBAR = (
+    ("open", "Description", "open", "Open a description: a CDD, an ODX or PDX file, or a JSON description"),
+    ("open_plan", "Open plan", "plan", "Open a test plan"),
+    ("save_plan", "Save plan", "save", "Save the test plan: the description, the ECU, the settings, the tests left "
+                                      "out, the sequences and the deviations"),
+    None,
+    ("connect", "Connect", "connect", "Open the channel of the ECU tab"),
+    None,
+    ("run", "Run", "run", "Run the ticked tests against the ECU"),
+    ("stop", "Stop", "stop", "Stop after the current step (the clean-up still runs)"),
+    None,
+    ("discover", "Discover", "discover", "Ask the ECU what services, DIDs, routines and security levels it has, and "
+                                         "compare them with the description"),
+    ("compare", "Compare", "compare", "Compare two runs: regressions, fixes, other answers"),
+    ("report", "Report", "report", "Open the last run's HTML report"),
+    None,
+    ("manual", "Manual", "manual", "TestExpert in the manual"),
+)
+SHORTCUTS = {"open": QKeySequence.Open, "open_plan": "Ctrl+Shift+O", "save_plan": QKeySequence.Save, "run": "F5",
+             "stop": "Shift+F5", "manual": QKeySequence.HelpContents}
 TARGET = Qt.UserRole        # a tests tree item's ("test", name), ("group", name) or ("step", test name, description)
 
 
@@ -173,32 +197,21 @@ class TestExpertWindow(QMainWindow):
     # --- UI ------------------------------------------------------------------------------------------------
 
     def _build(self):
+        self._build_actions()
         menu = self.menuBar().addMenu("&File")
-        for entry in (("&Open description...", lambda: self.open_description(), QKeySequence.Open),
-                      ("The &Dummy ECU", self.use_dummy, None),
-                      ("Save description as &JSON...", self.save_description, None),
-                      None,
-                      ("&New plan", self.new_plan, QKeySequence.New),
-                      ("Open &plan...", lambda: self.open_plan(), QKeySequence("Ctrl+Shift+O")),
-                      ("&Save plan", self.save_plan, QKeySequence.Save),
-                      ("Save plan &as...", lambda: self.save_plan_as(), QKeySequence("Ctrl+Shift+S")),
-                      None,
-                      ("&Compare two runs...", lambda: self.compare_runs(), None),
-                      None,
+        for entry in ("open", ("The &Dummy ECU", self.use_dummy, None),
+                      ("Save description as &JSON...", self.save_description, None), None,
+                      ("&New plan", self.new_plan, QKeySequence.New), "open_plan", "save_plan",
+                      ("Save plan &as...", lambda: self.save_plan_as(), QKeySequence("Ctrl+Shift+S")), None,
                       ("E&xit", self.close, QKeySequence("Ctrl+Q"))):
-            if entry is None:
-                menu.addSeparator()
-                continue
-            text, slot, keys = entry
-            action = menu.addAction(text)
-            action.triggered.connect(lambda _checked=False, slot=slot: slot())
-            if keys is not None:
-                action.setShortcut(QKeySequence(keys))
+            self._menu_entry(menu, entry)
+        run_menu = self.menuBar().addMenu("&Run")
+        for entry in ("connect", None, "run", "stop", None, "discover", "compare", "report"):
+            self._menu_entry(run_menu, entry)
         help_menu = self.menuBar().addMenu("&Help")
-        manual = help_menu.addAction("TestExpert in the &manual")
-        manual.setShortcut(QKeySequence.HelpContents)
-        manual.triggered.connect(self.open_manual)
+        help_menu.addAction(self.actions["manual"])
         help_menu.addAction("&About").triggered.connect(self.show_about)
+        self._build_toolbar()
 
         splitter = QSplitter(Qt.Horizontal)
         side = QTabWidget()
@@ -217,21 +230,6 @@ class TestExpertWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         bar = QHBoxLayout()
-        self.run_btn = QPushButton("Run")
-        self.run_btn.setToolTip("Run the ticked tests against the ECU")
-        self.run_btn.clicked.connect(lambda: self.run())
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.stop)
-        self.report_btn = QPushButton("Open report")
-        self.report_btn.setEnabled(False)
-        self.report_btn.clicked.connect(self.open_report)
-        self.discover_btn = QPushButton("Discover...")
-        self.discover_btn.setToolTip("Ask the ECU what services, DIDs, routines and security levels it has, and "
-                                     "compare them with the description")
-        self.discover_btn.clicked.connect(lambda: self.discover())
-        for button in (self.run_btn, self.stop_btn, self.report_btn, self.discover_btn):
-            bar.addWidget(button)
         self.status = QLabel("")
         bar.addWidget(self.status, 1)
         self.connection_label = QLabel("Not connected")
@@ -287,6 +285,114 @@ class TestExpertWindow(QMainWindow):
         splitter.setSizes([470, 850])
         self.setCentralWidget(splitter)
 
+    def _build_actions(self):
+        """The actions of the toolbar, which the menus and the ECU tab share."""
+        slots = {"open": lambda: self.open_description(), "open_plan": lambda: self.open_plan(),
+                 "save_plan": self.save_plan, "connect": self.toggle_connection, "run": lambda: self.run(),
+                 "stop": self.stop, "discover": lambda: self.discover(), "compare": lambda: self.compare_runs(),
+                 "report": self.open_report, "manual": self.open_manual}
+        menu_texts = {"open": "&Open description...", "open_plan": "Open &plan...", "save_plan": "&Save plan",
+                      "connect": "&Connect", "run": "&Run the ticked tests", "stop": "S&top",
+                      "discover": "&Discover the ECU...", "compare": "Co&mpare two runs...",
+                      "report": "Open the &report", "manual": "TestExpert in the &manual"}
+        self.actions = {}
+        self._icons = {}
+        for entry in TOOLBAR:
+            if entry is None:
+                continue
+            name, label, icon, tip = entry
+            action = QAction(label, self)
+            action.setIconText(label)
+            action.setData(menu_texts[name])
+            action.triggered.connect(lambda _checked=False, slot=slots[name]: slot())
+            if name in SHORTCUTS:
+                action.setShortcut(QKeySequence(SHORTCUTS[name]))
+                tip = f"{tip}\nShortcut: {action.shortcut().toString(QKeySequence.NativeText)}"
+            action.setToolTip(tip)
+            action.setStatusTip(tip.splitlines()[0])
+            self.actions[name] = action
+            self._icons[name] = icon
+        for name in ("stop", "report"):
+            self.actions[name].setEnabled(False)
+        self.run_action, self.stop_action = self.actions["run"], self.actions["stop"]
+        self.report_action, self.discover_action = self.actions["report"], self.actions["discover"]
+        self.connect_action = self.actions["connect"]
+        self._refresh_icons()
+
+    def _menu_entry(self, menu, entry):
+        """A toolbar action by name (with its menu text), (text, slot, keys), or None for a separator."""
+        if entry is None:
+            menu.addSeparator()
+        elif isinstance(entry, str):
+            action = self.actions[entry]
+            item = menu.addAction(action.icon(), action.data())
+            item.setShortcut(action.shortcut())
+            item.setShortcutContext(Qt.WidgetShortcut)     # the toolbar's action owns the key
+            item.setToolTip(action.toolTip())
+            item.triggered.connect(action.trigger)
+            action.changed.connect(lambda item=item, action=action: self._follow(item, action))
+        else:
+            text, slot, keys = entry
+            item = menu.addAction(text)
+            item.triggered.connect(lambda _checked=False, slot=slot: slot())
+            if keys is not None:
+                item.setShortcut(QKeySequence(keys))
+
+    @staticmethod
+    def _follow(item, action):
+        """A menu entry follows its toolbar action: enabled, icon, text."""
+        item.setEnabled(action.isEnabled())
+        item.setIcon(action.icon())
+        if action is not None and action.data() and item.text() != action.data():
+            item.setText(action.data())
+
+    def _build_toolbar(self):
+        toolbar = QToolBar("TestExpert", self)
+        toolbar.setObjectName("test_expert_toolbar")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(28, 28))
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        toolbar.setStyleSheet("""
+            QToolBar { spacing: 4px; padding: 4px 6px; border: none; }
+            QToolBar QToolButton { padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; }
+            QToolBar QToolButton:hover { background: palette(midlight); }
+            QToolBar QToolButton:pressed { background: palette(mid); }
+        """)
+        self.toolbar = toolbar
+        for entry in TOOLBAR:
+            if entry is None:
+                toolbar.addSeparator()
+                continue
+            button = QToolButton()
+            button.setDefaultAction(self.actions[entry[0]])
+            button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            button.setIconSize(QSize(28, 28))
+            button.setMinimumSize(76, 62)
+            button.setAccessibleName(entry[1])
+            toolbar.addWidget(button)
+        self.addToolBar(toolbar)
+
+    def _refresh_icons(self):
+        """The toolbar's symbols in the colours of the theme in use (light or dark)."""
+        dark = is_dark_theme(self)
+        connected = getattr(self, "bus", None) is not None
+        for name, action in self.actions.items():
+            icon = "disconnect" if name == "connect" and connected else self._icons[name]
+            action.setIcon(toolbar_icon(icon, dark))
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.PaletteChange and hasattr(self, "actions"):
+            self._refresh_icons()
+        super().changeEvent(event)
+
+    def _show_connection(self, connected: bool):
+        action = self.connect_action
+        action.setText("Disconnect" if connected else "Connect")
+        action.setIconText(action.text())
+        action.setData("&Disconnect" if connected else "&Connect")
+        action.setToolTip("Close the channel" if connected else "Open the channel of the ECU tab")
+        self._refresh_icons()
+
     def _description_tab(self):
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -337,8 +443,10 @@ class TestExpertWindow(QMainWindow):
             self.config_combo.addItem(config["name"], config)
         self.config_combo.setToolTip("Take the identifiers and the bit rate of a CAN Expert configuration")
         self.config_combo.currentIndexChanged.connect(self._use_configuration)
-        self.connect_btn = QPushButton("Connect")
-        self.connect_btn.clicked.connect(self.toggle_connection)
+        self.connect_btn = QToolButton()
+        self.connect_btn.setDefaultAction(self.connect_action)
+        self.connect_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.connect_btn.setIconSize(QSize(18, 18))
         form.addRow("Interface", self.interface)
         form.addRow("Channel", channel_row)
         form.addRow("Bit rate", self.bitrate)
@@ -883,7 +991,7 @@ class TestExpertWindow(QMainWindow):
         self.worker.add_mailbox(self.mailbox)
         self.worker.start()
         self._save_settings()
-        self.connect_btn.setText("Disconnect")
+        self._show_connection(True)
         self.connection_label.setText(f"Connected: {self.interface.currentText()} {self.channel.currentText()}")
         self._write(f"Connected to {self.interface.currentText()} {self.channel.currentText()}")
         return True
@@ -900,7 +1008,7 @@ class TestExpertWindow(QMainWindow):
             except Exception:
                 pass
         self.bus = self.worker = self.mailbox = None
-        self.connect_btn.setText("Connect")
+        self._show_connection(False)
         self.connection_label.setText("Not connected")
 
     def _record_received(self, message):
@@ -940,8 +1048,8 @@ class TestExpertWindow(QMainWindow):
             for column in (COL_VERDICT, COL_STEPS, COL_TIME):
                 item.setText(column, "")
         self._write(f"Running {len(names)} tests of {self.description.name}")
-        self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.run_action.setEnabled(False)
+        self.stop_action.setEnabled(True)
         self.thread = threading.Thread(target=self._run, args=(self.runner,), daemon=True)
         self.thread.start()
         return self.thread
@@ -979,9 +1087,9 @@ class TestExpertWindow(QMainWindow):
         self._discovery_stop.clear()
         discovery = Discovery(tester, self.description, options, progress=self.discovery_progress.emit,
                               stop=self._discovery_stop)
-        self.run_btn.setEnabled(False)
-        self.discover_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.run_action.setEnabled(False)
+        self.discover_action.setEnabled(False)
+        self.stop_action.setEnabled(True)
         self.results.setCurrentWidget(self.discovery_view)
         self.discovery_view.show_html("<p>Asking the ECU...</p>", usable=False)
         self._write(f"Discovering: sessions {', '.join(f'{s:02X}' for s in options.sessions)}, DIDs {options.dids}, "
@@ -1001,9 +1109,9 @@ class TestExpertWindow(QMainWindow):
         self.status.setText(f"Discovering: {done} of {total} - {text}")
 
     def _on_discovery_finished(self, result):
-        self.run_btn.setEnabled(True)
-        self.discover_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.run_action.setEnabled(True)
+        self.discover_action.setEnabled(True)
+        self.stop_action.setEnabled(False)
         self.discovery_result = result
         if result is None:
             self.status.setText("The discovery failed; see the log.")
@@ -1097,8 +1205,8 @@ class TestExpertWindow(QMainWindow):
                     item.setToolTip(COL_VERDICT, data.error.strip().splitlines()[-1])
 
     def _on_finished(self, report):
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.run_action.setEnabled(True)
+        self.stop_action.setEnabled(False)
         run, self.runner = self.runner, None
         self.report = report
         if self.recorder is not None:
@@ -1114,7 +1222,7 @@ class TestExpertWindow(QMainWindow):
             self._write(f"ECU: {did:04X} {name} = {value}")
         try:
             self.report_paths = run.save(self._report_folder)
-            self.report_btn.setEnabled(True)
+            self.report_action.setEnabled(True)
             where = f"   Report: {self.report_paths[0]}"
         except OSError as exc:
             self.report_paths, where = None, f"   The report could not be written: {exc}"

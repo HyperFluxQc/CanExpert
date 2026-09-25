@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import can
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QToolButton
 
 from canexpert.paths import ODX_DIR
 from canexpert.simulator.ecu import DummyEcu, EcuConfig
@@ -856,7 +856,7 @@ class WindowTest(unittest.TestCase):
         first = next(iter(self.window._items))
         self.window._items[first].setCheckState(0, 0)                         # unticked: not run
         self.assertIsNotNone(self.window.run())
-        self.assertTrue(spin_until(lambda: self.window.report is not None and self.window.run_btn.isEnabled()),
+        self.assertTrue(spin_until(lambda: self.window.report is not None and self.window.run_action.isEnabled()),
                         self.window.log.toPlainText())
         report = self.window.report
         self.assertEqual(report.verdict, "passed", failures(report))
@@ -955,7 +955,7 @@ class WindowTest(unittest.TestCase):
         self.addCleanup(window.disconnect_ecu)
         name = PolicyTest.READ_ONLY[0]
         self.assertIsNotNone(window.run([name]))
-        self.assertTrue(spin_until(lambda: window.report is not None and window.run_btn.isEnabled()))
+        self.assertTrue(spin_until(lambda: window.report is not None and window.run_action.isEnabled()))
         self.assertEqual(window.report.cases[0].verdict, "failed")
         item = window._items[name]
         step = item.child(0)
@@ -971,7 +971,7 @@ class WindowTest(unittest.TestCase):
                          ["No longer accept this deviation"])
         window.report = None
         window.run([name])
-        self.assertTrue(spin_until(lambda: window.report is not None and window.run_btn.isEnabled()))
+        self.assertTrue(spin_until(lambda: window.report is not None and window.run_action.isEnabled()))
         self.assertEqual(window.report.cases[0].verdict, "failed", "only the first DID's failure is accepted")
         self.assertEqual(window._items[name].child(0).text(1), "accepted")
         self.assertEqual(window._items[name].child(1).text(1), "fail")
@@ -998,7 +998,7 @@ class WindowTest(unittest.TestCase):
         self.addCleanup(window.disconnect_ecu)
         window.description.dids[0xF190].length = 16
         self.assertIsNotNone(window.discover(DiscoveryTest.OPTIONS))
-        self.assertTrue(spin_until(lambda: window.discovery_result is not None and window.run_btn.isEnabled()))
+        self.assertTrue(spin_until(lambda: window.discovery_result is not None and window.run_action.isEnabled()))
         self.assertIn("1 difference with the description", window.status.text())
         self.assertIn("the ECU answers 17 bytes", window.discovery_view.browser.toPlainText())
         self.assertEqual(window.plan().discovery, DiscoveryTest.OPTIONS, "kept in the plan")
@@ -1019,7 +1019,7 @@ class WindowTest(unittest.TestCase):
             bench.ecu.config.forced_nrcs = forced
             window.report = None
             window.run(names)
-            self.assertTrue(spin_until(lambda: window.report is not None and window.run_btn.isEnabled()))
+            self.assertTrue(spin_until(lambda: window.report is not None and window.run_action.isEnabled()))
             time.sleep(1.1)                                   # the next report gets its own second
         self.assertIn("Since the last run: 1 regression", window.log.toPlainText())
         self.assertIs(window.results.currentWidget(), window.comparison_tab, "shown: something regressed")
@@ -1029,6 +1029,26 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(window.compare_runs(str(results[1]), str(results[0])).regressions[0].title,
                          "Communication: ControlDTCSetting (85)", "the earlier run is the first")
         self.assertTrue(window.save_comparison(self.folder / "comparison.html").exists())
+
+    def test_the_toolbar(self):
+        window = self.window
+        labels = [action.text() for action in window.toolbar.actions() if not action.isSeparator()]
+        self.assertEqual(len(labels), 10)
+        buttons = [widget.defaultAction().iconText() for widget in window.toolbar.findChildren(QToolButton)
+                   if widget.defaultAction() is not None]
+        self.assertEqual(buttons, ["Description", "Open plan", "Save plan", "Connect", "Run", "Stop", "Discover",
+                                   "Compare", "Report", "Manual"])
+        self.assertEqual(window.run_action.shortcut().toString(), "F5")
+        self.assertFalse(window.stop_action.isEnabled(), "nothing to stop")
+        self.assertFalse(window.report_action.isEnabled(), "no report yet")
+        self.assertIs(window.connect_btn.defaultAction(), window.connect_action, "the ECU tab's button is the same")
+        bench = Bench(self)
+        self.assertTrue(window.connect_ecu(can.Bus(interface="virtual", channel=bench.channel)))
+        self.assertEqual(window.connect_action.text(), "Disconnect")
+        run_menu = next(action.menu() for action in window.menuBar().actions() if action.text() == "&Run")
+        self.assertEqual(run_menu.actions()[0].text(), "&Disconnect", "the menu follows")
+        window.disconnect_ecu()
+        self.assertEqual((window.connect_action.text(), run_menu.actions()[0].text()), ("Connect", "&Connect"))
 
     def test_main_smoke_test(self):
         self.assertEqual(window_module.main(["--smoke-test"]), 0)
