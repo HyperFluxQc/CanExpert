@@ -146,7 +146,7 @@ class CanWorker(QThread):
     set off, sent right behind it).
     """
     message_received = pyqtSignal(dict)
-    message_sent = pyqtSignal(int, bytes)
+    message_sent = pyqtSignal(float, int, bytes, bool)     # time.time(), identifier, data, extended
     error_frame = pyqtSignal(float)
     bus_status = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
@@ -178,7 +178,7 @@ class CanWorker(QThread):
 
     def _send_flow_control(self, message):
         self.bus.send(message)
-        self.message_sent.emit(message.arbitration_id, bytes(message.data))
+        self.message_sent.emit(time.time(), message.arbitration_id, bytes(message.data), bool(message.is_extended_id))
 
     def _unsolicited_frame(self, message):
         """Between requests a frame of the response ID belongs to no one: reassemble what the ECU sends."""
@@ -219,7 +219,7 @@ class CanWorker(QThread):
                 elif now >= next_heartbeat:
                     self.bus.send(can.Message(arbitration_id=cfg["request_id"], data=heartbeat,
                                               is_extended_id=not cfg["identifier_11_bit"]))
-                    self.message_sent.emit(cfg["request_id"], heartbeat)
+                    self.message_sent.emit(time.time(), cfg["request_id"], heartbeat, not cfg["identifier_11_bit"])
                     next_heartbeat = now + cfg["tester_present_interval_seconds"]
                 if now >= next_status:
                     next_status = now + STATUS_INTERVAL
@@ -257,7 +257,8 @@ class CanWorker(QThread):
 
 class ReceiveMailbox:
     """Bus facade for scripts and UDS exchanges: send() goes to the adapter, recv() reads the frames the
-    CanWorker pushes, so the worker stays the only reader of the hardware."""
+    CanWorker pushes, so the worker stays the only reader of the hardware. sent(time.time(), identifier, data,
+    extended) follows each send - CanWorker.message_sent.emit, for the windows to show it."""
 
     def __init__(self, bus, sent=None):
         self.bus = bus
@@ -306,7 +307,7 @@ class ReceiveMailbox:
                 raise RuntimeError("CAN session is closed")
             self.bus.send(message)
         if self.sent:
-            self.sent(message.arbitration_id, bytes(message.data))
+            self.sent(time.time(), message.arbitration_id, bytes(message.data), bool(message.is_extended_id))
 
     def push(self, message) -> bool:
         """Queue a received frame; when full, the oldest frame is dropped. Returns whether an exchange was

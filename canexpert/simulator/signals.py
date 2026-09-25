@@ -164,7 +164,8 @@ class SignalSimulation:
     """The values of the application signals, and the frames that carry them.
 
     inputs() returns the ECU's own states the generators can follow: {"running", "logging", "session"}.
-    The ECU thread calls due_frames(); the window configures it and reads values from its own thread.
+    The ECU's frames thread calls due_frames(); the window configures it and reads values from its own thread.
+    Times are time.perf_counter(): time.monotonic() moves in 15.6 ms steps on Windows before Python 3.13.
     """
 
     def __init__(self, inputs=None):
@@ -174,7 +175,7 @@ class SignalSimulation:
         self.database = None
         self.messages: list[_Message] = []
         self.signals: dict[str, _Signal] = {}
-        self.started = time.monotonic()
+        self.started = time.perf_counter()
         self._random = random.Random()
 
     # --- the database and the generators ----------------------------------------------------------
@@ -188,7 +189,7 @@ class SignalSimulation:
             self.messages = [_Message(message) for message in database.messages]
             self.signals = {f"{message.name}.{signal.name}": _Signal(f"{message.name}.{signal.name}", signal)
                             for message in database.messages for signal in message.signals}
-            self.started = time.monotonic()
+            self.started = time.perf_counter()
 
     def configure(self, generators=(), messages=()) -> None:
         """Generators by "Message.Signal" (a signal not listed stays at its initial value), and per
@@ -268,7 +269,7 @@ class SignalSimulation:
             entry.raw = entry.override
             return entry
         if entry.value is None or entry.kind not in ("random", "counter"):
-            self._evaluate(entry, time.monotonic(), advance=False)
+            self._evaluate(entry, time.perf_counter(), advance=False)
         entry.raw = to_raw(entry.signal, entry.value)
         return entry
 
@@ -303,7 +304,7 @@ class SignalSimulation:
         with self.lock:
             entry = self.signals.get(key)
             if entry is not None and entry.override is not None:
-                entry.value, entry.updated = to_physical(entry.signal, entry.override), time.monotonic()
+                entry.value, entry.updated = to_physical(entry.signal, entry.override), time.perf_counter()
                 entry.override = None
 
     def default_raw(self, key: str):
@@ -318,10 +319,16 @@ class SignalSimulation:
 
     # --- frames ------------------------------------------------------------------------------------
 
+    def next_due(self, default_period: float) -> float | None:
+        """When the next frame is due (time.perf_counter()), or None when no message is sent."""
+        with self.lock:
+            return min((entry.next for entry in self.messages
+                        if entry.on and entry.sendable and (entry.cycle or default_period) > 0), default=None)
+
     def due_frames(self, default_period: float, now: float | None = None) -> list[can.Message]:
         """The frames whose period has come. Each message keeps its own schedule; one that fell far
         behind (a long pause) starts again from now instead of sending the backlog."""
-        now = time.monotonic() if now is None else now
+        now = time.perf_counter() if now is None else now
         frames = []
         with self.lock:
             for entry in self.messages:

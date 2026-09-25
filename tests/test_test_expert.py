@@ -28,7 +28,7 @@ from canexpert.simulator.ecu import BOOT_VERSION, DummyEcu, EcuConfig
 from canexpert.test_expert import cli
 from canexpert.test_expert import odx as odx_loader
 from canexpert.test_expert import window as window_module
-from canexpert.test_expert.cdd import CddError, cdd_variants, load_cdd
+from canexpert.test_expert.cdd import CddError, load_cdd
 from canexpert.test_expert.compare import (answer_of, compare_runs, comparison_page, load_results, previous_results,
                                            results_dict)
 from canexpert.test_expert.coverage import Coverage, coverage_html, untested
@@ -357,7 +357,6 @@ class VariantTest(unittest.TestCase):
 
     def test_a_cdds_variants(self):
         path = self.two_variants()
-        self.assertEqual(cdd_variants(path), ["COMMON", "BOOT"])
         first = load_cdd(path)
         self.assertEqual((first.variants, first.variant), (["COMMON", "BOOT"], "COMMON"), "the first, unless chosen")
         self.assertIn(0x1234, first.dids)
@@ -600,9 +599,9 @@ class ModulesTest(unittest.TestCase):
         tester = SimpleNamespace(bus=SimpleNamespace(recv=lambda timeout=None: message))
         arrived, frame = BusFrames(tester).get(0.1)
         self.assertIs(frame, message)
-        self.assertAlmostEqual(time.monotonic() - arrived, 5, delta=0.5, msg="when it came, not when it was read")
+        self.assertAlmostEqual(time.perf_counter() - arrived, 5, delta=0.5, msg="when it came, not when it was read")
         message.timestamp = 1000.0                                  # an adapter's own clock
-        self.assertAlmostEqual(BusFrames(tester).get(0.1)[0], time.monotonic(), delta=0.5)
+        self.assertAlmostEqual(BusFrames(tester).get(0.1)[0], time.perf_counter(), delta=0.5)
         tester.bus.recv = lambda timeout=None: None
         with self.assertRaises(Exception):
             BusFrames(tester).get(0.1)
@@ -1305,6 +1304,13 @@ class PlanTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.folder = Path(folder.name)
 
+    def test_a_path_on_another_drive(self):
+        plan = TestPlan(path=self.folder / "plan.json")
+        elsewhere = Path("D:/descriptions/ecu.cdd")
+        with patch("os.path.relpath", side_effect=ValueError("path is on mount 'D:', start on mount 'C:'")):
+            self.assertEqual(plan.relative(elsewhere), str(elsewhere), "no relative path across drives: absolute")
+        self.assertEqual(plan.relative(self.folder / "cdd" / "ecu.cdd"), "cdd/ecu.cdd")
+
     def test_a_plan_as_json(self):
         (self.folder / "cdd").mkdir()
         description = self.folder / "cdd" / "ecu.cdd"
@@ -1772,7 +1778,10 @@ class WindowTest(unittest.TestCase):
 
     def test_plans_in_the_window(self):
         window = self.window
-        window.open_description(DUMMY_CDD)
+        description = self.folder / "descriptions" / DUMMY_CDD.name      # beside the plan: on its drive
+        description.parent.mkdir()
+        description.write_bytes(DUMMY_CDD.read_bytes())
+        window.open_description(description)
         window.interface.setCurrentText("virtual")
         window.channel.setEditText("bench")
         window.destructive.setChecked(True)
@@ -1786,8 +1795,8 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(window.windowTitle(), "TestExpert - Bench")
         saved = TestPlan.load(path)
         self.assertEqual(saved.excluded, [name])
-        self.assertFalse(Path(saved.description).is_absolute(), "relative to the plan's folder")
-        self.assertEqual(saved.resolve(saved.description), DUMMY_CDD.resolve())
+        self.assertEqual(saved.description, "../descriptions/dummy_ecu.cdd", "relative to the plan's folder")
+        self.assertEqual(saved.resolve(saved.description), description.resolve())
         self.assertTrue(saved.options["destructive"])
         other = window_module.TestExpertWindow(MemorySettings())
         self.addCleanup(other.close)

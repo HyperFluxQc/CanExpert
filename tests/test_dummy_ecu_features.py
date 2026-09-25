@@ -16,10 +16,11 @@ from canexpert.flash_sequence import FlashProfile, image_crc, run_flash
 from canexpert.flashing import Firmware
 from canexpert.simulator import ecu as ecu_module
 from canexpert.simulator.dtc import (CONFIRMED, FAILED_SINCE_CLEAR, PENDING, TEST_FAILED, TEST_FAILED_THIS_CYCLE,
-                                     WARNING_INDICATOR, DtcMemory, status_text)
+                                     WARNING_INDICATOR, DtcMemory)
 from canexpert.simulator.ecu import DummyEcu, EcuConfig, application_ids, config_from_dict, data_tables
 from canexpert.simulator.signals import DEFAULT_GENERATORS, SignalSimulation
 from canexpert.uds.client import UdsFunctions, uds_request
+from canexpert.uds.dtc import status_text
 from canexpert.uds.isotp import IsoTpError, isotp_recv
 
 P0101, U0100 = 0x010100, 0xC10000

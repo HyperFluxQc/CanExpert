@@ -42,14 +42,12 @@ from canexpert.clock import absolute_text
 from canexpert.config import uds_transport
 from canexpert.odx_services import OdxTab, decoded, dtc_display, dtc_text, dtc_texts
 from canexpert.uds.client import FUNCTIONS, GROUPS, NRC_NAMES, UdsFunctions, make_request, unsolicited_kind
+from canexpert.uds.dtc import status_text
 from canexpert.uds.observer import service_name
 from canexpert.uds.seed_key import SeedKeyError, dll_key, xor_key
 from canexpert.ui_common import SplitterPanel, enable_maximize
 
 # ISO 14229-1 Annex D: the bits of a DTC status byte, lowest first.
-STATUS_BITS = ("testFailed", "testFailedThisOperationCycle", "pendingDTC", "confirmedDTC",
-               "testNotCompletedSinceLastClear", "testFailedSinceLastClear",
-               "testNotCompletedThisOperationCycle", "warningIndicatorRequested")
 SESSIONS = (("Default (0x01)", 0x01), ("Programming (0x02)", 0x02), ("Extended (0x03)", 0x03))
 SESSION_NAMES = {0x01: "default", 0x02: "programming", 0x03: "extended", 0x04: "safety system"}
 KEY_SOURCES = ("key = seed XOR mask", "seed & key DLL")
@@ -57,11 +55,6 @@ PERIODIC_RATES = (("Slow (0x01)", 0x01), ("Medium (0x02)", 0x02), ("Fast (0x03)"
 EVENT_WINDOW = 0x02          # eventWindowTime: infinite, the events stay until stopped or cleared
 # Parameters that carry a byte string rather than a number.
 BYTE_PARAMETERS = {"data", "record", "parameter", "state", "mask", "event_record", "service_record", "key"}
-
-
-def status_text(status: int) -> str:
-    """'confirmedDTC, testFailed' for a DTC status byte."""
-    return ", ".join(name for index, name in enumerate(STATUS_BITS) if status & (1 << index)) or "none"
 
 
 def parse_bytes(text: str) -> bytes:

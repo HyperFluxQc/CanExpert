@@ -3,14 +3,15 @@ Transmit window (CANoe's Interactive Generator): a list of messages to send once
 
 Rows are raw frames or messages of a symbol database; a database row can be edited signal by signal.
 The list is kept in the settings between sessions and can be saved to a JSON file of its own, so no
-configuration or panel file is involved.
+configuration or panel file is involved. Ticked rows are sent by a thread of their own, on time
+(cyclic.CyclicSender); the table shows how often each really went.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -32,14 +33,14 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from canexpert.cyclic import CyclicSchedule
+from canexpert.cyclic import CyclicSender
 from canexpert.ui_common import app_settings, enable_maximize
 
 SETTING = "transmit_list"       # settings: the rows as JSON
-TICK_MS = 5                     # how often due rows are looked for
+REFRESH_MS = 250                # how often the counters and measured cycles are shown
 MAX_CYCLE_MS = 3600000
-COL_ON, COL_NAME, COL_ID, COL_EXT, COL_DLC, COL_DATA, COL_CYCLE, COL_COUNT = range(8)
-HEADERS = ["On", "Name", "ID (hex)", "Ext", "DLC", "Data (hex)", "Cycle (ms)", "Sent"]
+COL_ON, COL_NAME, COL_ID, COL_EXT, COL_DLC, COL_DATA, COL_CYCLE, COL_COUNT, COL_MEASURED = range(9)
+HEADERS = ["On", "Name", "ID (hex)", "Ext", "DLC", "Data (hex)", "Cycle (ms)", "Sent", "Measured (ms)"]
 
 
 def default_row(name="Message", can_id=0x100, data=b"\x00", cycle_ms=100, extended=False, message=""):
@@ -162,6 +163,7 @@ class SignalEditor(QDialog):
 
 
 class TransmitWindow(QDialog):
+    cyclic_failed = pyqtSignal(object, str)       # (row key, why): a cyclic row could not be sent
     """Send messages once or cyclically, raw or from a database."""
 
     def __init__(self, parent=None, symbols=None, send=None, settings=None, stop_when_hidden=True):
@@ -175,15 +177,16 @@ class TransmitWindow(QDialog):
         self.send = send                                  # send(can_id, data, extended); raises when not connected
         self.settings = settings or app_settings()
         self.rows: list[dict] = rows_from_json(self.settings.value(SETTING, "", type=str))
-        self._schedule = CyclicSchedule()
+        self.cyclic = CyclicSender(self._send_cyclic, lambda key, error: self.cyclic_failed.emit(key, str(error)))
+        self.cyclic_failed.connect(self._on_cyclic_failed)
         self._updating = False
         self._build_ui()
         self._fill_table()
         self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.PreciseTimer)
-        self._timer.setInterval(TICK_MS)
-        self._timer.timeout.connect(self.tick)
+        self._timer.setInterval(REFRESH_MS)
+        self._timer.timeout.connect(self.refresh)
         self._timer.start()
+        self._sync_cyclic()
 
     # --- UI -----------------------------------------------------------------------------
 
@@ -257,6 +260,9 @@ class TransmitWindow(QDialog):
         self.table.setItem(index, COL_DATA, cell(bytes(row["data"]).hex(" ").upper()))
         self.table.setItem(index, COL_CYCLE, cell(str(row["cycle_ms"])))
         self.table.setItem(index, COL_COUNT, cell(str(row["sent"]), editable=False))
+        measured = cell("", editable=False)
+        measured.setToolTip("The mean time between the row's last sends, and its range")
+        self.table.setItem(index, COL_MEASURED, measured)
 
     def _refresh_row(self, index):
         self._updating = True
@@ -278,8 +284,7 @@ class TransmitWindow(QDialog):
         text = item.text().strip()
         try:
             if column == COL_ON:
-                row["enabled"] = item.checkState() == Qt.Checked
-                self._schedule.start(index)                # a row just switched on sends at once
+                row["enabled"] = item.checkState() == Qt.Checked      # switched on: sent at once
             elif column == COL_EXT:
                 row["extended"] = item.checkState() == Qt.Checked
             elif column == COL_NAME:
@@ -300,6 +305,7 @@ class TransmitWindow(QDialog):
         except ValueError as exc:
             self.status.setText(f"{HEADERS[column]}: {exc}")
         self._refresh_row(index)
+        self._sync_cyclic()
         self.save_rows()
 
     def _on_double_clicked(self, item):
@@ -363,13 +369,14 @@ class TransmitWindow(QDialog):
         index, row = self._selected()
         if row is not None:
             self.rows.pop(index)
-            self._schedule.clear()
             self._fill_table()
+            self._sync_cyclic()
             self.save_rows()
 
     def stop_all(self):
         for row in self.rows:
             row["enabled"] = False
+        self._sync_cyclic()
         self._fill_table()
         self.save_rows()
 
@@ -401,13 +408,48 @@ class TransmitWindow(QDialog):
         if row is not None:
             self.send_row(index)
 
-    def tick(self):
-        """Send every enabled row whose cycle time has come."""
-        for index, row in enumerate(self.rows):
-            if not row["enabled"]:
-                self._schedule.drop(index)
-            elif self._schedule.due(index, row["cycle_ms"] / 1000.0):
-                self.send_row(index)
+    def _send_cyclic(self, can_id, data, extended):
+        """A cyclic row's send, in the sending thread."""
+        if self.send is None:
+            raise RuntimeError("No measurement is running.")
+        self.send(can_id, data, extended)
+
+    def _sync_cyclic(self):
+        """The ticked rows are the ones the sending thread sends, each as it is at the moment it goes."""
+        wanted = {id(row): row for row in self.rows if row["enabled"]}
+        rows = {id(row): row for row in self.rows}
+        for key in self.cyclic.keys():
+            if key not in wanted:
+                if key in rows:                             # what it sent since the last refresh still counts
+                    rows[key]["sent"] += self.cyclic.take(key)[0]
+                self.cyclic.remove(key)
+        for key, row in wanted.items():
+            self.cyclic.set(key, row["cycle_ms"] / 1000.0, lambda row=row: (row["id"], row["data"], row["extended"]))
+
+    def _on_cyclic_failed(self, key, why):
+        """A cyclic row that could not be sent is switched off: it would only repeat its error."""
+        index = next((index for index, row in enumerate(self.rows) if id(row) == key), None)
+        if index is None:
+            return
+        row = self.rows[index]
+        row["enabled"] = False
+        self._sync_cyclic()
+        self._refresh_row(index)
+        self.status.setText(f"{row['name']}: {why}")
+
+    def refresh(self):
+        """The counters and the measured cycles of the rows sent cyclically."""
+        self._updating = True
+        try:
+            for index, row in enumerate(self.rows):
+                new, measured = self.cyclic.take(id(row)) if row["enabled"] else (0, "")
+                row["sent"] += new
+                if new:
+                    self.table.item(index, COL_COUNT).setText(str(row["sent"]))
+                if self.table.item(index, COL_MEASURED).text() != measured:
+                    self.table.item(index, COL_MEASURED).setText(measured)
+        finally:
+            self._updating = False
 
     # --- the list --------------------------------------------------------------------------
 
@@ -428,8 +470,8 @@ class TransmitWindow(QDialog):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Transmit list", f"Cannot read {Path(path).name}: {exc}")
             return
-        self._schedule.clear()
         self._fill_table()
+        self._sync_cyclic()
         self.save_rows()
 
     def hideEvent(self, event):

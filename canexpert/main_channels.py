@@ -195,7 +195,8 @@ class Channels:
         worker = CanWorker(bus, config)
         self.clock.begin(time.time())
         worker.message_received.connect(lambda msg, w=worker: self._on_monitor_message(w, msg))
-        worker.message_sent.connect(lambda can_id, data, w=worker: self.dispatch_frame(time.time(), "TX", can_id, data)
+        worker.message_sent.connect(lambda stamp, can_id, data, extended, w=worker:
+                                    self.dispatch_frame(stamp, "TX", can_id, data, extended)
                                     if w is self.ecu_monitor else None)
         worker.error_occurred.connect(lambda error, w=worker: self._monitor_failed(w, error))
         self.ecu_monitor, self.monitor_bus = worker, bus

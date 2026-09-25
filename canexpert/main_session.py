@@ -59,7 +59,7 @@ class Session:
             mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
             worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
-            worker.message_sent.connect(lambda cid, data, g=generation: self.dispatch_frame(time.time(), "TX", cid, data) if g == self.session_generation else None)
+            worker.message_sent.connect(lambda stamp, cid, data, extended, g=generation: self.dispatch_frame(stamp, "TX", cid, data, extended) if g == self.session_generation else None)
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
             worker.error_frame.connect(lambda ts, g=generation: self._on_error_frame(ts) if g == self.session_generation else None)
             worker.bus_status.connect(lambda status, g=generation: self._on_bus_status(status) if g == self.session_generation else None)
@@ -189,16 +189,20 @@ class Session:
         self._left_split = None
 
     def send_can_message(self, can_id, data, extended=None):
-        if self.can_bus is None:
+        """Send a frame on the session's bus - from any thread: the Transmit window's cyclic rows are sent by a
+        thread of their own. The windows see the frame from the window's thread (frame_sent)."""
+        bus = self.can_bus
+        if bus is None:
             raise RuntimeError("Connect before sending CAN messages")
         if extended is None:
-            extended = not self.session_config.get("identifier_11_bit", True)
+            extended = not (self.session_config or {}).get("identifier_11_bit", True)
         payload = bytes(data)
         if len(payload) > 8:
             raise ValueError("Classic CAN messages cannot exceed eight bytes")
         message = can.Message(arbitration_id=can_id, data=payload, is_extended_id=extended, check=True)
-        self.can_bus.send(message)
-        self.dispatch_frame(time.time(), "TX", can_id, payload, extended)
+        with self.send_lock:
+            bus.send(message)
+        self.frame_sent.emit(time.time(), can_id, payload, bool(extended))
 
     def dispatch_frame(self, timestamp, direction, can_id, data, extended=False):
         """One frame of the measurement, from wherever: the history, the recording, and every window.

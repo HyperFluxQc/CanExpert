@@ -1,4 +1,4 @@
-"""The transmit list: rows, signal editing, one-shot and cyclic sending."""
+"""The transmit list: rows, signal editing, one-shot and cyclic sending - by a thread of its own, on time."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
@@ -12,11 +12,21 @@ from PyQt5.QtWidgets import QApplication, QDialog
 
 from canexpert import transmit_window
 from canexpert.symbols import SymbolDatabases
-from canexpert.transmit_window import (COL_CYCLE, COL_DATA, COL_DLC, COL_ID, COL_ON, SETTING, SignalEditor,
-                                       TransmitWindow, rows_from_json, rows_to_json)
+from canexpert.transmit_window import (COL_CYCLE, COL_DATA, COL_DLC, COL_ID, COL_MEASURED, COL_ON, SETTING,
+                                       SignalEditor, TransmitWindow, rows_from_json, rows_to_json)
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parents[1] / "DBC" / "dummy_ecu.dbc"
+
+
+def spin_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        APP.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
 
 
 class RowFileTest(unittest.TestCase):
@@ -106,17 +116,19 @@ class TransmitWindowTest(unittest.TestCase):
         self.window.add_raw()
         self.window.rows[0].update(id=0x200, data=b"\x01", cycle_ms=20)
         self.window.table.item(0, COL_ON).setCheckState(Qt.Checked)
-        self.window.tick()
-        self.window.tick()                                  # not due yet: both ticks are in the same instant
-        self.assertEqual(len(self.sent), 1)
-        time.sleep(0.05)                                    # past the 20 ms cycle, even for a clock that
-        self.window.tick()                                  # moves in 15.6 ms steps (monotonic on Windows)
-        self.assertGreaterEqual(len(self.sent), 2)
+        self.assertTrue(spin_until(lambda: len(self.sent) >= 6), "sent by the sending thread, without a tick")
+        self.assertEqual(set(self.sent), {(0x200, b"\x01", False)})
+        self.window.rows[0]["data"] = b"\x02"                  # an edit goes out with the next send
+        self.assertTrue(spin_until(lambda: self.sent[-1][1] == b"\x02"))
+        self.window.refresh()
+        mean = float(self.window.table.item(0, COL_MEASURED).text().split()[0])
+        self.assertAlmostEqual(mean, 20, delta=6, msg="the measured cycle")
         self.window.stop_all()
+        time.sleep(0.03)                                    # a send already under way
         sent = len(self.sent)
-        time.sleep(0.03)
-        self.window.tick()
+        time.sleep(0.08)
         self.assertEqual(len(self.sent), sent, "All off stops every cyclic row")
+        self.assertEqual(self.window.rows[0]["sent"], sent, "every send counted, those after the refresh too")
 
     def test_a_row_that_cannot_be_sent_switches_itself_off(self):
         def refuse(can_id, data, extended):
@@ -126,9 +138,9 @@ class TransmitWindowTest(unittest.TestCase):
         self.addCleanup(window.close)
         window.add_raw()
         window.table.item(0, COL_ON).setCheckState(Qt.Checked)
-        window.tick()
-        self.assertFalse(window.rows[0]["enabled"], "a failing row must not repeat its error")
+        self.assertTrue(spin_until(lambda: not window.rows[0]["enabled"]), "a failing row must not repeat its error")
         self.assertIn("passive", window.status.text())
+        self.assertEqual(window.cyclic.keys(), [])
 
     def test_closing_the_pane_stops_every_cyclic_row(self):
         self.window.show()                                # a pane that is closed is hidden, not destroyed

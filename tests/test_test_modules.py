@@ -194,9 +194,9 @@ def frames(t):
 
         def send(message):
             sent.append(message)
-            frames.put((time.monotonic() - 1, can.Message(arbitration_id=0x300, data=[0x77, 0x20])))  # too early
+            frames.put((time.perf_counter() - 1, can.Message(arbitration_id=0x300, data=[0x77, 0x20])))  # too early
             for value in answers.pop(0):                          # what the bus answers, at once
-                frames.put((time.monotonic(), can.Message(arbitration_id=0x300, data=[value, 0x20])))
+                frames.put((time.perf_counter(), can.Message(arbitration_id=0x300, data=[value, 0x20])))
 
         def decode(can_id, data):
             return ("EngineData", {"Temperature": data[0]}) if can_id == 0x300 else ("", {})

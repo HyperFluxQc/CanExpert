@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -756,7 +755,7 @@ class TestExpertWindow(QMainWindow):
         self._write(f"Description saved: {path} (edit it and open it again to change what is expected)")
         return path
 
-    # --- the tests -------------------------------------------------------------------------------------------------
+    # --- the settings as typed ---------------------------------------------------------------------------------
 
     def options(self) -> Options:
         return self.plan().make_options()
@@ -1214,9 +1213,9 @@ class TestExpertWindow(QMainWindow):
             self.recorder.write(message["timestamp"], "RX", message["arbitration_id"], bytes(message["data"]),
                                 message.get("is_extended_frame", False))
 
-    def _record_sent(self, can_id, data):
+    def _record_sent(self, stamp, can_id, data, extended):
         if self.recorder is not None:
-            self.recorder.write(time.time(), "TX", can_id, bytes(data), can_id > 0x7FF)
+            self.recorder.write(stamp, "TX", can_id, bytes(data), extended)
 
     # --- running ---------------------------------------------------------------------------------------------
 

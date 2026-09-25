@@ -296,8 +296,6 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         enable_maximize(self)
         self.setMinimumSize(900, 550)
         self.resize(1200, 750)
-        self.db = None
-        self.dbc_path = None
         # The application's symbol databases, when it has any: Load DBC... then adds to that list and
         # every window sees the same symbols.
         self.symbols = symbols
@@ -525,8 +523,6 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
             except Exception as exc:
                 prefix = "DBC file error" if "cantools" in type(exc).__module__ else "Load error"
                 problems.append(f"{prefix} in {Path(path).name}: {exc}")
-        self.db = databases[-1][1] if databases else None
-        self.dbc_path = str(databases[-1][0]) if databases else None
         self.path_status.setText("; ".join(problems) if problems else
                                  (", ".join(path.name for path, _ in databases) or "No DBC loaded"))
         colour = " color: red;" if problems else ""
@@ -1047,8 +1043,7 @@ class CANLoggerWindow(ToolButtonsMixin, QDialog):
         if self._group_plots:
             view = self._group_plots[0][0].getViewBox().viewRange()
             x_range, y_range = x_range or tuple(view[0]), y_range or tuple(view[1])
-        for checkbox, values, spins in ((dialog.fixed_x_cb, x_range, (dialog.x_start, dialog.x_end)),
-                                        (dialog.fixed_y_cb, y_range, (dialog.y_start, dialog.y_end))):
+        for values, spins in ((x_range, (dialog.x_start, dialog.x_end)), (y_range, (dialog.y_start, dialog.y_end))):
             for spin, value in zip(spins, values or (0.0, 0.0)):
                 spin.setValue(value)
         dialog.fixed_x_cb.setChecked(self._x_range is not None)

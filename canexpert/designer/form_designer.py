@@ -70,7 +70,7 @@ class TestPanelDialog(QDialog):
     It reads its bus itself (a timer, _receive) instead of through a CanWorker, and offers what the
     built-in flashing sequence needs of one: add_mailbox, remove_mailbox and message_sent."""
     ecu_log = pyqtSignal(str)
-    message_sent = pyqtSignal(int, bytes)
+    message_sent = pyqtSignal(float, int, bytes, bool)     # as can_bus.CanWorker's
 
     def __init__(self, database, script_text, simulate_ecu=True, parent=None):
         super().__init__(parent)
@@ -103,11 +103,11 @@ class TestPanelDialog(QDialog):
             self.ecu = DummyEcu(self.ecu_bus, EcuConfig(), log=lambda text: self.ecu_log.emit(f"ECU: {text}"))
             threading.Thread(target=self.ecu.serve, args=(self._stop,), daemon=True).start()
         self.panel = PanelView(database, self._send, self._log)
-        self.mailbox = ReceiveMailbox(self.bus, lambda can_id, data: self._traffic("TX", can_id, data))
+        self.mailbox = ReceiveMailbox(self.bus, lambda _stamp, can_id, data, _extended: self._traffic("TX", can_id, data))
         self.config = validate_config({"name": "Test", "request_id": 0x7E0, "response_id": 0x7E8})
         self.runtime = ScriptRuntime(self.mailbox, self.config, self.panel.values(), self)
         self._mailboxes = []                  # the flashing sequence's, fed by _receive as the script's is
-        self.message_sent.connect(lambda can_id, data: self._traffic("TX", can_id, data))
+        self.message_sent.connect(lambda _stamp, can_id, data, _extended: self._traffic("TX", can_id, data))
         self.flash_profile = FlashProfile()   # for this test only: the main window keeps the one in use
         self.flash_runner = None
         self.runtime.value_changed.connect(self.panel.set_value)

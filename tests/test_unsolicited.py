@@ -164,7 +164,7 @@ class EcuBench:
         self.worker = CanWorker(self.bus, self.config, tester_present=True, unsolicited=True)
         self.seen, self.sent = [], []
         self.worker.unsolicited.connect(lambda _time, payload: self.seen.append(bytes(payload)))
-        self.worker.message_sent.connect(lambda can_id, data: self.sent.append((can_id, bytes(data))))
+        self.worker.message_sent.connect(lambda _stamp, can_id, data, _extended: self.sent.append((can_id, bytes(data))))
         self.worker.start()
         self.mailbox = ReceiveMailbox(self.bus, self.worker.message_sent.emit)
         self.worker.add_mailbox(self.mailbox)

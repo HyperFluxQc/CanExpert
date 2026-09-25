@@ -1,4 +1,4 @@
-# PyInstaller spec for Windows: CanExpert.exe and DummyECU.exe in one folder, dist/CanExpert.
+# PyInstaller spec for Windows: CanExpert.exe, DummyECU.exe and TestExpert.exe in one folder, dist/CanExpert.
 #
 #     python tools/build_windows.py        (installs nothing; needs requirements-build.txt)
 #
