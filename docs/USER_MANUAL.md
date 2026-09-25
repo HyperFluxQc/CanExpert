@@ -560,6 +560,9 @@ did not run; it counts with the failures) — and under it every step with its o
 still runs. The module is read again before every run, so you can edit it in any editor and run it again
 straight away (**Reload** shows the new list without running).
 
+TestExpert runs test modules too, after the tests it generates (see **TestExpert → CAN Expert's test
+modules**).
+
 Every run writes two reports into `reports/` beside the module, named after it and the time:
 an **HTML** page (**Open report**) with the verdict, the counts, and each test case's steps — the ones that
 did not pass are opened — and a **JUnit XML** file that CI servers such as Jenkins or GitLab read.
@@ -949,11 +952,28 @@ comment there, or **Remove** one. The NRC policy and the deviations are part of 
 says how many deviations the run accepted. The steps before and after the tests (the pre-run and post-run
 sequences) appear in the results as **Before the tests** and **After the tests**.
 
+### CAN Expert's test modules
+
+The checks the description cannot give — a signal that must follow a request, a sequence your specification
+prescribes — can be written as CAN Expert test modules (see **Test modules**) and run in the same run as the
+generated tests. On the **Modules** tab, **Add...** the module files: each one becomes a group of the tests
+tree, after the generated groups, named after its title, and its test cases can be ticked, attached to
+sequences and accepted as deviations like any other. **Read again** reads the files again after you edited
+them (a run always reads them as they are).
+
+A module runs as in CAN Expert's Test window: its `setup` before its first test case — a failure there
+**blocks** its test cases — its `before_each` and `after_each` around each one, its `teardown` after the last
+(a failure there is a warning). TestExpert puts the ECU in the default session before the module, not between
+its test cases, so they go on from where its setup left the ECU. The UDS functions (`RDBI`, `DSC`,
+`SecurityUnlock`...) go through TestExpert's connection, and what they ask counts in the coverage.
+`t.wait_for_frame()` reads the bus; add **Symbol databases** (DBC...) for `t.wait_for_signal()` and the
+frames' signals. A module that cannot be read is a test that fails, saying why.
+
 ### Test plans
 
 A **test plan** keeps everything a run needs in one file: the description, the ECU connection, the settings
 and the key source, the tests left out (unticked), the sequences, the NRC policy and the accepted deviations,
-the variant and how it is told apart. **File → Save plan** (Ctrl+S) or **Save
+the variant and how it is told apart, the test modules and symbol databases. **File → Save plan** (Ctrl+S) or **Save
 plan as...** writes it; **Open plan...** (Ctrl+Shift+O) reads it back, and **New plan** (Ctrl+N) starts
 afresh. Give it a **Plan name** and a **Reports folder** on the Settings tab if you like (the reports go to
 `TestExpert/reports` otherwise). Paths are written relative to the plan's folder, so a plan and its CDD can be
@@ -973,6 +993,7 @@ python test_expert.py ODX/ecu.cdd --run --interface vector --channel 0 --bitrate
 python test_expert.py nightly.json --run --dummy-ecu          # against a Dummy ECU in the same process
 python test_expert.py ODX/ecu.pdx --run --identify            # ask the ECU which variant it is, test that one
 python test_expert.py ODX/ecu.cdd --run --variant BOOT        # the file's variant BOOT
+python test_expert.py ODX/ecu.cdd --run --module TestModules/checks.py --symbols DBC/ecu.dbc   # a module too
 ```
 
 Each test's verdict is printed as it ends, then the totals and the report files. The **exit code** says how it

@@ -59,6 +59,8 @@ from canexpert.test_expert.discovery_view import DiscoveryDialog, DiscoveryView
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.engine import PlanRun
 from canexpert.test_expert.generator import Options, Suite, parse_routine_starts
+from canexpert.test_expert.modules import load_modules
+from canexpert.test_expert.modules_tab import ModulesTab
 from canexpert.test_expert.odx import load_description
 from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file, options_dict
 from canexpert.test_expert.policy import Deviation, today
@@ -224,6 +226,9 @@ class TestExpertWindow(QMainWindow):
         self.sequence_editor = SequenceEditor()
         self.sequence_editor.changed.connect(self._sequences_changed)
         side.addTab(self.sequence_editor, "Sequences")
+        self.modules_tab = ModulesTab()
+        self.modules_tab.changed.connect(self._modules_changed)
+        side.addTab(self.modules_tab, "Modules")
         self.policy_editor = PolicyEditor()
         self.policy_editor.changed.connect(self._save_settings)
         side.addTab(self.policy_editor, "Deviations")
@@ -762,6 +767,8 @@ class TestExpertWindow(QMainWindow):
         plan.nrc_policy = self.policy_editor.policy()
         plan.deviations = self.policy_editor.deviations()
         plan.discovery = self.discovery_options
+        plan.modules = [plan.relative(path) for path in self.modules_tab.modules()]
+        plan.symbols = [plan.relative(path) for path in self.modules_tab.symbols()]
         plan.path = target
         return plan
 
@@ -803,6 +810,8 @@ class TestExpertWindow(QMainWindow):
         self.policy_editor.set_policy(plan.nrc_policy)
         self.policy_editor.set_deviations(plan.deviations)
         self.discovery_options = plan.discovery
+        self.modules_tab.set_paths([str(plan.resolve(path)) for path in plan.modules],
+                                   [str(plan.resolve(path)) for path in plan.symbols])
         self._items = {}                                    # the plan says what is left out, not the old tree
         self.identification = Identification(plan.identification.did, dict(plan.identification.values))
         self.identify_box.blockSignals(True)
@@ -875,7 +884,10 @@ class TestExpertWindow(QMainWindow):
         unticked = {name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Unchecked}
         self._running_item, self._hook_items = None, {}     # their items go with the tree
         plan = self.plan()
-        self.suite = Suite(self.description, plan.make_options(), plan.sequences, plan.folder(), plan.nrc_policy)
+        modules = load_modules(self.modules_tab.modules())
+        self.modules_tab.show_loaded(modules)
+        self.suite = Suite(self.description, plan.make_options(), plan.sequences, plan.folder(), plan.nrc_policy,
+                           modules)
         self.tree.clear()
         self._items = {}
         self._group_items = {}
@@ -883,10 +895,13 @@ class TestExpertWindow(QMainWindow):
             parent = QTreeWidgetItem([f"{group} ({len(cases)})", "", "", "", ""])
             parent.setFlags(parent.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
             parent.setData(COL_NAME, TARGET, ("group", group))
+            if group in self.suite.module_groups:
+                parent.setToolTip(COL_NAME, str(self.suite.module_groups[group].path))
             self.tree.addTopLevelItem(parent)
             self._group_items[group] = parent
             for case in cases:
-                item = QTreeWidgetItem([case.title.split(": ", 1)[1], "", "", "", ""])
+                shown = case.title[len(group) + 2:] if case.title.startswith(f"{group}: ") else case.title
+                item = QTreeWidgetItem([shown, "", "", "", ""])
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(COL_NAME, Qt.Unchecked if case.name in unticked else Qt.Checked)
                 item.setData(COL_NAME, TARGET, ("test", case.name))
@@ -898,6 +913,10 @@ class TestExpertWindow(QMainWindow):
         self.policy_editor.set_titles(self.suite.titles())
         self._show_sequences()
         self.status.setText(f"{len(self.suite.cases)} tests")
+
+    def _modules_changed(self):
+        self.rebuild_tests()
+        self._save_settings()
 
     # --- the sequences -----------------------------------------------------------------------------------
 

@@ -9,6 +9,7 @@ for a bench script or a CI server, which read the exit code and the JUnit report
     python test_expert.py nightly.json --run --channel 1     the plan, on another channel
     python test_expert.py ecu.pdx --run --identify           ask the ECU which of the file's variants it is, test that one
     python test_expert.py ecu.cdd --run --variant BOOT       the file's variant BOOT
+    python test_expert.py ecu.cdd --run --module checks.py   a CAN Expert test module too, after the generated tests
     python test_expert.py --run --dummy-ecu                  the built-in description against a Dummy ECU in this process
     python test_expert.py nightly.json --discover            ask the ECU what it has; exit code 0 when it matches
                                                              the description, 1 when it does not
@@ -42,6 +43,10 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel", help="with --run: the channel, instead of the plan's")
     parser.add_argument("--bitrate", type=int, help="with --run: the bit rate, instead of the plan's")
     parser.add_argument("--quiet", action="store_true", help="with --run: print the summary only")
+    parser.add_argument("--module", action="append", default=[], metavar="FILE",
+                        help="with --run: a CAN Expert test module to run too, after the generated tests (repeatable)")
+    parser.add_argument("--symbols", action="append", default=[], metavar="FILE",
+                        help="with --run: a symbol database (DBC...) the modules' frames are decoded with (repeatable)")
     parser.add_argument("--variant", help="the variant of the description to test (a CDD's VAR, an ODX variant)")
     parser.add_argument("--identify", action="store_true",
                         help="with --run or --discover: ask the ECU which of the description's variants it is, and "
@@ -101,6 +106,8 @@ def load_plan(arguments):
         plan = TestPlan()
         if arguments.file:
             plan.description = str(Path(arguments.file).resolve())
+    plan.modules += [str(Path(module).resolve()) for module in getattr(arguments, "module", None) or ()]
+    plan.symbols += [str(Path(database).resolve()) for database in getattr(arguments, "symbols", None) or ()]
     if getattr(arguments, "variant", None):
         plan.variant = arguments.variant
     if getattr(arguments, "identify", False):

@@ -1,7 +1,7 @@
 """
 Test plans: everything a TestExpert run needs, in one JSON file - the description, the ECU connection, the
-settings, the key source, the tests left out, the sequences, the NRC policy, the accepted deviations and
-what discovery asks - so
+settings, the key source, the tests left out, the sequences, the NRC policy, the accepted deviations, what
+discovery asks, the variant and CAN Expert's test modules to run with the generated tests - so
 the same run can be made again, from the window or without it (test_expert.py plan.json --run), on a bench or
 a CI server.
 
@@ -138,6 +138,8 @@ class TestPlan:
     identify: bool = False                # tell the ECU's variant when connecting (before a run without the window)
     identification: Identification = field(default_factory=Identification)   # for files that do not say how
     variant: str = ""                     # the variant of the description's file to read; "": its first
+    modules: list = field(default_factory=list)        # CAN Expert test modules (.py) run after the generated tests
+    symbols: list = field(default_factory=list)        # symbol databases (DBC...) the modules' frames are decoded with
     path: Path | None = None              # where it was read from or saved to (not saved)
 
     # --- files -----------------------------------------------------------------------------------------
@@ -163,6 +165,12 @@ class TestPlan:
             return os.path.relpath(path.resolve(), self.folder().resolve()).replace("\\", "/")
         except ValueError:                        # another drive
             return str(path)
+
+    def module_paths(self) -> list[Path]:
+        return [self.resolve(module) for module in self.modules if module]
+
+    def symbol_paths(self) -> list[Path]:
+        return [self.resolve(database) for database in self.symbols if database]
 
     def load_description(self) -> EcuDescription:
         """The plan's description: its file, or the Dummy ECU's."""
@@ -194,7 +202,8 @@ class TestPlan:
                 "deviations": [deviation.to_dict() for deviation in self.deviations],
                 "discovery": {"sessions": [f"{session:02X}" for session in self.discovery.sessions],
                               "dids": self.discovery.dids, "rids": self.discovery.rids,
-                              "services": self.discovery.services, "security": self.discovery.security}}
+                              "services": self.discovery.services, "security": self.discovery.security},
+                "modules": list(self.modules), "symbols": list(self.symbols)}
 
     @classmethod
     def from_dict(cls, values: dict, path=None) -> "TestPlan":
@@ -216,7 +225,10 @@ class TestPlan:
                        deviations=[Deviation.from_dict(item) for item in values.get("deviations", ())],
                        discovery=_discovery(values.get("discovery")), identify=bool(values.get("identify", False)),
                        identification=Identification.from_dict(values.get("identification")),
-                       variant=str(values.get("variant", "") or ""), path=Path(path) if path is not None else None)
+                       variant=str(values.get("variant", "") or ""),
+                       modules=[str(module) for module in values.get("modules", ()) if module],
+                       symbols=[str(database) for database in values.get("symbols", ()) if database],
+                       path=Path(path) if path is not None else None)
         except (TypeError, ValueError, AttributeError) as exc:
             raise PlanError(f"the plan cannot be read: {exc}") from None
 
@@ -226,10 +238,13 @@ class TestPlan:
         self.path = path
         if old is not None and old.parent.resolve() != path.parent.resolve():
             # Paths written relative to the old folder are rewritten for the new one.
+            def moved(value):
+                return self.relative((old.parent / value).resolve()) if value and not Path(value).is_absolute() \
+                    else value
             for name in ("description", "reports"):
-                value = getattr(self, name)
-                if value and not Path(value).is_absolute():
-                    setattr(self, name, self.relative((old.parent / value).resolve()))
+                setattr(self, name, moved(getattr(self, name)))
+            self.modules = [moved(value) for value in self.modules]
+            self.symbols = [moved(value) for value in self.symbols]
         path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return path
 

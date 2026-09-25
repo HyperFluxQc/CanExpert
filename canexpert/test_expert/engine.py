@@ -12,6 +12,7 @@ from canexpert.test_expert.compare import results_dict
 from canexpert.test_expert.coverage import coverage_html, summary
 from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.generator import Suite
+from canexpert.test_expert.modules import BusFrames, Symbols, load_modules
 from canexpert.test_expert.plan import TestPlan
 from canexpert.test_expert.policy import accept_function
 from canexpert.test_expert.tester import Tester
@@ -43,12 +44,16 @@ class PlanRun:
 
     def __init__(self, plan: TestPlan, description: EcuDescription, bus, names=None, on_event=None):
         self.plan, self.description = plan, description
-        self.suite = Suite(description, plan.make_options(), plan.sequences, plan.folder(), plan.nrc_policy)
+        self.modules = load_modules(plan.module_paths())          # the files as they are now
+        self.symbols = Symbols(plan.symbol_paths())
+        self.suite = Suite(description, plan.make_options(), plan.sequences, plan.folder(), plan.nrc_policy,
+                           self.modules)
         excluded = set(plan.excluded)
         self.names = [case.name for case in self.suite.cases if case.name not in excluded] if names is None \
             else [case.name for case in self.suite.cases if case.name in set(names)]
         self.suite.tester = Tester(bus, plan.connection.transport(), plan.connection.functional_id)
-        self.runner = Runner(self.suite.module(self.names), send=self.suite.tester.send_frame, on_event=on_event,
+        self.runner = Runner(self.suite.module(self.names), frames=BusFrames(self.suite.tester),
+                             send=self.suite.tester.send_frame, decode=self.symbols.decode, on_event=on_event,
                              configuration=plan.connection.text(), accept=accept_function(plan.deviations))
         self.report: TestReport | None = None
 
@@ -72,6 +77,12 @@ class PlanRun:
         if self.plan.deviations:
             accepted = sum(len(case.accepted()) for case in self.report.cases) if self.report else 0
             facts.append(("Accepted deviations", f"{len(self.plan.deviations)} in the plan, {accepted} steps accepted"))
+        if self.modules:
+            facts.append(("Test modules", ", ".join(loaded.path.name + ("" if loaded.module else " (not read)")
+                                                    for loaded in self.modules)))
+        if self.plan.symbols:
+            facts.append(("Symbol databases", "; ".join([Path(path).name for path in self.plan.symbols] +
+                                                        self.symbols.errors)))
         facts.append(("Coverage", summary(self.suite.coverage, self.description)))
         for did, (name, value) in sorted(self.suite.identification.items()):
             facts.append((f"{did:04X} {name}", value))

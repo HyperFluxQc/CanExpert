@@ -5,7 +5,7 @@ where it is allowed, and the right negative response code where it is not.
 
 Each test case is a function run by canexpert.testing.runner (verdicts per step, Stop, HTML and JUnit reports);
 Suite.module() gives them as a test module, with the pre-test and post-test sequences (sequences.py) around
-the run, the groups and the tests. What changes the ECU for good - ECU reset, clearing the fault memory,
+the run, the groups and the tests, and CAN Expert's test modules after them (modules.py). What changes the ECU for good - ECU reset, clearing the fault memory,
 writing a DID (its own value back), the security lockout - runs only when Options ask for it.
 
 A test case's name - "data_identifiers.read_vin_f190" - comes from its group and title, so a test plan can
@@ -20,9 +20,11 @@ from pathlib import Path
 
 from canexpert.test_expert.coverage import Coverage
 from canexpert.test_expert.description import DEFAULT_SESSION, ISO_SERVICES, SUB_FUNCTION_SERVICES, EcuDescription
+from canexpert.test_expert.modules import GROUP_PREFIX
 from canexpert.test_expert.policy import NrcPolicy, nrc_text
 from canexpert.test_expert.sequences import LABELS, SequenceRunner, due
-from canexpert.testing.runner import BLOCKED, ERROR, FAILED, PASSED, TestCase, TestModule
+from canexpert.testing.runner import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, TestCase, TestModule, call_hook
+from canexpert.uds.client import UdsFunctions
 from canexpert.uds.observer import SERVICE_NAMES
 
 # Identifiers that are hardly ever used: the ones the tests send expecting "not supported", when free.
@@ -86,6 +88,11 @@ def _hex(data) -> str:
     return bytes(data).hex(" ").upper()
 
 
+def _hook_failure(hook, verdict, why) -> str:
+    last = why.strip().splitlines()[-1] if why.strip() else ""
+    return f"the module's {hook} {verdict}" + (f": {last}" if last else "")
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
@@ -101,11 +108,14 @@ def value_text(data: bytes) -> str:
 class Suite:
     """The generated test cases of a description; tester is set before a run (a test_expert.tester.Tester).
     sequences: the pre-test and post-test sequences; base_dir: where their Python files are looked for;
-    policy: the NRCs that pass in each situation (NrcPolicy; ISO 14229-1's by default)."""
+    policy: the NRCs that pass in each situation (NrcPolicy; ISO 14229-1's by default); modules: CAN Expert's
+    test modules to run after the generated tests (modules.LoadedModule), each as a group."""
 
     def __init__(self, description: EcuDescription, options: Options | None = None, sequences=(), base_dir=None,
-                 policy: NrcPolicy | None = None):
+                 policy: NrcPolicy | None = None, modules=()):
         self.d = description
+        self.modules = list(modules)
+        self.module_groups = {}                 # group -> its modules.LoadedModule
         self.o = options or Options()
         self.policy = policy or NrcPolicy()
         self.sequences = list(sequences)
@@ -139,8 +149,8 @@ class Suite:
         """test case name -> its title."""
         return {case.name: case.title for case in self.cases}
 
-    def _add(self, group, title, function, doc=""):
-        base = f"{_slug(group)}.{_slug(title)}"
+    def _add(self, group, title, function, doc="", name=None):
+        base = name or f"{_slug(group)}.{_slug(title)}"
         name, number = base, 1
         while name in self.group_of:
             number += 1
@@ -158,7 +168,11 @@ class Suite:
         self._group = None
         self._group_failed = {}
         self._blocked_groups = {}
+        self._skipped_groups = {}
         self._run_failed = False
+        self._modules_started = set()      # the module groups whose setup ran...
+        self._modules_ended = set()        # ...and whose teardown did
+        self._module_answers = []          # the answers to the module test case running
 
     def _sequences(self, t, when, scope, target="", outcome=None, mode="check") -> str:
         """Run the sequences attached there; returns the name of the one that failed, or ""."""
@@ -170,30 +184,106 @@ class Suite:
     def _before_each(self, t):
         name = t.result.name
         group = self.group_of.get(name, "")
-        self._default()
+        loaded = self._module(group)
+        if loaded is None or group != self._group:
+            self._default()                     # a module's test cases go on from where its setup left the ECU
         if group != self._group:
             self._group = group
             failed = self._sequences(t, "before", "group", group)
             if failed:
                 self._blocked_groups[group] = f"the pre-group sequence '{failed}' failed"
+            elif loaded is not None:
+                self._modules_started.add(group)
+                verdict, why = self._module_hook(t, loaded, "setup")
+                if verdict == SKIPPED:
+                    self._skipped_groups[group] = why
+                elif verdict != PASSED:
+                    self._blocked_groups[group] = _hook_failure("setup", verdict, why)
         if group in self._blocked_groups:
             t.block(self._blocked_groups[group])
+        if group in self._skipped_groups:
+            t.skip(self._skipped_groups[group])
         failed = self._sequences(t, "before", "each") or self._sequences(t, "before", "test", name)
         if failed:
             t.block(f"the pre-test sequence '{failed}' failed")
+        if loaded is not None:
+            self._module_answers = []
+            verdict, why = self._module_hook(t, loaded, "before_each")
+            if verdict == SKIPPED:
+                t.skip(why)
+            elif verdict == BLOCKED:
+                t.block(why)
+            elif verdict != PASSED:
+                t.fail(_hook_failure("before_each", verdict, why), why)     # the test case is not run
 
     def _after_each(self, t):
         name, verdict = t.result.name, t.result.verdict
         group = self.group_of.get(name, "")
+        loaded = self._module(group)
         outcome = "passed" if verdict == PASSED else "failed" if verdict in (FAILED, ERROR, BLOCKED) else None
         if outcome == "failed":
             self._run_failed = self._group_failed[group] = True
+        if loaded is not None:
+            if group in self._modules_started and group not in self._blocked_groups and \
+                    group not in self._skipped_groups:
+                self._module_hook(t, loaded, "after_each")      # its failures fail the test case, as in CAN Expert
+            if outcome:
+                for answer in self._module_answers:             # what the module's test case asked, covered
+                    self.coverage.record(answer.request, answer.session, "pass" if outcome == "passed" else "fail",
+                                         name, answer.functional)
+            self._module_answers = []
         self._sequences(t, "after", "test", name, outcome, "warn")
         self._sequences(t, "after", "each", "", outcome, "warn")
-        if self._last_in_group.get(group) == name:
+        last = self._last_in_group.get(group) == name
+        if last and loaded is not None:
+            self._end_module(t, group)
+        if last:
             self._sequences(t, "after", "group", group, "failed" if self._group_failed.get(group) else "passed",
                             "warn")
-        self._default()
+        if loaded is None or last:
+            self._default()
+
+    # --- CAN Expert's test modules -------------------------------------------------------------------------
+
+    def _module(self, group):
+        """The readable module whose group this is, or None."""
+        loaded = self.module_groups.get(group)
+        return loaded if loaded is not None and loaded.module is not None else None
+
+    def _module_hook(self, t, loaded, hook) -> tuple[str, str]:
+        function = loaded.module.hooks.get(hook)
+        if function is None:
+            return PASSED, ""
+        if hook in ("setup", "teardown"):
+            t.log(f"{loaded.title}: {hook}")
+        return call_hook(function, t)
+
+    def _end_module(self, t, group):
+        """The module's teardown, once, after its setup; what fails there is a warning."""
+        if group not in self._modules_started or group in self._modules_ended:
+            return
+        self._modules_ended.add(group)
+        with t.lenient():
+            verdict, why = self._module_hook(t, self.module_groups[group], "teardown")
+        if verdict not in (PASSED, FAILED):                    # a failed step is a warning already
+            t.warn(_hook_failure("teardown", verdict, why), why)
+
+    def _bind_modules(self):
+        """The modules' UDS functions (RDBI, DSC...) and j1939 on the run's tester."""
+        modules = [loaded.module for loaded in self.modules if loaded.module is not None]
+        if not modules:
+            return
+        from canexpert.j1939.transport import J1939Link
+        functions = UdsFunctions(self._module_request, None, self.tester.transport.get("timeout", 2.0)).namespace()
+        for module in modules:
+            module.namespace.update(functions)
+            module.namespace["j1939"] = J1939Link(self.tester.bus)
+
+    def _module_request(self, payload, timeout=None, wait=True):
+        """A module's UDS request, through the tester: the answer's bytes (None without one)."""
+        answer = self.tester.ask(payload, timeout=timeout if wait else 0.0)
+        self._module_answers.append(answer)
+        return answer.raw if wait else None
 
     # --- steps ------------------------------------------------------------------------------------------
 
@@ -300,6 +390,7 @@ class Suite:
         time.sleep(0.02)
 
     def _setup(self, t):
+        self._bind_modules()
         self._sequences(t, "before", "run", mode="require")
         answer = self.tester.ask(b"\x10\x01")
         t.require(answer.positive(), "the ECU answers DiagnosticSessionControl default (10 01)", answer.text())
@@ -330,6 +421,8 @@ class Suite:
             t.log(f"ECU identification: {did:04X} {iso_name} = {self.identification[did][1]}")
 
     def _teardown(self, t):
+        for group in sorted(self._modules_started - self._modules_ended):     # a run stopped inside a module
+            self._end_module(t, group)
         self._default()
         self._sequences(t, "after", "run", "", "failed" if self._run_failed else "passed", "warn")
 
@@ -402,6 +495,23 @@ class Suite:
         self._functional()
         self._timing()
         self._s3()
+        self._modules()
+
+    def _modules(self):
+        """CAN Expert's test modules, each a group after the generated tests; its test cases are named after its
+        file and their function. A module that cannot be read is a test case that fails."""
+        for loaded in self.modules:
+            group = f"{GROUP_PREFIX}{loaded.title}"
+            if group in self.module_groups:
+                group = f"{group} ({loaded.path.name})"
+            self.module_groups[group] = loaded
+            if loaded.module is None:
+                def unreadable(t, loaded=loaded):
+                    t.fail(f"the test module {loaded.path.name} is read", loaded.error)
+                self._add(group, "Read the module", unreadable, str(loaded.path), f"{loaded.key}.read")
+                continue
+            for case in loaded.module.cases:
+                self._add(group, case.title, case.function, case.doc, f"{loaded.key}.{case.name}")
 
     def _sessions(self):
         group = "Sessions"

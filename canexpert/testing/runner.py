@@ -24,7 +24,8 @@ counted with the failures. t.warn() notes what went wrong without failing the ca
 work). A Runner given accept(case name, step description) turns a failed step it knows into an accepted one.
 
 run_module() runs the chosen test cases on the calling thread and returns a TestReport; report.py writes it
-as HTML and JUnit XML.
+as HTML and JUnit XML. call_hook() runs a module's hook with another test case's t - TestExpert runs modules
+among its own tests that way.
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ import queue
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -203,6 +205,7 @@ class TestContext:
         self._marker = marker or (lambda when, text: None)   # marker(when, comment): into the measurement
         self._start = time.monotonic()
         self._since = None              # when the last send() went out: a wait after it takes the answer too
+        self._lenient = 0               # inside lenient(): failed steps are recorded as warnings
 
     # --- steps --------------------------------------------------------------------------------
 
@@ -214,10 +217,23 @@ class TestContext:
             if comment is not None:
                 verdict = ACCEPTED
                 detail = f"{detail} - accepted deviation" + (f": {comment}" if comment else "")
+        passed = verdict != FAIL
+        if not passed and self._lenient:
+            verdict = WARN
         step = Step(round(time.monotonic() - self._start, 4), description, verdict, detail)
         self.result.steps.append(step)
         self._report_step(step)
-        return verdict != FAIL
+        return passed
+
+    @contextmanager
+    def lenient(self):
+        """Meanwhile, failed steps are warnings: a clean-up that did not work does not fail the test case.
+        require() still ends what it is in."""
+        self._lenient += 1
+        try:
+            yield self
+        finally:
+            self._lenient -= 1
 
     def check(self, condition, description="check", detail=None) -> bool:
         """A step that passes when condition is true - a positive UdsResult is. Returns the verdict."""
@@ -465,6 +481,26 @@ class Runner:
 
 def _not_connected(_message):
     raise RuntimeError("No measurement is running: connect first")
+
+
+def call_hook(function, t) -> tuple[str, str]:
+    """Run function(t) - a module's setup, before_each... - with another test case's context, as a Runner runs
+    its own: (verdict, why) - passed; failed (a failed step, require() or fail()), skipped, blocked, or error
+    (the traceback). Stopping the run goes through."""
+    failures = len(t.result.failures())
+    try:
+        function(t)
+    except _Abort as reason:
+        return FAILED, str(reason)
+    except _Skip as reason:
+        return SKIPPED, str(reason)
+    except _Block as reason:
+        return BLOCKED, str(reason)
+    except TestStopped:
+        raise
+    except Exception:
+        return ERROR, traceback.format_exc(limit=8)
+    return (FAILED, "a step failed") if len(t.result.failures()) > failures else (PASSED, "")
 
 
 def run_module(path, request=None, frames=None, send=None, decode=None, names=None, **options) -> TestReport:

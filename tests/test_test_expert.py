@@ -2,7 +2,7 @@
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
 post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
 the ECU has, comparing two runs, test plans and their run from the command line, a description's variants and
-telling which one the ECU is, and the window."""
+telling which one the ECU is, CAN Expert's test modules run with the generated tests, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -21,7 +21,7 @@ import can
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QToolButton
 
-from canexpert.paths import ODX_DIR
+from canexpert.paths import DBC_DIR, ODX_DIR, TEST_MODULES_DIR
 from canexpert.simulator.ecu import BOOT_VERSION, DummyEcu, EcuConfig
 from canexpert.test_expert import cli
 from canexpert.test_expert import odx as odx_loader
@@ -35,7 +35,9 @@ from canexpert.test_expert.description import (Access, DataField, EcuDescription
 from canexpert.test_expert.discovery import (Discovery, DiscoveryOptions, DiscoveryResult, compare, discovery_page,
                                              expand, parse_ranges)
 from canexpert.test_expert.dummy import dummy_description
+from canexpert.test_expert.engine import PlanRun
 from canexpert.test_expert.generator import Options, Suite, parse_routine_starts
+from canexpert.test_expert.modules import BusFrames, Symbols, load_modules
 from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file
 from canexpert.test_expert.policy import Deviation, NrcPolicy, accept_function, parse_nrcs
 from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
@@ -423,6 +425,202 @@ class VariantTest(unittest.TestCase):
         printed = "".join(call.args[0] for call in out.write.call_args_list)
         self.assertEqual(code, cli.EXIT_NOT_RUN, "a CDD without the plan's DID: it cannot be told")
         self.assertIn("could not be told", printed)
+
+
+EXAMPLE_MODULE = TEST_MODULES_DIR / "dummy_ecu_checks.py"
+# A module whose setup leaves the ECU in the extended session for its test cases, and whose clean-ups are logged.
+HOOKS_MODULE = '''"""Hooks and state"""
+
+def setup(t):
+    t.require(DSC(0x03), "extended session")
+
+def before_each(t):
+    if t.result.name.endswith("needs_power"):
+        t.block("no power")
+    if t.result.name.endswith("before_fails"):
+        t.require(False, "a precondition")
+    t.log("before each")
+
+def after_each(t):
+    t.log("after each")
+    if t.result.name.endswith("after_fails"):
+        t.check(False, "the clean-up of the case")
+
+def teardown(t):
+    t.check(False, "a clean-up that does not work")
+
+@testcase("Still in the extended session")
+def still_extended(t):
+    session = RDBI(0xF186)
+    t.check_equal(session.data, bytes([3]), "the setup's session, not the default one")
+
+@testcase
+def needs_power(t):
+    t.check(True, "never reached")
+
+@testcase
+def before_fails(t):
+    t.check(True, "never reached")
+
+@testcase
+def after_fails(t):
+    t.check(True, "done")
+'''
+
+
+class ModulesTest(unittest.TestCase):
+    """CAN Expert's test modules in a TestExpert run: groups after the generated tests, with their hooks."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+
+    def module(self, text, name="hooks.py"):
+        path = self.folder / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_modules_become_groups(self):
+        modules = load_modules([EXAMPLE_MODULE, self.folder / "missing.py", self.module("def broken(:\n", "bad.py")])
+        self.assertEqual([loaded.module is not None for loaded in modules], [True, False, False])
+        self.assertIn("SyntaxError", modules[2].error)
+        suite = Suite(dummy_description(), modules=modules)
+        groups = suite.groups()
+        self.assertEqual(list(groups)[-3:], ["Module: Dummy ECU checks", "Module: missing.py", "Module: bad.py"],
+                         "after the generated tests")
+        self.assertEqual([case.name for case in groups["Module: Dummy ECU checks"]],
+                         ["module_dummy_ecu_checks.identification", "module_dummy_ecu_checks.unknown_identifier",
+                          "module_dummy_ecu_checks.security_access", "module_dummy_ecu_checks.fault_memory",
+                          "module_dummy_ecu_checks.engine_data"])
+        self.assertEqual(groups["Module: missing.py"][0].name, "module_missing.read")
+        twice = Suite(dummy_description(), modules=load_modules([EXAMPLE_MODULE, EXAMPLE_MODULE]))
+        self.assertIn("Module: Dummy ECU checks (dummy_ecu_checks.py)", twice.groups())
+        self.assertEqual(len({case.name for case in twice.cases}), len(twice.cases), "names stay unique")
+
+    def test_the_example_module_in_a_run(self):
+        bench = Bench(self, EcuConfig(lockout_seconds=1))            # its application frames too
+        plan = TestPlan("Modules", modules=[str(EXAMPLE_MODULE), str(self.folder / "missing.py")],
+                        symbols=[str(DBC_DIR / "dummy_ecu.dbc")])
+        run = PlanRun(plan, dummy_description(), bench.tester_bus,
+                      names=["sessions.default_session_10_01"] + [case.name for case in Suite(
+                          dummy_description(), modules=load_modules(plan.module_paths())).cases
+                          if case.name.startswith("module_")])
+        report = run.run()
+        verdicts = {case.name: case.verdict for case in report.cases}
+        self.assertEqual(verdicts.pop("module_missing.read"), "failed", "a module that cannot be read")
+        self.assertEqual(set(verdicts.values()), {"passed"}, failures(report))
+        engine = next(case for case in report.cases if case.name == "module_dummy_ecu_checks.engine_data")
+        self.assertIn("the temperature is between -40 and 150 degC", [step.description for step in engine.steps],
+                      "decoded with the plan's DBC")
+        self.assertIn("Dummy ECU checks: teardown", [step.description for step in engine.steps])
+        facts = dict(run.facts())
+        self.assertEqual(facts["Test modules"], "dummy_ecu_checks.py, missing.py (not read)")
+        self.assertEqual(facts["Symbol databases"], "dummy_ecu.dbc")
+        self.assertIn("module_dummy_ecu_checks.identification", run.suite.coverage.dids[(0xF190, 1, "read")].tests,
+                      "what a module asked counts for the coverage")
+
+    def test_a_modules_hooks(self):
+        bench = Bench(self)
+        plan = TestPlan("Hooks", modules=[str(self.module(HOOKS_MODULE))])
+        run = PlanRun(plan, dummy_description(), bench.tester_bus,
+                      names=["testerpresent.testerpresent_3e"] + [f"module_hooks.{name}" for name in (
+                          "still_extended", "needs_power", "before_fails", "after_fails")])
+        report = run.run()
+        cases = {case.name: case for case in report.cases}
+        extended = cases["module_hooks.still_extended"]
+        self.assertEqual(extended.verdict, "passed", failures(report))
+        self.assertEqual([step.description for step in extended.steps][:3],
+                         ["Hooks and state: setup", "extended session", "before each"])
+        self.assertEqual((cases["module_hooks.needs_power"].verdict, cases["module_hooks.needs_power"].error),
+                         ("blocked", "no power"))
+        before = cases["module_hooks.before_fails"]
+        self.assertEqual(before.verdict, "failed")
+        self.assertNotIn("never reached", [step.description for step in before.steps], "the case is not run")
+        after = cases["module_hooks.after_fails"]
+        self.assertEqual(after.verdict, "failed", "after_each's failures fail the case, as in CAN Expert")
+        teardown = next(step for step in after.steps if step.description == "a clean-up that does not work")
+        self.assertEqual(teardown.verdict, "warn", "the teardown's: a warning")
+        self.assertEqual(cases["testerpresent.testerpresent_3e"].verdict, "passed")
+
+        failing = self.module(HOOKS_MODULE.replace("DSC(0x03)", "DSC(0x7E)"), "failing.py")
+        plan.modules = [str(failing)]
+        run = PlanRun(plan, dummy_description(), bench.tester_bus,
+                      names=["module_failing.still_extended", "module_failing.after_fails"])
+        report = run.run()
+        self.assertEqual([case.verdict for case in report.cases], ["blocked", "blocked"], "the setup failed")
+        self.assertIn("the module's setup failed: extended session", report.cases[1].error)
+        self.assertEqual(report.cases[1].steps[-2].description, "Hooks and state: teardown", "it still ends")
+
+        skipping = self.module(HOOKS_MODULE.replace('t.require(DSC(0x03), "extended session")',
+                                                    't.skip("not on this bench")'), "skipping.py")
+        plan.modules = [str(skipping)]
+        report = PlanRun(plan, dummy_description(), bench.tester_bus, names=["module_skipping.still_extended"]).run()
+        self.assertEqual((report.cases[0].verdict, report.cases[0].error), ("skipped", "not on this bench"))
+
+    def test_a_stopped_run_still_ends_the_module(self):
+        bench = Bench(self)
+        plan = TestPlan("Stopped", modules=[str(self.module(HOOKS_MODULE))])
+
+        def on_event(kind, data):
+            if kind == "verdict" and data.name == "module_hooks.still_extended":
+                run.stop()
+        run = PlanRun(plan, dummy_description(), bench.tester_bus, on_event=on_event,
+                      names=["module_hooks.still_extended", "module_hooks.before_fails", "module_hooks.after_fails"])
+        report = run.run()
+        self.assertTrue(report.stopped)
+        self.assertEqual(report.cases[-1].error, "stopped", "its last test case was not reached")
+        self.assertIn("Hooks and state: teardown", [step.description for step in report.teardown.steps],
+                      "the run's end ends the module")
+
+    def test_frames_and_symbols(self):
+        message = can.Message(arbitration_id=0x300, data=bytes(8), timestamp=time.time() - 5)
+        tester = SimpleNamespace(bus=SimpleNamespace(recv=lambda timeout=None: message))
+        arrived, frame = BusFrames(tester).get(0.1)
+        self.assertIs(frame, message)
+        self.assertAlmostEqual(time.monotonic() - arrived, 5, delta=0.5, msg="when it came, not when it was read")
+        message.timestamp = 1000.0                                  # an adapter's own clock
+        self.assertAlmostEqual(BusFrames(tester).get(0.1)[0], time.monotonic(), delta=0.5)
+        tester.bus.recv = lambda timeout=None: None
+        with self.assertRaises(Exception):
+            BusFrames(tester).get(0.1)
+        symbols = Symbols([DBC_DIR / "dummy_ecu.dbc", self.folder / "missing.dbc"])
+        name, signals = symbols.decode(0x300, bytes(8))
+        self.assertEqual(name, "EngineData")
+        self.assertIn("Temperature", signals)
+        self.assertTrue(symbols.errors, "the missing file")
+        self.assertEqual(Symbols().decode(0x300, bytes(8)), ("", {}))
+
+    def test_in_a_plan_and_from_the_command_line(self):
+        plans = self.folder / "plans"
+        plans.mkdir()
+        module = self.module(HOOKS_MODULE)
+        plan = TestPlan("Modules", modules=[str(module)], symbols=[str(DBC_DIR / "dummy_ecu.dbc")])
+        plan.save(plans / "modules.json")
+        plan.modules = [plan.relative(module)]
+        plan.save()
+        self.assertEqual(TestPlan.load(plans / "modules.json").modules, ["../hooks.py"])
+        moved = self.folder / "elsewhere" / "deeper"
+        moved.mkdir(parents=True)
+        plan.save(moved / "modules.json")
+        again = TestPlan.load(moved / "modules.json")
+        self.assertEqual(again.module_paths(), [module.resolve()], "relative paths follow the plan")
+        self.assertEqual(again.symbol_paths(), [(DBC_DIR / "dummy_ecu.dbc").resolve()])
+        keep = "sessions.default_session_10_01"
+        suite = Suite(dummy_description(), modules=load_modules([EXAMPLE_MODULE]))
+        cli_plan = TestPlan("CLI", excluded=[case.name for case in suite.cases if case.name != keep
+                                             and not case.name.startswith("module_dummy_ecu_checks.")])
+        cli_plan.options["s3_test"] = False
+        path = self.folder / "cli.json"
+        cli_plan.save(path)
+        with patch("sys.stdout") as out:
+            code = cli.main([str(path), "--run", "--dummy-ecu", "--module", str(EXAMPLE_MODULE), "--symbols",
+                             str(DBC_DIR / "dummy_ecu.dbc"), "--report-dir", str(self.folder / "reports")])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_PASSED, printed)
+        self.assertIn("Running 6 tests", printed)
+        self.assertIn("PASSED   Module: Dummy ECU checks: Engine data is broadcast with a plausible temperature",
+                      printed)
 
 
 class Bench:
@@ -1104,6 +1302,48 @@ class WindowTest(unittest.TestCase):
         window.identification = Identification(0xF195, {"COMMON": "BOOTLOADER"})
         self.assertEqual(window.identify_variant(), "COMMON")
         self.assertEqual(window.plan().identification, window.identification)
+
+    def test_modules_in_the_window(self):
+        window = self.window
+        count = len(window.suite.cases)
+        window.modules_tab.add_modules([EXAMPLE_MODULE, EXAMPLE_MODULE])
+        self.assertEqual(window.modules_tab.modules(), [str(EXAMPLE_MODULE.resolve())], "once")
+        self.assertEqual(len(window.suite.cases), count + 5)
+        group = window._group_items["Module: Dummy ECU checks"]
+        self.assertEqual(group.text(0), "Module: Dummy ECU checks (5)")
+        self.assertEqual(group.child(1).text(0), "An unknown identifier is refused with requestOutOfRange")
+        self.assertEqual(group.toolTip(0), str(EXAMPLE_MODULE.resolve()))
+        self.assertIn("Dummy ECU checks (5 test cases)", window.modules_tab.module_list.item(0).text())
+        window.modules_tab.add_symbols([DBC_DIR / "dummy_ecu.dbc"])
+        window._items["module_dummy_ecu_checks.fault_memory"].setCheckState(0, Qt.Unchecked)
+        path = self.folder / "plans" / "modules.json"
+        path.parent.mkdir()
+        window.save_plan_as(path)
+        saved = TestPlan.load(path)
+        self.assertEqual(saved.module_paths(), [EXAMPLE_MODULE.resolve()])
+        self.assertIn("module_dummy_ecu_checks.fault_memory", saved.excluded)
+        other = window_module.TestExpertWindow(self.settings)
+        self.addCleanup(other.close)
+        self.assertEqual(other.modules_tab.symbols(), [str((DBC_DIR / "dummy_ecu.dbc").resolve())], "kept")
+        self.assertEqual(other._items["module_dummy_ecu_checks.fault_memory"].checkState(0), Qt.Unchecked)
+
+        bench = Bench(self, EcuConfig(lockout_seconds=1))
+        window.request_id.setValue(0x7E0)
+        window.response_id.setValue(0x7E8)
+        self.assertTrue(window.connect_ecu(can.Bus(interface="virtual", channel=bench.channel)))
+        self.addCleanup(window.disconnect_ecu)
+        names = [name for name in window._items if name.startswith("module_") and not name.endswith("fault_memory")]
+        self.assertIsNotNone(window.run(names))
+        self.assertTrue(spin_until(lambda: window.report is not None and window.run_action.isEnabled()),
+                        window.log.toPlainText())
+        self.assertEqual(window.report.verdict, "passed", failures(window.report))
+        self.assertEqual(len(window.report.cases), 4)
+        self.assertEqual(window._items["module_dummy_ecu_checks.engine_data"].text(window_module.COL_VERDICT),
+                         "passed")
+
+        window.modules_tab.module_list.item(0).setSelected(True)
+        window.modules_tab._remove(window.modules_tab.module_list)
+        self.assertEqual(len(window.suite.cases), count)
 
     def test_the_identification_dialog(self):
         from canexpert.test_expert.variant_dialog import IdentificationDialog

@@ -217,7 +217,8 @@ with several variants, the one chosen or the one the ECU says it is — and gene
 availability per session (0x7F) and the NRC order, message length (0x13), sub-functions (0x12), every DID read
 and written per session and security level (0x31, 0x33), security access (0x24, 0x35, the lockout's 0x36 and
 0x37), routines, the fault memory, CommunicationControl and ControlDTCSetting, ECU reset, functional
-addressing and P2 timing. Pre-test and post-test sequences run around the run, a group or a test — a hard
+addressing and P2 timing. CAN Expert's own test modules run in the same run, as groups after the generated tests.
+Pre-test and post-test sequences run around the run, a group or a test — a hard
 reset after a test, an ignition frame before the run, a recovery reset after a failure — and a test plan keeps
 it all in one file, which also runs without the window for a CI server (exit code and JUnit report). An NRC
 policy says which codes pass where a specification differs from ISO, and failures agreed on are kept as

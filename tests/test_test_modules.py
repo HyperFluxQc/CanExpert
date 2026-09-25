@@ -27,7 +27,7 @@ from canexpert.config import validate_config
 from canexpert.paths import DBC_DIR, TEST_MODULES_DIR
 from canexpert.simulator.ecu import DummyEcu, EcuConfig
 from canexpert.testing.report import html_report, junit_report, save_reports
-from canexpert.testing.runner import Runner, load_module, run_module, uds_names
+from canexpert.testing.runner import CaseResult, Runner, TestContext, call_hook, load_module, run_module, uds_names
 from canexpert.testing.window import MemorySettings, TestWindow
 
 APP = QApplication.instance() or QApplication([])
@@ -251,6 +251,25 @@ def known_deviation(t):
         root = ElementTree.fromstring(junit_report(report))
         blocked = next(case for case in root.iter("testcase") if case.get("name") == "needs power")
         self.assertEqual(blocked.find("error").get("type"), "Blocked")
+
+    def test_a_hook_run_with_another_cases_context(self):
+        result = CaseResult("case", "A case")
+        t = TestContext(result, None, None, None, threading.Event())
+        self.assertEqual(call_hook(lambda t: t.check(True, "fine"), t), ("passed", ""))
+        self.assertEqual(call_hook(lambda t: t.check(False, "not fine"), t), ("failed", "a step failed"))
+        self.assertEqual(call_hook(lambda t: t.require(False, "needed"), t), ("failed", "needed"))
+        self.assertEqual(call_hook(lambda t: t.skip("not here"), t), ("skipped", "not here"))
+        self.assertEqual(call_hook(lambda t: t.block("no power"), t), ("blocked", "no power"))
+        verdict, why = call_hook(lambda t: {}["missing"], t)
+        self.assertEqual(verdict, "error")
+        self.assertIn("KeyError", why)
+        with t.lenient():
+            self.assertTrue(t.check(False, "a clean-up that did not work") is False, "the check still says so")
+            verdict, _ = call_hook(lambda t: t.require(False, "required in a clean-up"), t)
+        self.assertEqual(verdict, "failed", "require() still ends it")
+        self.assertEqual([step.verdict for step in result.steps[-2:]], ["warn", "warn"], "recorded as warnings")
+        self.assertFalse(t.check(False, "after it"))
+        self.assertEqual(result.steps[-1].verdict, "fail")
 
     def test_without_a_bus_uds_calls_fail_as_errors(self):
         report = run_module(self.path, names=["uds_answers"])
