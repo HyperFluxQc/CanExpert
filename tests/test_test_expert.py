@@ -1305,6 +1305,13 @@ class PlanTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.folder = Path(folder.name)
 
+    def test_a_path_on_another_drive(self):
+        plan = TestPlan(path=self.folder / "plan.json")
+        elsewhere = Path("D:/descriptions/ecu.cdd")
+        with patch("os.path.relpath", side_effect=ValueError("path is on mount 'D:', start on mount 'C:'")):
+            self.assertEqual(plan.relative(elsewhere), str(elsewhere), "no relative path across drives: absolute")
+        self.assertEqual(plan.relative(self.folder / "cdd" / "ecu.cdd"), "cdd/ecu.cdd")
+
     def test_a_plan_as_json(self):
         (self.folder / "cdd").mkdir()
         description = self.folder / "cdd" / "ecu.cdd"
@@ -1772,7 +1779,10 @@ class WindowTest(unittest.TestCase):
 
     def test_plans_in_the_window(self):
         window = self.window
-        window.open_description(DUMMY_CDD)
+        description = self.folder / "descriptions" / DUMMY_CDD.name      # beside the plan: on its drive
+        description.parent.mkdir()
+        description.write_bytes(DUMMY_CDD.read_bytes())
+        window.open_description(description)
         window.interface.setCurrentText("virtual")
         window.channel.setEditText("bench")
         window.destructive.setChecked(True)
@@ -1786,8 +1796,8 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(window.windowTitle(), "TestExpert - Bench")
         saved = TestPlan.load(path)
         self.assertEqual(saved.excluded, [name])
-        self.assertFalse(Path(saved.description).is_absolute(), "relative to the plan's folder")
-        self.assertEqual(saved.resolve(saved.description), DUMMY_CDD.resolve())
+        self.assertEqual(saved.description, "../descriptions/dummy_ecu.cdd", "relative to the plan's folder")
+        self.assertEqual(saved.resolve(saved.description), description.resolve())
         self.assertTrue(saved.options["destructive"])
         other = window_module.TestExpertWindow(MemorySettings())
         self.addCleanup(other.close)
