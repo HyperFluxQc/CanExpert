@@ -2,10 +2,11 @@
 
     python tools/make_dummy_cdd.py
 
-It follows the structure CANdelaStudio writes - protocol services (REQ with CONSTCOMP and STATICCOMP), class
-templates (DCLTMPL with SHSTATIC and DCLSRVTMPL), the variant's DIAGCLASS / DIAGINST / SERVICE, and state groups
-with mayBeExec and trans - but it is generated here from the Dummy ECU's description, not exported by
-CANdelaStudio.
+It follows the structure CANdelaStudio writes - protocol services (REQ and POS with CONSTCOMP, STATICCOMP and
+SIMPLEPROXYCOMP), class templates (DCLTMPL with SHSTATIC, SHPROXY and DCLSRVTMPL), the variant's DIAGCLASS /
+DIAGINST / SERVICE with its data containers (SIMPLECOMPCONT: the data, and the response codes' texts), data
+types (IDENT, TEXTTBL, LINCOMP with f, o, div and a UNIT), and state groups with mayBeExec and trans - but it is
+generated here from the Dummy ECU's description, not exported by CANdelaStudio.
 """
 import sys
 import xml.etree.ElementTree as ElementTree
@@ -39,6 +40,7 @@ class Writer:
         self._named(self.variant, "CommonDiagnostics", "Common diagnostics")
         self.ids = 0
         self.lengths = {}
+        self.shproxies = {}              # DCLTMPL id -> {dest: SHPROXY id}
         self.states = {}                 # ("session", id) / ("security", level or 0) -> 1-based index
 
     def _id(self, prefix):
@@ -79,16 +81,17 @@ class Writer:
         elif field.numeric and (field.valid or field.unit or (field.scale, field.shift) != (1.0, 0.0)):
             element = ElementTree.SubElement(self.datatypes, "LINCOMP", id=self._id("dt"))
             self._named(element, field.name)
-            ElementTree.SubElement(element, "CVALUETYPE", bl=str(field.bits), bo="21", enc=encoding, sz="no",
-                                   qty="atom")
-            physical = {"bl": "64", "bo": "21", "enc": "flt", "sz": "no", "qty": "atom"}
+            ElementTree.SubElement(element, "CVALUETYPE", bl=str(field.bits), bo="21", enc=encoding, sig="0", df="hex",
+                                   sz="no", qty="atom")
+            physical = ElementTree.SubElement(element, "PVALUETYPE", bl="64", bo="21", enc="dbl", sig="2", df="flt",
+                                              sz="no", qty="atom")
             if field.unit:
-                physical["unit"] = field.unit
-            ElementTree.SubElement(element, "PVALUETYPE", physical)
-            high = (1 << field.bits) - 1
-            for low, top in field.valid or [(0, high)]:
-                ElementTree.SubElement(element, "COMP", s=str(low), e=str(top), f=f"{field.scale:g}",
-                                       o=f"{field.shift:g}")
+                ElementTree.SubElement(physical, "UNIT").text = field.unit
+            divisor = 100 if (field.scale * 100) % 1 == 0 and field.scale % 1 else 1   # 0.01 is 1 / 100
+            factor, offset = field.scale * divisor, field.shift * divisor
+            for low, top in field.valid or [(None, None)]:
+                limits = {"s": str(low), "e": str(top)} if low is not None else {}
+                ElementTree.SubElement(element, "COMP", f=f"{factor:g}", o=f"{offset:g}", div=str(divisor), **limits)
         elif not field.numeric:
             element = ElementTree.SubElement(self.datatypes, "IDENT", id=self._id("dt"))
             self._named(element, f"{field.name}{field.bits // 8}")
@@ -124,29 +127,33 @@ class Writer:
         indexes = sorted([self.states[("session", s)] for s in sessions] + [self.states[("security", l)] for l in levels])
         return "(" + ",".join(str(index) for index in indexes) + ")"
 
-    def protocol(self, qual, parts):
-        """A PROTOCOLSERVICE: parts are ("const", value, bits), ("static", key, bits) or ("data",). Returns
-        (its id, {key: STATICCOMP id})."""
+    def protocol(self, qual, parts, answer=()):
+        """A PROTOCOLSERVICE: parts of its request (REQ) and of its positive answer (POS) are ("const", value,
+        bits), ("static", key, bits) or ("data",). Returns (its id, {key: STATICCOMP ids}, [SIMPLEPROXYCOMP
+        ids]); a static of the request and one of the answer with the same key share the key."""
         element = ElementTree.SubElement(self.protocols, "PROTOCOLSERVICE", id=self._id("ps"), func="1", phys="1")
         self._named(element, qual)
-        request = ElementTree.SubElement(element, "REQ")
-        statics = {}
-        for part in parts:
-            if part[0] == "const":
-                self._named(ElementTree.SubElement(request, "CONSTCOMP", id=self._id("cc"), bl=str(part[2]),
-                                                   v=str(part[1])), "Constant")
-            elif part[0] == "static":
-                component = ElementTree.SubElement(request, "STATICCOMP", id=self._id("sc"), bl=str(part[2]))
-                self._named(component, part[1])
-                statics[part[1]] = component.get("id")
-            else:
-                ElementTree.SubElement(request, "SIMPLEPROXYCOMP", id=self._id("pc"), dest="data")
-        ElementTree.SubElement(element, "POS")
-        return element.get("id"), statics
+        statics, proxies = {}, []
+        for tag, components in (("REQ", parts), ("POS", answer)):
+            message = ElementTree.SubElement(element, tag)
+            for part in components:
+                if part[0] == "const":
+                    self._named(ElementTree.SubElement(message, "CONSTCOMP", id=self._id("cc"), bl=str(part[2]),
+                                                       v=str(part[1])), "Constant")
+                elif part[0] == "static":
+                    component = ElementTree.SubElement(message, "STATICCOMP", id=self._id("sc"), bl=str(part[2]))
+                    self._named(component, part[1])
+                    statics.setdefault(part[1], []).append(component.get("id"))
+                else:
+                    proxy = ElementTree.SubElement(message, "SIMPLEPROXYCOMP", id=self._id("pc"), dest="data")
+                    self._named(proxy, "Data")
+                    proxies.append(proxy.get("id"))
+        return element.get("id"), {key: ids[0] for key, ids in statics.items()}, proxies, statics
 
-    def template(self, qual, statics, services):
-        """A DCLTMPL: statics {key: [STATICCOMP ids]} as SHSTATICs, services [(qual, PROTOCOLSERVICE id)].
-        Returns ({key: SHSTATIC id}, {qual: DCLSRVTMPL id}, its id)."""
+    def template(self, qual, statics, services, proxies=None):
+        """A DCLTMPL: statics {key: [STATICCOMP ids]} as SHSTATICs, services [(qual, PROTOCOLSERVICE id)],
+        proxies {dest: [SIMPLEPROXYCOMP ids]} as SHPROXYs. Returns ({key: SHSTATIC id}, {qual: DCLSRVTMPL id},
+        its id), and keeps the SHPROXY ids in self.shproxies[its id]."""
         element = ElementTree.SubElement(self.templates, "DCLTMPL", id=self._id("ct"))
         self._named(element, qual)
         shstatics = {}
@@ -156,6 +163,13 @@ class Writer:
             for component in component_ids:
                 ElementTree.SubElement(static, "STATICCOMPREF", idref=component)
             shstatics[key] = static.get("id")
+        self.shproxies[element.get("id")] = {}
+        for dest, component_ids in (proxies or {}).items():
+            shproxy = ElementTree.SubElement(element, "SHPROXY", id=self._id("sp"), dest=dest)
+            self._named(shproxy, "DATA" if dest == "data" else "RC")
+            for component in component_ids:
+                ElementTree.SubElement(shproxy, "PROXYCOMPREF", idref=component)
+            self.shproxies[element.get("id")][dest] = shproxy.get("id")
         service_templates = {}
         for service_qual, protocol_id in services:
             service_template = ElementTree.SubElement(element, "DCLSRVTMPL", id=self._id("tt"), tmplref=protocol_id)
@@ -163,21 +177,37 @@ class Writer:
             service_templates[service_qual] = service_template.get("id")
         return shstatics, service_templates, element.get("id")
 
-    def instance(self, diag_class, qual, values, services, length=None, fields=()):
+    def instance(self, diag_class, qual, values, services, length=None, fields=(), shproxies=None):
         """A DIAGINST: values {SHSTATIC id: v}, services [(DCLSRVTMPL id, mayBeExec, trans or None)]; a DID's
-        data as its fields' DATAOBJs, or one byte field of length bytes."""
+        data as its fields' DATAOBJs, or one byte field of length bytes, in the data container of the class's
+        SHPROXY "data", beside a container of its response codes' texts (SHPROXY "resCode") as CANdelaStudio
+        writes them."""
         element = ElementTree.SubElement(diag_class, "DIAGINST", id=self._id("di"))
         self._named(element, qual)
         for static, value in values.items():
             ElementTree.SubElement(element, "STATICVALUE", shstaticref=static, v=str(value))
+        shproxies = shproxies or {}
+        if "resCode" in shproxies:
+            codes = ElementTree.SubElement(element, "SIMPLECOMPCONT", shproxyref=shproxies["resCode"])
+            special = ElementTree.SubElement(codes, "SPECDATAOBJ", id=self._id("do"), spec="rc")
+            ElementTree.SubElement(special, "QUAL").text = "NRC"
+            table = ElementTree.SubElement(special, "TEXTTBL", id=self._id("dt"))
+            ElementTree.SubElement(table, "QUAL").text = "LocalTable"
+            ElementTree.SubElement(table, "CVALUETYPE", bl="8", bo="21", enc="uns", sz="no", qty="atom")
+            for nrc, text in ((0x13, "Incorrect message length or invalid format"), (0x31, "Request out of range")):
+                mapping = ElementTree.SubElement(table, "TEXTMAP", s=str(nrc), e=str(nrc))
+                ElementTree.SubElement(ElementTree.SubElement(mapping, "TEXT"), "TUV", {"xml:lang": "en-US"}).text = text
+        attributes = {"shproxyref": shproxies["data"]} if "data" in shproxies else {}
         if fields:
-            container = ElementTree.SubElement(element, "SIMPLECOMPCONT")
+            container = ElementTree.SubElement(element, "SIMPLECOMPCONT", attributes)
             for field in fields:
-                data = ElementTree.SubElement(container, "DATAOBJ", id=self._id("do"), dtref=self.field_type(field))
+                data = ElementTree.SubElement(container, "DATAOBJ", id=self._id("do"), spec="no",
+                                              dtref=self.field_type(field))
                 ElementTree.SubElement(data, "QUAL").text = field.name
         elif length:
-            container = ElementTree.SubElement(element, "SIMPLECOMPCONT")
-            data = ElementTree.SubElement(container, "DATAOBJ", id=self._id("do"), dtref=self.datatype(length))
+            container = ElementTree.SubElement(element, "SIMPLECOMPCONT", attributes)
+            data = ElementTree.SubElement(container, "DATAOBJ", id=self._id("do"), spec="no",
+                                          dtref=self.datatype(length))
             ElementTree.SubElement(data, "QUAL").text = "Data"
         for template, allowed, trans in services:
             attributes = {"id": self._id("sv"), "tmplref": template, "mayBeExec": allowed}
@@ -200,8 +230,9 @@ class Writer:
             if sid in (0x22, 0x2E, 0x31, 0x27):
                 continue
             if sid == 0x10 or service.sub_functions:
-                protocol, statics = self.protocol(service.name, [("const", sid, 8), ("static", "Sub", 8)] +
-                                                  ([("data",)] if sid in (0x19, 0x28, 0x86) else []))
+                protocol, statics, _proxies, _all = self.protocol(
+                    service.name, [("const", sid, 8), ("static", "Sub", 8)] + ([("data",)] if sid in (0x19, 0x28, 0x86)
+                                                                              else []))
                 shstatics, templates, template_id = self.template(service.name, {"Sub": [statics["Sub"]]},
                                                                   [("Request", protocol)])
                 diag_class = self.diag_class(template_id, service.name)
@@ -219,14 +250,15 @@ class Writer:
                     self.instance(diag_class, f"{service.name}_{sub:02X}", {shstatics["Sub"]: sub},
                                   [(templates["Request"], self.may_be_exec(access), trans)])
             else:
-                protocol, _statics = self.protocol(service.name, [("const", sid, 8), ("data",)])
+                protocol, _statics, _proxies, _all = self.protocol(service.name, [("const", sid, 8), ("data",)])
                 _shstatics, templates, template_id = self.template(service.name, {}, [("Request", protocol)])
                 self.instance(self.diag_class(template_id, service.name), service.name, {},
                               [(templates["Request"], self.may_be_exec(service.access), None)])
         # SecurityAccess: requestSeed and sendKey of each level; sendKey unlocks.
         if 0x27 in d.services:
-            seed, seed_statics = self.protocol("RequestSeed", [("const", 0x27, 8), ("static", "Seed", 8)])
-            key, key_statics = self.protocol("SendKey", [("const", 0x27, 8), ("static", "Key", 8), ("data",)])
+            seed, seed_statics, _proxies, _all = self.protocol("RequestSeed", [("const", 0x27, 8), ("static", "Seed", 8)])
+            key, key_statics, _proxies, _all = self.protocol("SendKey", [("const", 0x27, 8), ("static", "Key", 8),
+                                                                        ("data",)])
             shstatics, templates, template_id = self.template(
                 "SecurityAccess", {"Seed": [seed_statics["Seed"]], "Key": [key_statics["Key"]]},
                 [("RequestSeed", seed), ("SendKey", key)])
@@ -240,12 +272,15 @@ class Writer:
                               [(templates["RequestSeed"], self.may_be_exec(access), None),
                                (templates["SendKey"], self.may_be_exec(access), trans)])
         # Data identifiers: one instance each, read and (where writable) write.
-        read, read_statics = self.protocol("ReadDataByIdentifier", [("const", 0x22, 8), ("static", "DID", 16)])
-        write, write_statics = self.protocol("WriteDataByIdentifier",
-                                             [("const", 0x2E, 8), ("static", "DID", 16), ("data",)])
+        read, _statics, read_proxies, read_statics = self.protocol(
+            "ReadDataByIdentifier", [("const", 0x22, 8), ("static", "DID", 16)],
+            [("const", 0x62, 8), ("static", "DID", 16), ("data",)])
+        write, _statics, write_proxies, write_statics = self.protocol(
+            "WriteDataByIdentifier", [("const", 0x2E, 8), ("static", "DID", 16), ("data",)],
+            [("const", 0x6E, 8), ("static", "DID", 16)])
         shstatics, templates, template_id = self.template(
-            "DataIdentifier", {"DID": [read_statics["DID"], write_statics["DID"]]},
-            [("Read", read), ("Write", write)])
+            "DataIdentifier", {"DID": read_statics["DID"] + write_statics["DID"]}, [("Read", read), ("Write", write)],
+            {"data": read_proxies + write_proxies, "resCode": []})
         diag_class = self.diag_class(template_id, "DataIdentifiers")
         for did, entry in sorted(d.dids.items()):
             services = []
@@ -254,14 +289,15 @@ class Writer:
             if entry.write is not None:
                 services.append((templates["Write"], self.may_be_exec(entry.write), None))
             self.instance(diag_class, entry.name.replace(" ", "_"), {shstatics["DID"]: did}, services, entry.length,
-                          entry.fields)
+                          entry.fields, self.shproxies[template_id])
         # Routines: startRoutine, stopRoutine and requestRoutineResults, where each routine has them.
         if d.routines:
             controls = {0x01: "Start", 0x02: "Stop", 0x03: "Results"}
             protocols, rid_statics = [], []
             for sub, qual in controls.items():
-                protocol, statics = self.protocol(f"{qual}Routine", [("const", 0x31, 8), ("const", sub, 8),
-                                                                    ("static", "RID", 16), ("data",)])
+                protocol, statics, _proxies, _all = self.protocol(f"{qual}Routine", [("const", 0x31, 8),
+                                                                                  ("const", sub, 8),
+                                                                                  ("static", "RID", 16), ("data",)])
                 protocols.append((qual, protocol))
                 rid_statics.append(statics["RID"])
             shstatics, templates, template_id = self.template("Routine", {"RID": rid_statics}, protocols)

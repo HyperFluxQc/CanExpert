@@ -46,6 +46,47 @@ from canexpert.uds.seed_key import xor_key
 
 APP = QApplication.instance() or QApplication([])
 DUMMY_CDD = ODX_DIR / "dummy_ecu.cdd"
+DUMMY_ODX = ODX_DIR / "dummy_ecu_services.odx-d"
+# A CANdela document in the structure of a real export (cantools' example.cdd, from CANdelaStudio): no state
+# information on its services, data containers told apart by their class's shared proxies (the data, the
+# response codes' texts), a linear type with factor, divisor and a UNIT element, a text table with a range, a
+# union of a whole byte and its bits (STRUCT, GAPDATAOBJ). Written for these tests, not copied.
+OLD_STYLE_CDD = """<?xml version='1.0' encoding='iso-8859-1'?>
+<CANDELA dtdvers='2.0.5'><ECUDOC doctype='inst'>
+<STATEGROUPS><STATEGROUP><QUAL>Session</QUAL><STATE><QUAL>Default</QUAL></STATE></STATEGROUP></STATEGROUPS>
+<DATATYPES>
+ <LINCOMP id='dt.volt'><QUAL>Voltage</QUAL><CVALUETYPE bl='8' bo='21' enc='uns' qty='atom' sz='no'/>
+  <PVALUETYPE bl='64' enc='dbl' df='flt' qty='atom' sz='no'><UNIT>V</UNIT></PVALUETYPE><COMP f='1' o='0' div='10'/></LINCOMP>
+ <TEXTTBL id='dt.onoff'><QUAL>offOn</QUAL><CVALUETYPE bl='8' bo='21' enc='uns' qty='atom' sz='no'/>
+  <TEXTMAP s='0' e='0'><TEXT><TUV>off</TUV></TEXT></TEXTMAP><TEXTMAP s='1' e='255'><TEXT><TUV>on</TUV></TEXT></TEXTMAP></TEXTTBL>
+ <IDENT id='dt.byte'><QUAL>Byte</QUAL><CVALUETYPE bl='8' bo='21' enc='uns' qty='atom' sz='no'/></IDENT>
+ <IDENT id='dt.bit'><QUAL>Bit</QUAL><CVALUETYPE bl='1' bo='21' enc='uns' qty='atom' sz='no'/></IDENT>
+ <IDENT id='dt.number'><QUAL>Bcd</QUAL><CVALUETYPE bl='16' bo='21' enc='bcd' qty='atom' sz='no'/></IDENT>
+</DATATYPES>
+<PROTOCOLSERVICES>
+ <PROTOCOLSERVICE id='ps.read'><QUAL>RDBI</QUAL><REQ><CONSTCOMP id='c1' bl='8' v='34'/><STATICCOMP id='s1' bl='16'/></REQ>
+  <POS><CONSTCOMP id='c2' bl='8' v='98'/><SIMPLEPROXYCOMP id='p.data' dest='data'/></POS>
+  <NEG><SIMPLEPROXYCOMP id='p.rc' dest='resCode'/></NEG></PROTOCOLSERVICE>
+</PROTOCOLSERVICES>
+<DCLTMPLS><DCLTMPL id='t.did'><QUAL>DATA</QUAL><DCLSRVTMPL id='st.read' tmplref='ps.read'><QUAL>Read</QUAL></DCLSRVTMPL>
+ <SHSTATIC id='sh.did'><QUAL>DID</QUAL><STATICCOMPREF idref='s1'/></SHSTATIC>
+ <SHPROXY id='sp.data' dest='data'><QUAL>DATA</QUAL><PROXYCOMPREF idref='p.data'/></SHPROXY>
+ <SHPROXY id='sp.rc' dest='resCode'><QUAL>RC</QUAL><PROXYCOMPREF idref='p.rc'/></SHPROXY></DCLTMPL></DCLTMPLS>
+<ECU><QUAL>Bench</QUAL><VAR><QUAL>COMMON</QUAL><DIAGCLASS tmplref='t.did'><QUAL>DATA</QUAL>
+ <DIAGINST><QUAL>Status</QUAL><SERVICE tmplref='st.read' phys='1' func='0'><QUAL>Read</QUAL></SERVICE>
+  <STATICVALUE shstaticref='sh.did' v='4660'/>
+  <SIMPLECOMPCONT shproxyref='sp.rc'><SPECDATAOBJ spec='rc'><QUAL>NRC</QUAL>
+   <TEXTTBL><CVALUETYPE bl='8' enc='uns' qty='atom' sz='no'/><TEXTMAP s='49' e='49'><TEXT><TUV>out</TUV></TEXT></TEXTMAP></TEXTTBL>
+  </SPECDATAOBJ></SIMPLECOMPCONT>
+  <SIMPLECOMPCONT shproxyref='sp.data'>
+   <DATAOBJ spec='no' dtref='dt.volt'><QUAL>Supply</QUAL></DATAOBJ>
+   <DATAOBJ spec='no' dtref='dt.onoff'><QUAL>Lamp</QUAL></DATAOBJ>
+   <UNION><QUAL>Status</QUAL><DATAOBJ spec='no' dtref='dt.byte'><QUAL>StatusByte</QUAL></DATAOBJ>
+    <STRUCT><GAPDATAOBJ bl='3'><QUAL>Unused</QUAL></GAPDATAOBJ><DATAOBJ spec='no' dtref='dt.bit'><QUAL>Confirmed</QUAL></DATAOBJ></STRUCT></UNION>
+   <GAPDATAOBJ bl='8'><QUAL>Reserved</QUAL></GAPDATAOBJ>
+   <DATAOBJ spec='no' dtref='dt.number'><QUAL>Build</QUAL></DATAOBJ>
+  </SIMPLECOMPCONT></DIAGINST></DIAGCLASS></VAR></ECU></ECUDOC></CANDELA>
+"""
 TRANSPORT = {"request_id": 0x7E0, "response_id": 0x7E8, "timeout": 1.0, "extended": False, "address_byte": None,
              "padding": 0xCC, "block_size": 0, "st_min": 0}
 
@@ -124,6 +165,25 @@ class CddTest(unittest.TestCase):
         written = module.Writer(dummy_description(EcuConfig())).write()
         self.assertEqual(written.strip(), DUMMY_CDD.read_text(encoding="utf-8").strip(),
                          "ODX/dummy_ecu.cdd is what tools/make_dummy_cdd.py writes")
+
+    def test_a_document_as_candelastudio_exports_it(self):
+        path = Path(tempfile.mkdtemp()) / "old.cdd"
+        path.write_text(OLD_STYLE_CDD, encoding="iso-8859-1")
+        d = load_cdd(path)
+        entry = d.dids[0x1234]
+        self.assertEqual(entry.length, 6, "volt, lamp, status (a union: one byte), a reserved byte, a BCD number")
+        fields = {item.name: item for item in entry.fields}
+        self.assertEqual(list(fields), ["Supply", "Lamp", "StatusByte", "Build"], "not the response codes' texts")
+        self.assertEqual((fields["Supply"].scale, fields["Supply"].unit), (0.1, "V"), "factor / divisor, the UNIT")
+        self.assertEqual(fields["Lamp"].texts, {0: "off"})
+        self.assertEqual(fields["Lamp"].limits(), [(0, 0), (1, 255)], "the text table's ranges")
+        self.assertEqual((fields["Build"].position, fields["Build"].encoding), (32, "bcd"), "after the gap")
+        self.assertEqual(fields["Supply"].check(bytes.fromhex("7B0001001234")), (True, "12.3 V"))
+        self.assertIn("no mayBeExec", " ".join(d.warnings))
+        self.assertEqual(d.dids[0x1234].read, Access(), "allowed in every session: nothing says otherwise")
+        kwp = Path(tempfile.mkdtemp()) / "kwp.cdd"
+        kwp.write_text(OLD_STYLE_CDD.replace("v='34'", "v='33'").replace("v='98'", "v='97'"), encoding="iso-8859-1")
+        self.assertIn("KWP2000", load_cdd(kwp).warnings[0], "read by local identifier: KWP2000, not UDS")
 
     def test_what_a_cdd_can_hold(self):
         text = DUMMY_CDD.read_text(encoding="utf-8")
@@ -227,6 +287,29 @@ class OdxTest(unittest.TestCase):
         broken = SimpleNamespace(positive_responses=[SimpleNamespace(parameters=[
             SimpleNamespace(short_name="X", parameter_type="VALUE", byte_position=None, dop=dop(8, "A_UINT32"))])])
         self.assertEqual(odx_loader.did_fields(broken), [], "a field without its place: none at all")
+
+    def test_the_dummy_ecus_odx_describes_the_dummy_ecu(self):
+        odx, dummy = odx_loader.load_odx(DUMMY_ODX), dummy_description()
+        self.assertEqual(odx.warnings, [])
+        self.assertEqual(odx.name, "Application", "the first ECU variant")
+        self.assertEqual({s: (x.access, x.sub_functions) for s, x in odx.services.items()},
+                         {s: (x.access, x.sub_functions) for s, x in dummy.services.items()})
+        self.assertEqual({d: (x.name, x.length, x.read, x.write, x.fields) for d, x in odx.dids.items()},
+                         {d: (x.name, x.length, x.read, x.write, x.fields) for d, x in dummy.dids.items()},
+                         "read through odxtools: states by their IDs, names without _Read, ASCII texts")
+        self.assertEqual(odx.routines, dummy.routines)
+        self.assertEqual({s: (x.name, x.entered_from) for s, x in odx.sessions.items()},
+                         {s: (x.name, x.entered_from) for s, x in dummy.sessions.items()})
+
+    def test_the_odx_file_is_written_by_the_tool(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("make_dummy_odx", Path(__file__).resolve().parents[1] / "tools" /
+                                                      "make_dummy_odx.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        written = module.Writer(dummy_description(EcuConfig())).write()
+        self.assertEqual(written.strip(), DUMMY_ODX.read_text(encoding="utf-8").strip(),
+                         "ODX/dummy_ecu_services.odx-d is what tools/make_dummy_odx.py writes")
 
     def test_by_extension(self):
         self.assertEqual(odx_loader.load_description(DUMMY_CDD).name, "DummyECU (CommonDiagnostics)")

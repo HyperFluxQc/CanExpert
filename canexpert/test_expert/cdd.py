@@ -9,10 +9,19 @@ The chain from a variant to request bytes is the one CANdelaStudio writes:
 
 States are ECUDOC/STATEGROUPS/STATEGROUP (spec "session" or "security") / STATE, numbered from 1 across all
 groups; a SERVICE's mayBeExec="(1,2,4)" lists the states it may be executed in, its trans="(1,2,3,2)" the
-(from, to) transitions it causes. A DID's data length comes from the DATAOBJs of its instance, and its fields
-from their data types (DATATYPES): the coded value's CVALUETYPE (bl bits, enc uns/sgn/asc/bcd, qty field with
-minsz/maxsz), a text table's TEXTMAP s/e and TEXT, a linear type's COMP s/e (the valid coded values), f and o
-(factor and offset), and the unit of its PVALUETYPE.
+(from, to) transitions it causes; older documents have neither, and their services are taken as allowed in every
+state.
+
+A DID's data record is its instance's data container - the SIMPLECOMPCONT whose shared proxy (a SHPROXY of the
+class template) has dest "data", not the one of the response codes' texts - with its DATAOBJs in order, gaps
+(GAPDATAOBJ, bl bits), structures (STRUCT) and unions (UNION: the first view of the same bits); an iteration or
+a field of variable size gives it no fixed layout. Each data object's type (DATATYPES, or defined in place): its
+coded value's CVALUETYPE (bl bits, enc uns/sgn/asc/bcd, qty field with minsz/maxsz), a text table's TEXTMAP s/e
+and TEXT, a linear type's COMP - f, o and div (physical = (f * coded + o) / div), and s/e where it limits the
+coded values - and the unit its PVALUETYPE gives (a UNIT element).
+
+A document whose sessions are 81, 85... and whose services read data by local identifier is KWP2000 (ISO
+14230), not UDS: it is read, with a warning, since TestExpert's tests are UDS's.
 """
 from __future__ import annotations
 
@@ -24,6 +33,13 @@ from canexpert.test_expert.description import DataField, EcuDescription, RawServ
 
 class CddError(ValueError):
     """Not a CANdela document this loader can read."""
+
+
+# CVALUETYPE's enc -> DataField's encoding; one not known is taken as bytes (not checked as a number).
+ENCODINGS = {"uns": "unsigned", "sgn": "signed", "asc": "ascii", "bcd": "bcd"}
+# Services only KWP2000 has (by local identifier, ECU identification...), and only UDS.
+KWP_ONLY = {0x12, 0x13, 0x17, 0x18, 0x1A, 0x20, 0x21, 0x30, 0x32, 0x33, 0x3B, 0x81, 0x82}
+UDS_ONLY = {0x19, 0x22, 0x2E, 0x2F}
 
 
 def _text(element, path) -> str:
@@ -123,84 +139,112 @@ class _Document:
         values = instance.findall("STATICVALUE")
         return values[0].get("v") if len(values) == 1 else None         # a class with a single static
 
-    def data_length(self, instance) -> int | None:
-        """Bytes of an instance's data record (its DATAOBJs), when every one has a fixed width."""
-        bits = 0
-        objects = instance.findall("SIMPLECOMPCONT/DATAOBJ") + instance.findall("SIMPLECOMPCONT/STRUCT/DATAOBJ")
-        for reference in instance.findall("SIMPLECOMPCONT/DIDDATAREF"):
-            shared = self.by_id.get(reference.get("didRef", ""))
-            if shared is not None:
-                objects += shared.findall("STRUCTURE/DATAOBJ")
-        if not objects:
-            return None
-        for data in objects:
-            datatype = self.datatypes.get(data.get("dtref", ""))
-            coded = datatype.find("CVALUETYPE") if datatype is not None else None
-            if coded is None:
-                return None
-            try:
-                width = int(coded.get("bl", "0"))
-                count = int(coded.get("maxsz", "1")) if coded.get("qty") == "field" else 1
-                if coded.get("qty") == "field" and coded.get("minsz") != coded.get("maxsz"):
-                    return None                                   # a variable length
-            except ValueError:
-                return None
-            bits += width * count
-        return (bits + 7) // 8 if bits else None
+    # --- a DID's data record ------------------------------------------------------------------------------
 
-    def _objects(self, instance) -> list:
-        objects = instance.findall("SIMPLECOMPCONT/DATAOBJ") + instance.findall("SIMPLECOMPCONT/STRUCT/DATAOBJ")
-        for reference in instance.findall("SIMPLECOMPCONT/DIDDATAREF"):
-            shared = self.by_id.get(reference.get("didRef", ""))
-            if shared is not None:
-                objects += shared.findall("STRUCTURE/DATAOBJ")
-        return objects
+    def _record_elements(self, instance) -> list:
+        """The elements of an instance's data record: those of its data containers (a SIMPLECOMPCONT whose
+        shared proxy is the data - not a response code's texts - or that names none), and of the shared
+        structures they refer to (DIDDATAREF)."""
+        elements = []
+        for container in instance.findall("SIMPLECOMPCONT"):
+            proxy = self.by_id.get(container.get("shproxyref", ""))
+            if proxy is not None and proxy.get("dest", "data") != "data":
+                continue
+            for element in container:
+                if element.tag == "DIDDATAREF":
+                    shared = self.by_id.get(element.get("didRef", ""))
+                    structure = shared.find("STRUCTURE") if shared is not None else None
+                    elements += list(structure) if structure is not None else []
+                else:
+                    elements.append(element)
+        return elements
 
-    def data_fields(self, instance) -> list[DataField]:
-        """The fields of an instance's data record, one per DATAOBJ in order; [] when one has no fixed size."""
-        fields, position = [], 0
-        for data in self._objects(instance):
-            datatype = self.datatypes.get(data.get("dtref", ""))
-            coded = datatype.find("CVALUETYPE") if datatype is not None else None
-            if coded is None:
-                return []
-            try:
-                width = int(coded.get("bl", "0"))
-                if coded.get("qty") == "field":
-                    if coded.get("minsz") != coded.get("maxsz"):
-                        return []                                 # a variable length
-                    width *= int(coded.get("maxsz", "1"))
-            except ValueError:
-                return []
-            encoding = {"sgn": "signed", "asc": "ascii", "bcd": "bcd"}.get(coded.get("enc", "uns"), "unsigned")
-            if coded.get("qty") == "field" and encoding != "ascii":
-                encoding = "bytes"
-            texts, valid, scale, shift = {}, [], 1.0, 0.0
-            for mapping in datatype.findall("TEXTMAP"):
+    def record(self, instance) -> tuple[int | None, list[DataField]]:
+        """(bytes, fields) of an instance's data record; (None, []) when it has none, or no fixed layout."""
+        fields = []
+        bits = self._walk(self._record_elements(instance), fields, 0)
+        return ((bits + 7) // 8, fields) if bits else (None, [])
+
+    def _walk(self, elements, fields, position) -> int | None:
+        """Add the fields of elements from bit position on; the position after them, or None (no fixed
+        layout)."""
+        for element in elements:
+            tag = element.tag
+            if tag in ("NAME", "QUAL", "DESC"):
+                continue
+            if tag in ("DATAOBJ", "SPECDATAOBJ"):
+                field = self._field(element, position)
+                if field is None:
+                    return None
+                fields.append(field)
+                position += field.bits
+            elif tag == "GAPDATAOBJ":
                 try:
-                    low, high = int(mapping.get("s")), int(mapping.get("e"))
-                except (TypeError, ValueError):
-                    continue
-                valid.append((low, high))
-                if low == high:
-                    texts[low] = _text(mapping, "TEXT/TUV")
-            for comp in datatype.findall("COMP"):
+                    position += int(element.get("bl", ""))
+                except ValueError:
+                    return None
+            elif tag in ("STRUCT", "UNION"):
+                members = [child for child in element if child.tag not in ("NAME", "QUAL", "DESC")]
+                if tag == "UNION":
+                    members = members[:1]                         # the first view of the same bits
+                if not members:
+                    return None
+                position = self._walk(members, fields, position)
+                if position is None:
+                    return None
+            else:
+                return None           # an iteration, a multiplexer, data up to the end: no fixed layout
+        return position
+
+    def _field(self, data, position) -> DataField | None:
+        """The DataField of a data object at bit position, or None when its size is not fixed."""
+        datatype = self.datatypes.get(data.get("dtref", ""))
+        if datatype is None:                                      # a type defined in place
+            datatype = next((child for child in data if child.find("CVALUETYPE") is not None), None)
+        coded = datatype.find("CVALUETYPE") if datatype is not None else None
+        if coded is None or coded.get("sz") == "yes":             # sz: the value says its own size
+            return None
+        try:
+            width = int(coded.get("bl", "0"))
+            if coded.get("qty") == "field":
+                if coded.get("minsz") != coded.get("maxsz"):
+                    return None                                   # a variable length
+                width *= int(coded.get("maxsz", "1"))
+        except ValueError:
+            return None
+        if width <= 0:
+            return None
+        encoding = ENCODINGS.get(coded.get("enc", "uns"), "bytes")
+        if coded.get("qty") == "field" and encoding != "ascii":
+            encoding = "bytes"
+        texts, valid, scale, shift = {}, [], 1.0, 0.0
+        for mapping in datatype.findall("TEXTMAP"):
+            try:
+                low, high = int(mapping.get("s")), int(mapping.get("e"))
+            except (TypeError, ValueError):
+                continue
+            valid.append((low, high))
+            if low == high:
+                texts[low] = _text(mapping, "TEXT/TUV")
+        for comp in datatype.findall("COMP"):
+            try:
+                factor, offset = float(comp.get("f", 1)), float(comp.get("o", 0))
+                divisor = float(comp.get("div", 1)) or 1.0
+            except ValueError:
+                continue
+            scale, shift = factor / divisor, offset / divisor
+            if comp.get("s") is not None and comp.get("e") is not None:
                 try:
                     valid.append((int(comp.get("s")), int(comp.get("e"))))
-                    scale, shift = float(comp.get("f", scale)), float(comp.get("o", shift))
-                except (TypeError, ValueError):
-                    continue
-            if texts and all(low == high for low, high in valid):
-                valid = []                                      # the text table's own values
-            full = (0, (1 << width) - 1) if encoding == "unsigned" else None
-            if valid == [full]:
-                valid = []                                      # any value: no limit
-            physical = datatype.find("PVALUETYPE")
-            unit = physical.get("unit", "") if physical is not None else ""
-            fields.append(DataField(_name(data) or f"Field{len(fields) + 1}", position, width, encoding, valid,
-                                    texts, scale, shift, unit))
-            position += width
-        return fields
+                except ValueError:
+                    pass
+        if texts and all(low == high for low, high in valid):
+            valid = []                                            # the text table's own values
+        if valid == [(0, (1 << width) - 1)] and encoding == "unsigned":
+            valid = []                                            # any value: no limit
+        physical = datatype.find("PVALUETYPE")
+        unit = ((physical.findtext("UNIT") or physical.get("unit") or "") if physical is not None else "").strip()
+        return DataField(_name(data) or "Value", position, width, encoding, valid, texts, scale, shift, unit)
 
     def services(self, variant) -> list[RawService]:
         raw = []
@@ -232,10 +276,8 @@ class _Document:
                 if trans is None and service_template is not None:
                     trans = _numbers(service_template.get("trans"))
                 pairs = list(zip(trans[0::2], trans[1::2])) if trans else []
-                did = prefix[0] in (0x22, 0x2E)
-                raw.append(RawService(prefix, _label(instance), allowed, pairs,
-                                      self.data_length(instance) if did else None,
-                                      self.data_fields(instance) if did else []))
+                length, fields = self.record(instance) if prefix[0] in (0x22, 0x2E) else (None, [])
+                raw.append(RawService(prefix, _label(instance), allowed, pairs, length, fields))
         return raw
 
 
@@ -259,6 +301,16 @@ def load_cdd(path, variant: str | None = None) -> EcuDescription:
     description.warnings = document.warnings + description.warnings
     if not states:
         description.warnings.append("No STATEGROUPS: every service is taken as allowed in every session")
+    elif not any(raw_service.allowed is not None for raw_service in raw):
+        description.warnings.append("The services say nothing of the states they may be executed in (no mayBeExec): "
+                                    "each is taken as allowed in every session")
+    sids = {raw_service.prefix[0] for raw_service in raw}
+    protocol = (document.ecudoc.findtext("PROTOCOLSTANDARD") or "").strip().upper()
+    kwp_sessions = any(r.prefix[0] == 0x10 and len(r.prefix) > 1 and r.prefix[1] & 0x80 for r in raw)
+    if "KWP" in protocol or kwp_sessions or (sids & KWP_ONLY and not sids & UDS_ONLY):
+        description.warnings.insert(0, "This looks like a KWP2000 (ISO 14230) description, not a UDS one: sessions "
+                                       "81, 85..., data by local identifier (21, 3B), ECU identification (1A). "
+                                       "TestExpert tests UDS (ISO 14229-1): many of its tests do not apply")
     if len(variants) > 1:
         description.warnings.append(f"{len(variants)} variants; read: {_name(chosen) or 'the first'}")
     return description

@@ -5,6 +5,10 @@ transitions which session or security state it leads to. State charts with the s
 (or a name saying so) are the session and security states. A ReadDataByIdentifier's positive response gives
 the DID's fields: each value parameter's place (BYTE-POSITION, BIT-POSITION), its coded type (bit length, base
 data type), its text table or linear scale (COMPU-METHOD), its limits (INTERNAL-CONSTR) and its unit.
+
+States are matched by their ODX IDs: a variant inheriting its state charts gets copies of the base variant's
+objects. A DID or a routine is named after its services, without the _Read, _Write, _Start... CANdelaStudio's
+ODX export puts after them.
 """
 from __future__ import annotations
 
@@ -14,6 +18,21 @@ from canexpert.odx_services import first_layer, load_database, name_of
 from canexpert.test_expert.description import DataField, EcuDescription, RawService, RawState, build_description
 
 RECORD_START = 3                     # 62, then the DID: the data record's first byte in the response
+NAME_ENDINGS = ("_Read", "_Write", "_Start", "_Stop", "_RequestResults", "_Results", "_RequestSeed", "_SendKey")
+
+
+def _key(state):
+    """What identifies a state in every copy of it: its ODX ID, else its name."""
+    link = getattr(state, "odx_id", None)
+    return getattr(link, "local_id", None) or name_of(state)
+
+
+def plain_name(name: str) -> str:
+    """"VIN_Read" -> "VIN": a DID or routine named after its services."""
+    for ending in NAME_ENDINGS:
+        if name.endswith(ending) and len(name) > len(ending):
+            return name[:-len(ending)]
+    return name
 
 
 def _group(chart) -> str:
@@ -38,7 +57,8 @@ def _field(param) -> DataField | None:
     bits = getattr(coded, "bit_length", None)
     if dop is None or byte is None or not bits or byte < RECORD_START:
         return None
-    base = str(getattr(coded, "base_data_type", "")).upper()
+    base = getattr(coded, "base_data_type", "")
+    base = str(getattr(base, "value", base)).upper()          # odxtools' DataType: its value is A_UINT32...
     encoding = "ascii" if "ASCII" in base else "bytes" if "BYTE" in base or "UNICODE" in base else \
         "signed" if "_INT" in base and "UINT" not in base else "unsigned"
     shift_bits = getattr(param, "bit_position", None) or 0
@@ -102,13 +122,11 @@ def load_odx(path) -> EcuDescription:
     layer = first_layer(database)
     if layer is None:
         raise ValueError("the file describes no ECU")
-    states, keys = {}, {}
+    states = {}
     for chart in getattr(layer, "state_charts", None) or []:
         group = _group(chart)
         for state in getattr(chart, "states", None) or []:
-            key = id(state)
-            keys[key] = state
-            states[key] = RawState(group, name_of(state))
+            states[_key(state)] = RawState(group, getattr(state, "long_name", None) or name_of(state))
     warnings, raw = [], []
     for service in getattr(layer, "services", None) or []:
         request = getattr(service, "request", None)
@@ -120,17 +138,23 @@ def load_odx(path) -> EcuDescription:
             warnings.append(f"{name_of(service)}: {exc}")
             continue
         preconditions = list(getattr(service, "pre_condition_states", None) or [])
-        allowed = [id(state) for state in preconditions] if preconditions else None
-        transitions = [(id(transition.source_state), id(transition.target_state))
+        allowed = [_key(state) for state in preconditions] if preconditions else None
+        transitions = [(_key(transition.source_state), _key(transition.target_state))
                        for transition in getattr(service, "state_transitions", None) or []
                        if getattr(transition, "target_state", None) is not None]
         fields = did_fields(service) if prefix[:1] == b"\x22" and len(prefix) >= 3 else []
         length = max((item.position + item.bits + 7) // 8 for item in fields) if fields else None
-        raw.append(RawService(prefix, name_of(service), allowed, transitions, length, fields))
+        raw.append(RawService(prefix, plain_name(name_of(service)), allowed, transitions, length, fields))
     description = build_description(raw, states, name_of(layer), str(path))
     description.warnings = warnings + description.warnings
     if not states:
         description.warnings.append("No state charts: every service is taken as allowed in every session")
+    elif not any(state.group == "session" for state in states.values()):
+        description.warnings.append("No state chart of sessions (semantic SESSION): the sessions are taken from "
+                                    "DiagnosticSessionControl's constants")
+    if 0 in description.sessions:
+        description.warnings.append("10 00 is no UDS session (ISO 14229-1 reserves 00): this is not a UDS ECU's "
+                                    "description, or not all of it")
     return description
 
 

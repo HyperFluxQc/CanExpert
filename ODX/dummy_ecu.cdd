@@ -6,43 +6,51 @@
     </DESC>
     <PROTOCOLSTANDARD>UDS</PROTOCOLSTANDARD>
     <DATATYPES>
-      <LINCOMP id="_dt0208">
+      <LINCOMP id="_dt0217">
         <NAME>
           <TUV xml:lang="en-US">Seconds</TUV>
         </NAME>
         <QUAL>Seconds</QUAL>
-        <CVALUETYPE bl="32" bo="21" enc="uns" sz="no" qty="atom" />
-        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="s" />
-        <COMP s="0" e="4294967295" f="1" o="0" />
+        <CVALUETYPE bl="32" bo="21" enc="uns" sig="0" df="hex" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="2" df="flt" sz="no" qty="atom">
+          <UNIT>s</UNIT>
+        </PVALUETYPE>
+        <COMP f="1" o="0" div="1" />
       </LINCOMP>
-      <LINCOMP id="_dt0212">
+      <LINCOMP id="_dt0223">
         <NAME>
           <TUV xml:lang="en-US">Temperature</TUV>
         </NAME>
         <QUAL>Temperature</QUAL>
-        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
-        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="degC" />
-        <COMP s="0" e="65535" f="0.1" o="0" />
+        <CVALUETYPE bl="16" bo="21" enc="uns" sig="0" df="hex" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="2" df="flt" sz="no" qty="atom">
+          <UNIT>degC</UNIT>
+        </PVALUETYPE>
+        <COMP f="10" o="0" div="100" />
       </LINCOMP>
-      <LINCOMP id="_dt0216">
+      <LINCOMP id="_dt0229">
         <NAME>
           <TUV xml:lang="en-US">Pressure</TUV>
         </NAME>
         <QUAL>Pressure</QUAL>
-        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
-        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="bar" />
-        <COMP s="0" e="65535" f="0.01" o="0" />
+        <CVALUETYPE bl="16" bo="21" enc="uns" sig="0" df="hex" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="2" df="flt" sz="no" qty="atom">
+          <UNIT>bar</UNIT>
+        </PVALUETYPE>
+        <COMP f="1" o="0" div="100" />
       </LINCOMP>
-      <LINCOMP id="_dt0220">
+      <LINCOMP id="_dt0235">
         <NAME>
           <TUV xml:lang="en-US">Speed</TUV>
         </NAME>
         <QUAL>Speed</QUAL>
-        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
-        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="rpm" />
-        <COMP s="600" e="1200" f="1" o="0" />
+        <CVALUETYPE bl="16" bo="21" enc="uns" sig="0" df="hex" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="2" df="flt" sz="no" qty="atom">
+          <UNIT>rpm</UNIT>
+        </PVALUETYPE>
+        <COMP f="1" o="0" div="1" s="600" e="1200" />
       </LINCOMP>
-      <IDENT id="_dt0225">
+      <IDENT id="_dt0242">
         <NAME>
           <TUV xml:lang="en-US">Text8</TUV>
         </NAME>
@@ -50,7 +58,7 @@
         <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="8" maxsz="8" />
         <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
-      <TEXTTBL id="_dt0229">
+      <TEXTTBL id="_dt0248">
         <NAME>
           <TUV xml:lang="en-US">SessionTable</TUV>
         </NAME>
@@ -73,7 +81,7 @@
           </TEXT>
         </TEXTMAP>
       </TEXTTBL>
-      <IDENT id="_dt0233">
+      <IDENT id="_dt0254">
         <NAME>
           <TUV xml:lang="en-US">Text15</TUV>
         </NAME>
@@ -81,7 +89,7 @@
         <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="15" maxsz="15" />
         <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
-      <IDENT id="_dt0237">
+      <IDENT id="_dt0260">
         <NAME>
           <TUV xml:lang="en-US">Text11</TUV>
         </NAME>
@@ -89,7 +97,7 @@
         <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="11" maxsz="11" />
         <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
-      <IDENT id="_dt0241">
+      <IDENT id="_dt0266">
         <NAME>
           <TUV xml:lang="en-US">Text17</TUV>
         </NAME>
@@ -97,7 +105,7 @@
         <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="17" maxsz="17" />
         <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
-      <IDENT id="_dt0246">
+      <IDENT id="_dt0273">
         <NAME>
           <TUV xml:lang="en-US">Text9</TUV>
         </NAME>
@@ -105,23 +113,27 @@
         <CVALUETYPE bl="8" bo="21" enc="asc" sz="no" qty="field" minsz="9" maxsz="9" />
         <PVALUETYPE bl="8" bo="21" enc="asc" sz="no" />
       </IDENT>
-      <LINCOMP id="_dt0250">
+      <LINCOMP id="_dt0279">
         <NAME>
           <TUV xml:lang="en-US">Temperature</TUV>
         </NAME>
         <QUAL>Temperature</QUAL>
-        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
-        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="degC" />
-        <COMP s="0" e="65535" f="0.1" o="0" />
+        <CVALUETYPE bl="16" bo="21" enc="uns" sig="0" df="hex" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="2" df="flt" sz="no" qty="atom">
+          <UNIT>degC</UNIT>
+        </PVALUETYPE>
+        <COMP f="10" o="0" div="100" />
       </LINCOMP>
-      <LINCOMP id="_dt0254">
+      <LINCOMP id="_dt0285">
         <NAME>
           <TUV xml:lang="en-US">Pressure</TUV>
         </NAME>
         <QUAL>Pressure</QUAL>
-        <CVALUETYPE bl="16" bo="21" enc="uns" sz="no" qty="atom" />
-        <PVALUETYPE bl="64" bo="21" enc="flt" sz="no" qty="atom" unit="bar" />
-        <COMP s="0" e="65535" f="0.01" o="0" />
+        <CVALUETYPE bl="16" bo="21" enc="uns" sig="0" df="hex" sz="no" qty="atom" />
+        <PVALUETYPE bl="64" bo="21" enc="dbl" sig="2" df="flt" sz="no" qty="atom">
+          <UNIT>bar</UNIT>
+        </PVALUETYPE>
+        <COMP f="1" o="0" div="100" />
       </LINCOMP>
     </DATATYPES>
     <STATEGROUPS>
@@ -223,7 +235,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0034" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0034" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -245,7 +262,12 @@
             </NAME>
             <QUAL>Sub</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0043" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0043" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -261,7 +283,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0060" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0060" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -283,7 +310,12 @@
             </NAME>
             <QUAL>Sub</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0069" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0069" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -299,7 +331,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0084" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0084" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -315,7 +352,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0092" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0092" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -331,7 +373,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0100" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0100" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -347,7 +394,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0108" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0108" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -363,7 +415,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0116" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0116" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -379,7 +436,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0124" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0124" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -395,7 +457,12 @@
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <SIMPLEPROXYCOMP id="_pc0132" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0132" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -459,7 +526,12 @@
             </NAME>
             <QUAL>Sub</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0161" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0161" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -502,7 +574,12 @@
             </NAME>
             <QUAL>Key</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0184" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0184" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -525,111 +602,163 @@
             <QUAL>DID</QUAL>
           </STATICCOMP>
         </REQ>
-        <POS />
-      </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="_ps0197" func="1" phys="1">
-        <NAME>
-          <TUV xml:lang="en-US">WriteDataByIdentifier</TUV>
-        </NAME>
-        <QUAL>WriteDataByIdentifier</QUAL>
-        <REQ>
-          <CONSTCOMP id="_cc0198" bl="8" v="46">
+        <POS>
+          <CONSTCOMP id="_cc0197" bl="8" v="98">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <STATICCOMP id="_sc0199" bl="16">
+          <STATICCOMP id="_sc0198" bl="16">
             <NAME>
               <TUV xml:lang="en-US">DID</TUV>
             </NAME>
             <QUAL>DID</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0200" dest="data" />
-        </REQ>
-        <POS />
+          <SIMPLEPROXYCOMP id="_pc0199" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
+        </POS>
       </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="_ps0256" func="1" phys="1">
+      <PROTOCOLSERVICE id="_ps0200" func="1" phys="1">
+        <NAME>
+          <TUV xml:lang="en-US">WriteDataByIdentifier</TUV>
+        </NAME>
+        <QUAL>WriteDataByIdentifier</QUAL>
+        <REQ>
+          <CONSTCOMP id="_cc0201" bl="8" v="46">
+            <NAME>
+              <TUV xml:lang="en-US">Constant</TUV>
+            </NAME>
+            <QUAL>Constant</QUAL>
+          </CONSTCOMP>
+          <STATICCOMP id="_sc0202" bl="16">
+            <NAME>
+              <TUV xml:lang="en-US">DID</TUV>
+            </NAME>
+            <QUAL>DID</QUAL>
+          </STATICCOMP>
+          <SIMPLEPROXYCOMP id="_pc0203" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
+        </REQ>
+        <POS>
+          <CONSTCOMP id="_cc0204" bl="8" v="110">
+            <NAME>
+              <TUV xml:lang="en-US">Constant</TUV>
+            </NAME>
+            <QUAL>Constant</QUAL>
+          </CONSTCOMP>
+          <STATICCOMP id="_sc0205" bl="16">
+            <NAME>
+              <TUV xml:lang="en-US">DID</TUV>
+            </NAME>
+            <QUAL>DID</QUAL>
+          </STATICCOMP>
+        </POS>
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="_ps0287" func="1" phys="1">
         <NAME>
           <TUV xml:lang="en-US">StartRoutine</TUV>
         </NAME>
         <QUAL>StartRoutine</QUAL>
         <REQ>
-          <CONSTCOMP id="_cc0257" bl="8" v="49">
+          <CONSTCOMP id="_cc0288" bl="8" v="49">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <CONSTCOMP id="_cc0258" bl="8" v="1">
+          <CONSTCOMP id="_cc0289" bl="8" v="1">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <STATICCOMP id="_sc0259" bl="16">
+          <STATICCOMP id="_sc0290" bl="16">
             <NAME>
               <TUV xml:lang="en-US">RID</TUV>
             </NAME>
             <QUAL>RID</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0260" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0291" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="_ps0261" func="1" phys="1">
+      <PROTOCOLSERVICE id="_ps0292" func="1" phys="1">
         <NAME>
           <TUV xml:lang="en-US">StopRoutine</TUV>
         </NAME>
         <QUAL>StopRoutine</QUAL>
         <REQ>
-          <CONSTCOMP id="_cc0262" bl="8" v="49">
+          <CONSTCOMP id="_cc0293" bl="8" v="49">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <CONSTCOMP id="_cc0263" bl="8" v="2">
+          <CONSTCOMP id="_cc0294" bl="8" v="2">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <STATICCOMP id="_sc0264" bl="16">
+          <STATICCOMP id="_sc0295" bl="16">
             <NAME>
               <TUV xml:lang="en-US">RID</TUV>
             </NAME>
             <QUAL>RID</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0265" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0296" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
-      <PROTOCOLSERVICE id="_ps0266" func="1" phys="1">
+      <PROTOCOLSERVICE id="_ps0297" func="1" phys="1">
         <NAME>
           <TUV xml:lang="en-US">ResultsRoutine</TUV>
         </NAME>
         <QUAL>ResultsRoutine</QUAL>
         <REQ>
-          <CONSTCOMP id="_cc0267" bl="8" v="49">
+          <CONSTCOMP id="_cc0298" bl="8" v="49">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <CONSTCOMP id="_cc0268" bl="8" v="3">
+          <CONSTCOMP id="_cc0299" bl="8" v="3">
             <NAME>
               <TUV xml:lang="en-US">Constant</TUV>
             </NAME>
             <QUAL>Constant</QUAL>
           </CONSTCOMP>
-          <STATICCOMP id="_sc0269" bl="16">
+          <STATICCOMP id="_sc0300" bl="16">
             <NAME>
               <TUV xml:lang="en-US">RID</TUV>
             </NAME>
             <QUAL>RID</QUAL>
           </STATICCOMP>
-          <SIMPLEPROXYCOMP id="_pc0270" dest="data" />
+          <SIMPLEPROXYCOMP id="_pc0301" dest="data">
+            <NAME>
+              <TUV xml:lang="en-US">Data</TUV>
+            </NAME>
+            <QUAL>Data</QUAL>
+          </SIMPLEPROXYCOMP>
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
@@ -908,59 +1037,75 @@
           <QUAL>SendKey</QUAL>
         </DCLSRVTMPL>
       </DCLTMPL>
-      <DCLTMPL id="_ct0201">
+      <DCLTMPL id="_ct0206">
         <NAME>
           <TUV xml:lang="en-US">DataIdentifier</TUV>
         </NAME>
         <QUAL>DataIdentifier</QUAL>
-        <SHSTATIC id="_sh0202">
+        <SHSTATIC id="_sh0207">
           <NAME>
             <TUV xml:lang="en-US">DID</TUV>
           </NAME>
           <QUAL>DID</QUAL>
           <STATICCOMPREF idref="_sc0196" />
-          <STATICCOMPREF idref="_sc0199" />
+          <STATICCOMPREF idref="_sc0198" />
+          <STATICCOMPREF idref="_sc0202" />
+          <STATICCOMPREF idref="_sc0205" />
         </SHSTATIC>
-        <DCLSRVTMPL id="_tt0203" tmplref="_ps0194">
+        <SHPROXY id="_sp0208" dest="data">
+          <NAME>
+            <TUV xml:lang="en-US">DATA</TUV>
+          </NAME>
+          <QUAL>DATA</QUAL>
+          <PROXYCOMPREF idref="_pc0199" />
+          <PROXYCOMPREF idref="_pc0203" />
+        </SHPROXY>
+        <SHPROXY id="_sp0209" dest="resCode">
+          <NAME>
+            <TUV xml:lang="en-US">RC</TUV>
+          </NAME>
+          <QUAL>RC</QUAL>
+        </SHPROXY>
+        <DCLSRVTMPL id="_tt0210" tmplref="_ps0194">
           <NAME>
             <TUV xml:lang="en-US">Read</TUV>
           </NAME>
           <QUAL>Read</QUAL>
         </DCLSRVTMPL>
-        <DCLSRVTMPL id="_tt0204" tmplref="_ps0197">
+        <DCLSRVTMPL id="_tt0211" tmplref="_ps0200">
           <NAME>
             <TUV xml:lang="en-US">Write</TUV>
           </NAME>
           <QUAL>Write</QUAL>
         </DCLSRVTMPL>
       </DCLTMPL>
-      <DCLTMPL id="_ct0271">
+      <DCLTMPL id="_ct0302">
         <NAME>
           <TUV xml:lang="en-US">Routine</TUV>
         </NAME>
         <QUAL>Routine</QUAL>
-        <SHSTATIC id="_sh0272">
+        <SHSTATIC id="_sh0303">
           <NAME>
             <TUV xml:lang="en-US">RID</TUV>
           </NAME>
           <QUAL>RID</QUAL>
-          <STATICCOMPREF idref="_sc0259" />
-          <STATICCOMPREF idref="_sc0264" />
-          <STATICCOMPREF idref="_sc0269" />
+          <STATICCOMPREF idref="_sc0290" />
+          <STATICCOMPREF idref="_sc0295" />
+          <STATICCOMPREF idref="_sc0300" />
         </SHSTATIC>
-        <DCLSRVTMPL id="_tt0273" tmplref="_ps0256">
+        <DCLSRVTMPL id="_tt0304" tmplref="_ps0287">
           <NAME>
             <TUV xml:lang="en-US">Start</TUV>
           </NAME>
           <QUAL>Start</QUAL>
         </DCLSRVTMPL>
-        <DCLSRVTMPL id="_tt0274" tmplref="_ps0261">
+        <DCLSRVTMPL id="_tt0305" tmplref="_ps0292">
           <NAME>
             <TUV xml:lang="en-US">Stop</TUV>
           </NAME>
           <QUAL>Stop</QUAL>
         </DCLSRVTMPL>
-        <DCLSRVTMPL id="_tt0275" tmplref="_ps0266">
+        <DCLSRVTMPL id="_tt0306" tmplref="_ps0297">
           <NAME>
             <TUV xml:lang="en-US">Results</TUV>
           </NAME>
@@ -1337,202 +1482,430 @@
             <SERVICE id="_sv0193" tmplref="_tt0189" mayBeExec="(2,3,4,5)" trans="(4,5,5,5)" />
           </DIAGINST>
         </DIAGCLASS>
-        <DIAGCLASS id="_dc0205" tmplref="_ct0201">
+        <DIAGCLASS id="_dc0212" tmplref="_ct0206">
           <NAME>
             <TUV xml:lang="en-US">DataIdentifiers</TUV>
           </NAME>
           <QUAL>DataIdentifiers</QUAL>
-          <DIAGINST id="_di0206">
+          <DIAGINST id="_di0213">
             <NAME>
               <TUV xml:lang="en-US">Uptime</TUV>
             </NAME>
             <QUAL>Uptime</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="256" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0207" dtref="_dt0208">
+            <STATICVALUE shstaticref="_sh0207" v="256" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0214" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0215">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0216" spec="no" dtref="_dt0217">
                 <QUAL>Seconds</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0209" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0218" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0210">
+          <DIAGINST id="_di0219">
             <NAME>
               <TUV xml:lang="en-US">Temperature</TUV>
             </NAME>
             <QUAL>Temperature</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="257" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0211" dtref="_dt0212">
+            <STATICVALUE shstaticref="_sh0207" v="257" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0220" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0221">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0222" spec="no" dtref="_dt0223">
                 <QUAL>Temperature</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0213" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0224" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0214">
+          <DIAGINST id="_di0225">
             <NAME>
               <TUV xml:lang="en-US">Pressure</TUV>
             </NAME>
             <QUAL>Pressure</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="258" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0215" dtref="_dt0216">
+            <STATICVALUE shstaticref="_sh0207" v="258" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0226" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0227">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0228" spec="no" dtref="_dt0229">
                 <QUAL>Pressure</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0217" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0230" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0218">
+          <DIAGINST id="_di0231">
             <NAME>
               <TUV xml:lang="en-US">IdleSpeedTarget</TUV>
             </NAME>
             <QUAL>IdleSpeedTarget</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="272" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0219" dtref="_dt0220">
+            <STATICVALUE shstaticref="_sh0207" v="272" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0232" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0233">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0234" spec="no" dtref="_dt0235">
                 <QUAL>Speed</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0221" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
-            <SERVICE id="_sv0222" tmplref="_tt0204" mayBeExec="(2,3,5)" />
+            <SERVICE id="_sv0236" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0237" tmplref="_tt0211" mayBeExec="(2,3,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0223">
+          <DIAGINST id="_di0238">
             <NAME>
               <TUV xml:lang="en-US">CalibrationId</TUV>
             </NAME>
             <QUAL>CalibrationId</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="512" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0224" dtref="_dt0225">
+            <STATICVALUE shstaticref="_sh0207" v="512" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0239" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0240">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0241" spec="no" dtref="_dt0242">
                 <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0226" tmplref="_tt0203" mayBeExec="(3,5)" />
+            <SERVICE id="_sv0243" tmplref="_tt0210" mayBeExec="(3,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0227">
+          <DIAGINST id="_di0244">
             <NAME>
               <TUV xml:lang="en-US">ActiveDiagnosticSession</TUV>
             </NAME>
             <QUAL>ActiveDiagnosticSession</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61830" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0228" dtref="_dt0229">
+            <STATICVALUE shstaticref="_sh0207" v="61830" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0245" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0246">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0247" spec="no" dtref="_dt0248">
                 <QUAL>Session</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0230" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0249" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0231">
+          <DIAGINST id="_di0250">
             <NAME>
               <TUV xml:lang="en-US">SparePartNumber</TUV>
             </NAME>
             <QUAL>SparePartNumber</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61831" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0232" dtref="_dt0233">
+            <STATICVALUE shstaticref="_sh0207" v="61831" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0251" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0252">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0253" spec="no" dtref="_dt0254">
                 <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0234" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0255" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0235">
+          <DIAGINST id="_di0256">
             <NAME>
               <TUV xml:lang="en-US">ECUSerialNumber</TUV>
             </NAME>
             <QUAL>ECUSerialNumber</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61836" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0236" dtref="_dt0237">
+            <STATICVALUE shstaticref="_sh0207" v="61836" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0257" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0258">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0259" spec="no" dtref="_dt0260">
                 <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0238" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0261" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0239">
+          <DIAGINST id="_di0262">
             <NAME>
               <TUV xml:lang="en-US">VIN</TUV>
             </NAME>
             <QUAL>VIN</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61840" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0240" dtref="_dt0241">
+            <STATICVALUE shstaticref="_sh0207" v="61840" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0263" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0264">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0265" spec="no" dtref="_dt0266">
                 <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0242" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
-            <SERVICE id="_sv0243" tmplref="_tt0204" mayBeExec="(2,3,5)" />
+            <SERVICE id="_sv0267" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0268" tmplref="_tt0211" mayBeExec="(2,3,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0244">
+          <DIAGINST id="_di0269">
             <NAME>
               <TUV xml:lang="en-US">SoftwareVersion</TUV>
             </NAME>
             <QUAL>SoftwareVersion</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61845" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0245" dtref="_dt0246">
+            <STATICVALUE shstaticref="_sh0207" v="61845" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0270" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0271">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0272" spec="no" dtref="_dt0273">
                 <QUAL>Text</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0247" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0274" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0248">
+          <DIAGINST id="_di0275">
             <NAME>
               <TUV xml:lang="en-US">PeriodicTemperature</TUV>
             </NAME>
             <QUAL>PeriodicTemperature</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61953" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0249" dtref="_dt0250">
+            <STATICVALUE shstaticref="_sh0207" v="61953" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0276" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0277">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0278" spec="no" dtref="_dt0279">
                 <QUAL>Temperature</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0251" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0280" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0252">
+          <DIAGINST id="_di0281">
             <NAME>
               <TUV xml:lang="en-US">PeriodicPressure</TUV>
             </NAME>
             <QUAL>PeriodicPressure</QUAL>
-            <STATICVALUE shstaticref="_sh0202" v="61954" />
-            <SIMPLECOMPCONT>
-              <DATAOBJ id="_do0253" dtref="_dt0254">
+            <STATICVALUE shstaticref="_sh0207" v="61954" />
+            <SIMPLECOMPCONT shproxyref="_sp0209">
+              <SPECDATAOBJ id="_do0282" spec="rc">
+                <QUAL>NRC</QUAL>
+                <TEXTTBL id="_dt0283">
+                  <QUAL>LocalTable</QUAL>
+                  <CVALUETYPE bl="8" bo="21" enc="uns" sz="no" qty="atom" />
+                  <TEXTMAP s="19" e="19">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Incorrect message length or invalid format</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                  <TEXTMAP s="49" e="49">
+                    <TEXT>
+                      <TUV xml:lang="en-US">Request out of range</TUV>
+                    </TEXT>
+                  </TEXTMAP>
+                </TEXTTBL>
+              </SPECDATAOBJ>
+            </SIMPLECOMPCONT>
+            <SIMPLECOMPCONT shproxyref="_sp0208">
+              <DATAOBJ id="_do0284" spec="no" dtref="_dt0285">
                 <QUAL>Pressure</QUAL>
               </DATAOBJ>
             </SIMPLECOMPCONT>
-            <SERVICE id="_sv0255" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
+            <SERVICE id="_sv0286" tmplref="_tt0210" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
         </DIAGCLASS>
-        <DIAGCLASS id="_dc0276" tmplref="_ct0271">
+        <DIAGCLASS id="_dc0307" tmplref="_ct0302">
           <NAME>
             <TUV xml:lang="en-US">Routines</TUV>
           </NAME>
           <QUAL>Routines</QUAL>
-          <DIAGINST id="_di0277">
+          <DIAGINST id="_di0308">
             <NAME>
               <TUV xml:lang="en-US">SelfTest</TUV>
             </NAME>
             <QUAL>SelfTest</QUAL>
-            <STATICVALUE shstaticref="_sh0272" v="513" />
-            <SERVICE id="_sv0278" tmplref="_tt0273" mayBeExec="(3,4,5)" />
-            <SERVICE id="_sv0279" tmplref="_tt0274" mayBeExec="(3,4,5)" />
-            <SERVICE id="_sv0280" tmplref="_tt0275" mayBeExec="(3,4,5)" />
+            <STATICVALUE shstaticref="_sh0303" v="513" />
+            <SERVICE id="_sv0309" tmplref="_tt0304" mayBeExec="(3,4,5)" />
+            <SERVICE id="_sv0310" tmplref="_tt0305" mayBeExec="(3,4,5)" />
+            <SERVICE id="_sv0311" tmplref="_tt0306" mayBeExec="(3,4,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0281">
+          <DIAGINST id="_di0312">
             <NAME>
               <TUV xml:lang="en-US">EraseMemory</TUV>
             </NAME>
             <QUAL>EraseMemory</QUAL>
-            <STATICVALUE shstaticref="_sh0272" v="65280" />
-            <SERVICE id="_sv0282" tmplref="_tt0273" mayBeExec="(2,5)" />
-            <SERVICE id="_sv0283" tmplref="_tt0275" mayBeExec="(2,5)" />
+            <STATICVALUE shstaticref="_sh0303" v="65280" />
+            <SERVICE id="_sv0313" tmplref="_tt0304" mayBeExec="(2,5)" />
+            <SERVICE id="_sv0314" tmplref="_tt0306" mayBeExec="(2,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0284">
+          <DIAGINST id="_di0315">
             <NAME>
               <TUV xml:lang="en-US">CheckProgrammingDependencies</TUV>
             </NAME>
             <QUAL>CheckProgrammingDependencies</QUAL>
-            <STATICVALUE shstaticref="_sh0272" v="65281" />
-            <SERVICE id="_sv0285" tmplref="_tt0273" mayBeExec="(2,5)" />
-            <SERVICE id="_sv0286" tmplref="_tt0275" mayBeExec="(2,5)" />
+            <STATICVALUE shstaticref="_sh0303" v="65281" />
+            <SERVICE id="_sv0316" tmplref="_tt0304" mayBeExec="(2,5)" />
+            <SERVICE id="_sv0317" tmplref="_tt0306" mayBeExec="(2,5)" />
           </DIAGINST>
         </DIAGCLASS>
       </VAR>
