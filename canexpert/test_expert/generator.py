@@ -23,6 +23,7 @@ from canexpert.test_expert.description import DEFAULT_SESSION, ISO_SERVICES, SUB
 from canexpert.test_expert.modules import GROUP_PREFIX
 from canexpert.test_expert.policy import NrcPolicy, nrc_text
 from canexpert.test_expert.sequences import LABELS, SequenceRunner, due
+from canexpert.test_expert.transport import TransportTests
 from canexpert.testing.runner import BLOCKED, ERROR, FAILED, PASSED, SKIPPED, TestCase, TestModule, call_hook
 from canexpert.uds.client import UdsFunctions
 from canexpert.uds.observer import SERVICE_NAMES
@@ -62,6 +63,7 @@ class Options:
     s3_test: bool = True          # the session ends after S3 without requests, and TesterPresent keeps it
     s3_seconds: float = 5.0       # S3server (ISO 14229-2: 5 s)
     start_routines: str = ""      # routines that may be started: "0201; FF00: 44 00 01 00 00 00 00 00 04"
+    transport: bool = True        # the transport layer's tests (ISO 15765-2): a few seconds of waiting
 
 
 def parse_routine_starts(text: str) -> dict:
@@ -494,6 +496,8 @@ class Suite:
         self._reset()
         self._functional()
         self._timing()
+        if self.o.transport:
+            TransportTests(self).add()
         self._s3()
         self._modules()
 

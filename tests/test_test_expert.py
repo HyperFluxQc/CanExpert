@@ -2,7 +2,8 @@
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
 post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
 the ECU has, comparing two runs, test plans and their run from the command line, a description's variants and
-telling which one the ECU is, CAN Expert's test modules run with the generated tests, and the window."""
+telling which one the ECU is, CAN Expert's test modules run with the generated tests, the transport layer's tests,
+and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -43,6 +44,8 @@ from canexpert.test_expert.policy import Deviation, NrcPolicy, accept_function, 
 from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
                                              parse_frame, parse_hex, parse_script)
 from canexpert.test_expert.tester import Tester
+from canexpert.test_expert.transport import GROUP as TRANSPORT_GROUP
+from canexpert.test_expert.transport import Frame, Link, gap, st_min_seconds, valid_st_min
 from canexpert.test_expert.variants import Identification, identify, is_odx
 from canexpert.testing.runner import Runner
 from canexpert.testing.window import MemorySettings
@@ -621,6 +624,99 @@ class ModulesTest(unittest.TestCase):
         self.assertIn("Running 6 tests", printed)
         self.assertIn("PASSED   Module: Dummy ECU checks: Engine data is broadcast with a plausible temperature",
                       printed)
+
+
+def transport_names(suite):
+    return [case.name for case in suite.groups()[TRANSPORT_GROUP]]
+
+
+class TransportTest(unittest.TestCase):
+    """ISO 15765-2: the ECU taking segmented requests and sending segmented answers."""
+
+    def run_on(self, test_config, transport=None, description=None):
+        bench = Bench(self, test_config)
+        suite = Suite(description or dummy_description(test_config), Options(key=key, s3_test=False))
+        suite.tester = Tester(bench.tester_bus, transport or TRANSPORT, 0x7DF)
+        names = transport_names(suite)
+        return names, Runner(suite.module(names), send=suite.tester.send_frame).run(names)
+
+    def test_the_dummy_ecu_keeps_the_rules(self):
+        names, report = self.run_on(EcuConfig(broadcast_interval=0))
+        self.assertEqual(len(names), 12)
+        self.assertEqual(report.verdict, "passed", failures(report))
+        self.assertIn("transport_layer_iso_15765_2.a_new_request_during_a_segmented_one", names)
+
+    def test_extended_addressing_no_padding_and_no_block_limit(self):
+        config = EcuConfig(broadcast_interval=0, address_byte=0x55, padding=None, block_size=0, st_min=0)
+        transport = {**TRANSPORT, "address_byte": 0x55, "padding": None}
+        names, report = self.run_on(config, transport)
+        self.assertEqual(report.verdict, "passed", failures(report))
+
+    def test_an_ecu_that_ignores_flow_control_is_found(self):
+        from canexpert.simulator import ecu as ecu_module
+        from canexpert.uds import isotp
+
+        def careless(bus, request_id, payload, response_id, extended=False, address_byte=None, padding=None):
+            """Every frame at once, whatever the tester's flow control says."""
+            payload = bytes(payload)
+            if len(payload) <= 7:
+                return isotp.isotp_send(bus, request_id, payload, response_id, extended, address_byte, padding)
+            first, rest = payload[:6], payload[6:]
+            isotp._send_frame(bus, request_id, bytes([0x10 | len(payload) >> 8, len(payload) & 0xFF]) + first,
+                              extended, address_byte, padding)
+            for number, offset in enumerate(range(0, len(rest), 7)):
+                isotp._send_frame(bus, request_id, bytes([0x20 | (number + 1) & 0x0F]) + rest[offset:offset + 7],
+                                  extended, address_byte, padding)
+        with patch.object(ecu_module, "isotp_send", careless):
+            names, report = self.run_on(EcuConfig(broadcast_interval=0))
+        verdicts = {case.title.split(": ", 1)[1]: case.verdict for case in report.cases}
+        for title in ("The tester's block size", "The tester's STmin", "A flow control WAIT",
+                      "A flow control overflow", "A reserved flow status", "No flow control"):
+            self.assertEqual(verdicts[title], "failed", title)
+        self.assertEqual(verdicts["A segmented request: flow control and answer"], "passed", "it takes requests well")
+
+    def test_a_reserved_stmin_is_found(self):
+        from canexpert.simulator import ecu as ecu_module
+        with patch.object(ecu_module.DummyEcu, "_continue_to_send",
+                          lambda ecu: ecu._send_frame(b"\x30\x00\x80")):
+            names, report = self.run_on(EcuConfig(broadcast_interval=0))
+        case = next(case for case in report.cases if case.title.endswith("A segmented request: flow control and answer"))
+        self.assertEqual(case.verdict, "failed")
+        self.assertIn("its STmin (80) is not a reserved value", [step.description for step in case.failures()])
+
+    def test_what_the_description_allows(self):
+        description = dummy_description()
+        self.assertNotIn(TRANSPORT_GROUP, Suite(description, Options(transport=False)).groups())
+        for did in list(description.dids):
+            if (description.dids[did].length or 0) >= 11:
+                del description.dids[did]
+        titles = [case.title.split(": ", 1)[1] for case in Suite(description).groups()[TRANSPORT_GROUP]]
+        self.assertEqual(len(titles), 6, "no DID answered in several frames: the ECU is not tried as a sender")
+        self.assertNotIn("No flow control", titles)
+        description.services.pop(0x22)
+        self.assertEqual(TransportTestsRequest(description), b"\x3e\x00" + bytes(7),
+                         "without a DID to read: a TesterPresent too long (answered 0x13)")
+
+    def test_frames_and_their_timing(self):
+        self.assertEqual([valid_st_min(value) for value in (0x00, 0x7F, 0x80, 0xF0, 0xF1, 0xF9, 0xFA, 0xFF)],
+                         [True, True, False, False, True, True, False, False])
+        self.assertEqual([st_min_seconds(value) for value in (0x32, 0xF5, 0x90)], [0.05, 0.0005, 0.127])
+        earlier, later = Frame(b"\x21", 1.000, 100.000, 8), Frame(b"\x22", 1.040, 100.050, 8)
+        self.assertAlmostEqual(gap(earlier, later), 0.050, msg="the longer of the two clocks")
+        self.assertAlmostEqual(gap(Frame(b"\x21", 1.0, 0.0, 8), Frame(b"\x22", 1.03, 0.0, 8)), 0.03)
+        link = Link(SimpleNamespace(transport=TRANSPORT, bus=None, functional_id=0x7DF))
+        first, consecutive = link.segments(bytes(range(1, 21)))
+        self.assertEqual(first, bytes([0x10, 20, 1, 2, 3, 4, 5, 6]))
+        self.assertEqual([frame[0] for frame in consecutive], [0x21, 0x22])
+        self.assertEqual(consecutive[1], bytes([0x22, 14, 15, 16, 17, 18, 19, 20]))
+        extended = Link(SimpleNamespace(transport={**TRANSPORT, "address_byte": 0x55}, bus=None, functional_id=None))
+        self.assertEqual(extended.room, 6)
+        self.assertEqual(extended.segments(bytes(8))[0], bytes([0x10, 8]) + bytes(5))
+
+
+def TransportTestsRequest(description):
+    from canexpert.test_expert.transport import TransportTests
+    return TransportTests(Suite(description, Options(transport=False))).request
 
 
 class Bench:

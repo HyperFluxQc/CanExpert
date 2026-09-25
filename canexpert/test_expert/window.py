@@ -510,10 +510,14 @@ class TestExpertWindow(QMainWindow):
         self.s3_test = QCheckBox("S3 session timeout")
         self.s3_test.setChecked(True)
         self.s3_test.setToolTip("A session ends after S3 without requests, and TesterPresent keeps it (a few seconds)")
+        self.transport = QCheckBox("Transport layer (ISO 15765-2)")
+        self.transport.setChecked(True)
+        self.transport.setToolTip("Segmented requests and answers: flow control, sequence numbers, N_Cr and N_Bs, "
+                                  "frames to ignore (a few seconds)")
         self.record = QCheckBox("Record the traffic (.blf)")
-        for box in (self.destructive, self.lockout, self.functional, self.s3_test):
+        for box in (self.destructive, self.lockout, self.functional, self.s3_test, self.transport):
             box.toggled.connect(lambda _on: self.rebuild_tests())
-        for box in (self.destructive, self.lockout, self.functional, self.s3_test, self.record):
+        for box in (self.destructive, self.lockout, self.functional, self.s3_test, self.transport, self.record):
             form.addRow("", box)
         self.attempts = QSpinBox()
         self.attempts.setRange(1, 20)
@@ -754,7 +758,8 @@ class TestExpertWindow(QMainWindow):
                         "functional": self.functional.isChecked(), "timing_margin_ms": self.margin.value(),
                         "reset_time": self.reset_time.value(), "attempts": self.attempts.value(),
                         "lockout_seconds": self.lockout_seconds.value(), "s3_test": self.s3_test.isChecked(),
-                        "s3_seconds": self.s3_seconds.value(), "start_routines": self._routine_starts()}
+                        "s3_seconds": self.s3_seconds.value(), "start_routines": self._routine_starts(),
+                        "transport": self.transport.isChecked()}
         plan.options = {**options_dict(Options()), **plan.options}
         dll = self.dll_edit.text().strip()
         plan.key = KeySource("dll" if self.key_source.currentIndex() == 1 else "xor", self.mask.value(),
@@ -795,9 +800,10 @@ class TestExpertWindow(QMainWindow):
         self.reset_time.setValue(float(options.get("reset_time", 1.0)))
         self.attempts.setValue(int(options.get("attempts", 3)))
         self.lockout_seconds.setValue(float(options.get("lockout_seconds", 10.0)))
-        self.s3_test.blockSignals(True)
-        self.s3_test.setChecked(bool(options.get("s3_test", True)))
-        self.s3_test.blockSignals(False)
+        for box, name in ((self.s3_test, "s3_test"), (self.transport, "transport")):
+            box.blockSignals(True)
+            box.setChecked(bool(options.get(name, True)))
+            box.blockSignals(False)
         self.s3_seconds.setValue(float(options.get("s3_seconds", 5.0)))
         self.start_routines.setText(str(options.get("start_routines", "") or ""))
         self.key_source.setCurrentIndex(1 if plan.key.kind == "dll" else 0)

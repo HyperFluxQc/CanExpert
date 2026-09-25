@@ -133,6 +133,37 @@ class DummyEcuTest(unittest.TestCase):
         with self.assertRaisesRegex(IsoTpError, "overflow"):                    # longer than maxNumberOfBlockLength
             self.request(bytes([0x36, 0x01]) + bytes(0x402))
 
+    def test_a_single_frame_replaces_a_segmented_request(self):
+        logs = []
+        self.ecu.log = logs.append
+        self.mailbox.clear()
+        request = b"\x22\xf1\x90\xf1\x87\xf1\x95\xf1\x8c"                      # a first frame and a consecutive frame
+        self.app_bus.send(can.Message(arbitration_id=PHYSICAL, data=b"\x10\x09" + request[:6], is_extended_id=False))
+        time.sleep(0.1)
+        self.assertEqual(self.request([0x3E, 0x00]), b"\x7E\x00")
+        self.mailbox.clear()
+        self.app_bus.send(can.Message(arbitration_id=PHYSICAL, data=b"\x21" + request[6:] + bytes(4),
+                                      is_extended_id=False))
+        time.sleep(0.3)
+        answers = [bytes(frame.data) for frame in self.mailbox.messages.queue if frame.arbitration_id == RESPONSE]
+        self.assertEqual(answers, [], "the rest of the dropped request is not taken")
+        self.assertIn("ISO-TP: a single frame during a segmented request; that request dropped", logs)
+
+    def test_a_segmented_answer_the_tester_stops(self):
+        logs = []
+        self.ecu.log = logs.append
+        for status, why in ((0x32, "the tester's flow control says overflow"),
+                            (0x33, "the tester's flow control has a reserved flow status")):
+            self.mailbox.clear()
+            self.app_bus.send(can.Message(arbitration_id=PHYSICAL, data=b"\x03\x22\xf1\x90", is_extended_id=False))
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and not any(frame.data[0] == 0x10 for frame in self.mailbox.messages.queue):
+                time.sleep(0.01)
+            self.app_bus.send(can.Message(arbitration_id=PHYSICAL, data=bytes([status, 0, 0]), is_extended_id=False))
+            time.sleep(0.1)
+            self.assertIn(f"ISO-TP: response stopped: {why}", logs)
+        self.assertEqual(self.request([0x3E, 0x00]), b"\x7E\x00", "it answers again")
+
     def unlock(self, key_mask=0xA5, level=0x01):
         self.assertEqual(self.request([0x10, 0x03])[:2], b"\x50\x03")
         self.assertEqual(self.request([0x10, 0x02])[:2], b"\x50\x02")

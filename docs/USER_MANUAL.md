@@ -806,6 +806,7 @@ The tests are grouped as DiVa groups them; untick any you do not want.
 | Communication | CommunicationControl and ControlDTCSetting answered, silent with the suppress bit, put back |
 | Functional addressing | functional requests answered; 0x11, 0x12 and 0x31 not sent to them (ISO 14229-1 7.5) |
 | Timing | responses within the P2 the ECU announces, plus the margin; **S3** — a session ends after S3 without requests, and TesterPresent keeps it; with every step, a **response pending** (0x78) within P2, the next ones within P2*, the answer within P2* of the last |
+| Transport layer (ISO 15765-2) | a segmented request: the ECU's flow control within N_Bs (ContinueToSend, a valid STmin) and the whole request answered; a consecutive frame out of sequence or after N_Cr ends the request; a single frame in the middle of a segmented request replaces it; frames to ignore — consecutive frames and flow controls out of the blue, single frames of length 0 or longer than their frame, a first frame of a length a single frame carries, a functional first frame; a first frame of 4095 bytes gets ContinueToSend or Overflow. When a DID is answered in several frames, the ECU as the sender: it keeps to a block size of 1 and an STmin of 50 ms, waits after a flow control WAIT, stops on Overflow, on a reserved flow status and without a flow control |
 
 On the **Settings** tab:
 
@@ -820,6 +821,8 @@ On the **Settings** tab:
 - **Functional requests**, **Record the traffic** (a `.blf` of the run), the **ECU reset time** and the
   **margin over P2** (and P2*).
 - **S3 session timeout**: the two S3 tests, with **S3** (5 s by ISO 14229-2) — they take a few seconds.
+- **Transport layer (ISO 15765-2)**: its tests send their own frames on the request identifier, with the
+  plan's padding; waiting past N_Cr and N_Bs, they take a few seconds.
 - **Routines to start**: the routines a run may start — `0201`, or with an option record `FF00: 44 00 01 00 00
   00 00 00 04` — separated by `;`. A routine is never started otherwise.
 

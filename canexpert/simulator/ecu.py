@@ -34,7 +34,8 @@ What it simulates (each value is a setting in the window, or in a profile saved 
   with the accepted data and address/length formats, maxNumberOfBlockLength, full blocks and memory
   ranges; an application left invalid by a failed flash keeps the ECU in its bootloader after a reset
 - ISO-TP flow control on segmented requests: block size and STmin, optional WAIT frames, overflow for
-  requests longer than the receive buffer
+  requests longer than the receive buffer; a single frame in the middle of a segmented request replaces it,
+  and a segmented response stops on the tester's overflow, a reserved flow status or no flow control
 - Application frames: the messages of a DBC, each signal driven by a generator (signals.py) - by default
   0x300 temperature/pressure and 0x301 status; commands on 0x200/0x201
 """
@@ -118,6 +119,11 @@ MAX_PERIODIC = 16                     # periodic identifiers scheduled at once
 MAX_EVENTS = 8                        # ResponseOnEvent events set up at once
 EVENT_CHECK_INTERVAL = 0.1            # how often DIDs are compared for onChangeOfDataIdentifier
 STALL_SECONDS = N_CR_TIMEOUT + 0.2    # a consecutive frame held back past the tester's N_Cr
+# Why a segmented response stops, as the ECU says it (ISO 15765-2: the sender aborts).
+RESPONSE_STOPPED = {"no_flow_control": "no flow control from the tester within N_Bs",
+                    "too_many_waits": "the tester kept sending flow control WAIT",
+                    "overflow": "the tester's flow control says overflow",
+                    "invalid_status": "the tester's flow control has a reserved flow status"}
 ERROR_KINDS = ("error_refuse", "error_no_answer", "error_wrong_id", "error_drop_frame", "error_wrong_sequence",
                "error_stall")
 # Services whose sub-function byte carries suppressPosRspMsgIndicationBit.
@@ -567,9 +573,12 @@ class DummyEcu:
             isotp_send(io, self.config.response_id, payload, self.config.request_id,
                        self.config.extended_ids, self.config.address_byte, self.config.padding)
         except IsoTpError as exc:
-            if io is self._io:
+            if io is not self._io:
+                self.log(f"The tester did not take the response that went wrong on purpose: {exc}")
+            elif exc.reason in RESPONSE_STOPPED:
+                self.log(f"ISO-TP: response stopped: {RESPONSE_STOPPED[exc.reason]}")
+            else:
                 raise
-            self.log(f"The tester did not take the response that went wrong on purpose: {exc}")
 
     def on_message(self, message: can.Message):
         if message.is_error_frame or message.is_remote_frame:
@@ -588,6 +597,9 @@ class DummyEcu:
         if kind == 0x0:
             length = data[0] & 0x0F
             if 0 < length <= len(data) - 1:
+                if not functional and self._rx is not None:     # ISO 15765-2: N_UNEXP_PDU, the new one counts
+                    self.log("ISO-TP: a single frame during a segmented request; that request dropped")
+                    self._rx = None
                 self._handle(data[1:1 + length], functional)
         elif kind == 0x1 and not functional:  # segmented requests are physical only
             first = parse_first_frame(data, 7 - (self.config.address_byte is not None))
