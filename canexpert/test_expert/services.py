@@ -2,17 +2,23 @@
 The services a description only lets TestExpert see answer, taken further: a download out of order, while
 locked or of a format the ECU does not take - and, where the plan names one, a download started and refused
 again; memory read, and written back, where the plan names it; periodic data sent and stopped; a
-ResponseOnEvent that fires on a DID that changes; CommunicationControl stopping the ECU's own frames.
+ResponseOnEvent that fires on a DID that changes; CommunicationControl stopping the ECU's own frames; the DIDs
+the description gives InputOutputControl, controlled and given back; the DTCs the ECU supports and reports
+against the description's.
 """
 from __future__ import annotations
 
 import time
 from collections import Counter
 
+from canexpert.odx_services import dtc_display
 from canexpert.test_expert.transport import Link
 
 TRANSFER, MEMORY, PERIODIC, EVENTS, COMMUNICATION = ("Download and upload", "Memory by address", "Periodic data",
                                                      "ResponseOnEvent", "Communication")
+IO_CONTROL, FAULT_MEMORY = "Input/output control", "Fault memory"
+IO_DIDS = 4                         # the IO DIDs tested, at most
+RETURN_CONTROL, SHORT_TERM = 0x00, 0x03     # inputOutputControlParameters
 ADDRESS_FORMAT = 0x44               # addressAndLengthFormatIdentifier: a 4-byte address, a 4-byte size
 PROBE_RANGE = (0x00000000, 0x10)    # where a request that must be refused before its address is looked at points
 PERIODIC_FAST = 0x03                # transmissionMode sendAtFastRate
@@ -108,6 +114,22 @@ class ServiceTests:
                 add(EVENTS, "An event on a DID that changes", self.events_fire,
                     "onChangeOfDataIdentifier on a DID whose value changes by itself: once started, the ECU sends "
                     "the DID's ReadDataByIdentifier answer unasked; then stopped and cleared.")
+        io = [did for did in sorted(d.dids) if d.dids[did].io is not None][:IO_DIDS]
+        if self._reachable(0x2F) and io:
+            plain = next((did for did in sorted(d.dids) if d.dids[did].io is None and d.dids[did].read is not None
+                          and not d.dids[did].read.levels), None)
+            if plain is not None:
+                add(IO_CONTROL, f"IO control of {plain:04X}, which has none", lambda t, did=plain: self.io_none(t, did),
+                    "InputOutputControlByIdentifier of a DID the description gives none gets NRC 0x31.")
+            for did in io:
+                add(IO_CONTROL, f"IO control of {did:04X} {d.dids[did].name}", lambda t, did=did: self.io(t, did),
+                    "returnControlToECU (00) is answered 6F; with destructive tests, shortTermAdjustment (03) to its "
+                    "value read first, then control given back.")
+        faults = d.services.get(0x19)
+        if self._reachable(0x19) and faults is not None and d.dtcs:
+            add(FAULT_MEMORY, "The ECU's DTCs are the description's", self.dtcs,
+                "The DTCs the ECU supports (19 0A) are the ones the description lists, and every DTC it reports "
+                "(19 02 FF) is one of them.")
         control = d.services.get(0x28)
         if self._reachable(0x28) and self._control_off(control) is not None:
             add(COMMUNICATION, "CommunicationControl stops the ECU's own frames", self.communication,
@@ -312,6 +334,84 @@ class ServiceTests:
                 _hex(answer[:12]) if answer else "nothing came")
         self.s.positive(t, bytes([0x86, 0x00, EVENT_WINDOW]), "86 00 (stopResponseOnEvent) is accepted", echo=[0x00])
         self.s.positive(t, bytes([0x86, 0x06, EVENT_WINDOW]), "86 06 (clearResponseOnEvent) is accepted", echo=[0x06])
+
+    # --- InputOutputControl -----------------------------------------------------------------------------------------
+
+    def _io_session(self, t, entry):
+        """Into the first session the DID's IO control is allowed in, unlocked when it needs a level."""
+        session = self.s.first_session(entry.io)
+        if session is None:
+            t.skip(f"the description allows IO control of {entry.did:04X} in none of its sessions")
+        self.s.enter(t, session)
+        if entry.io.levels and not self.s.unlock(t, min(entry.io.levels)):
+            t.fail("not unlocked for IO control")
+
+    def io_none(self, t, did):
+        self._prepare(t, 0x2F)
+        request = b"\x2f" + did.to_bytes(2, "big") + bytes([RETURN_CONTROL])
+        self.s.negative(t, request, "io_unknown", f"{_hex(request)}: NRC 0x31")
+
+    def io(self, t, did):
+        entry = self.s.d.dids[did]
+        self._io_session(t, entry)
+        parameters = entry.io_parameters
+        identifier = did.to_bytes(2, "big")
+        if not parameters or RETURN_CONTROL in parameters:
+            request = b"\x2f" + identifier + bytes([RETURN_CONTROL])
+            self.s.positive(t, request, f"{_hex(request)} (returnControlToECU) is answered 6F",
+                            echo=identifier + bytes([RETURN_CONTROL]))
+        if not self.s.o.destructive or (parameters and SHORT_TERM not in parameters):
+            return
+        read = self.s.positive(t, b"\x22" + identifier, f"22 {did:04X}: its value first", echo=identifier) \
+            if entry.read is not None and entry.read.allows(self.s.tester.session or 0) else None
+        if read is None:
+            t.log("its value could not be read: shortTermAdjustment is not tried")
+            return
+        request = b"\x2f" + identifier + bytes([SHORT_TERM]) + bytes(read[3:])
+        self.s.positive(t, request, f"{_hex(request)} (shortTermAdjustment to that value) is answered 6F",
+                        echo=identifier + bytes([SHORT_TERM]))
+        back = b"\x2f" + identifier + bytes([RETURN_CONTROL])
+        self.s.positive(t, back, f"{_hex(back)}: control given back", echo=identifier + bytes([RETURN_CONTROL]))
+
+    # --- the DTCs ---------------------------------------------------------------------------------------------------
+
+    def _described(self, code) -> bool:
+        """A DTC the description lists - its three bytes, or its two without the failure type."""
+        return code in self.s.d.dtcs or code >> 8 in self.s.d.dtcs
+
+    @staticmethod
+    def _codes(raw, start) -> list[int]:
+        """The DTCs of a ReadDTCInformation answer: three bytes and a status byte each, from start."""
+        body = raw[start:]
+        return [int.from_bytes(body[index:index + 3], "big") for index in range(0, len(body) - 3, 4)]
+
+    def dtcs(self, t):
+        self._prepare(t, 0x19)
+        subs = self.s.d.services[0x19].sub_functions
+        described = self.s.d.dtcs
+        if not subs or 0x0A in subs:
+            raw = self.s.positive(t, b"\x19\x0a", "19 0A (reportSupportedDTC) is answered", echo=[0x0A])
+            if raw is not None:
+                supported = self._codes(raw, 3)
+                t.log(f"{len(supported)} DTCs supported: " + ", ".join(dtc_display(code) for code in supported[:12])
+                      + (" ..." if len(supported) > 12 else ""))
+                extra = [code for code in supported if not self._described(code)]
+                t.check(not extra, "every DTC the ECU supports is in the description",
+                        "not described: " + ", ".join(dtc_display(code) for code in extra) if extra
+                        else f"{len(supported)} DTCs")
+                missing = [code for code in sorted(described) if not any(
+                    code in (found, found >> 8) for found in supported)]
+                t.check(not missing, "every DTC of the description is supported",
+                        "not supported: " + ", ".join(f"{code:06X} {described[code]}" for code in missing) if missing
+                        else f"{len(described)} DTCs")
+        if not subs or 0x02 in subs:
+            raw = self.s.positive(t, b"\x19\x02\xff", "19 02 FF (reportDTCByStatusMask) is answered", echo=[0x02])
+            if raw is not None:
+                reported = self._codes(raw, 3)
+                extra = [code for code in reported if not self._described(code)]
+                t.check(not extra, "every DTC it reports is in the description",
+                        "not described: " + ", ".join(dtc_display(code) for code in extra) if extra
+                        else f"{len(reported)} reported")
 
     # --- CommunicationControl -------------------------------------------------------------------------------------
 

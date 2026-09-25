@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from canexpert.odx_services import load_database, name_of
+from canexpert.odx_services import dtc_texts, load_database, name_of
 from canexpert.test_expert.description import DataField, EcuDescription, RawService, RawState, build_description
 
 RECORD_START = 3                     # 62, then the DID: the data record's first byte in the response
-NAME_ENDINGS = ("_Read", "_Write", "_Start", "_Stop", "_RequestResults", "_Results", "_RequestSeed", "_SendKey")
+NAME_ENDINGS = ("_Read", "_Write", "_Start", "_Stop", "_RequestResults", "_Results", "_RequestSeed", "_SendKey",
+                "_IOControl", "_ReturnControlToECU", "_ResetToDefault", "_FreezeCurrentState", "_ShortTermAdjustment")
 
 
 def _key(state):
@@ -174,6 +175,7 @@ def load_odx(path, variant: str | None = None) -> EcuDescription:
                                     "description, or not all of it")
     description.variants = [name_of(item) for item in layers]
     description.variant = name_of(layer)
+    description.dtcs = {code: text or display for code, (display, text) in sorted(dtc_texts(layer).items())}
     return description
 
 

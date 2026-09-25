@@ -9,6 +9,32 @@
         <SHORT-NAME>DummyECU</SHORT-NAME>
         <LONG-NAME>CAN Expert Dummy ECU</LONG-NAME>
         <DIAG-DATA-DICTIONARY-SPEC>
+          <DTC-DOPS>
+            <DTC-DOP ID="DOP.DTC">
+              <SHORT-NAME>DTC</SHORT-NAME>
+              <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                <BIT-LENGTH>24</BIT-LENGTH>
+              </DIAG-CODED-TYPE>
+              <PHYSICAL-TYPE BASE-DATA-TYPE="A_UINT32" />
+              <COMPU-METHOD>
+                <CATEGORY>IDENTICAL</CATEGORY>
+              </COMPU-METHOD>
+              <DTCS>
+                <DTC ID="DTC.P0101_00">
+                  <SHORT-NAME>P0101_00</SHORT-NAME>
+                  <TROUBLE-CODE>65792</TROUBLE-CODE>
+                  <DISPLAY-TROUBLE-CODE>P0101-00</DISPLAY-TROUBLE-CODE>
+                  <TEXT>P0101-00</TEXT>
+                </DTC>
+                <DTC ID="DTC.U0100_00">
+                  <SHORT-NAME>U0100_00</SHORT-NAME>
+                  <TROUBLE-CODE>12648448</TROUBLE-CODE>
+                  <DISPLAY-TROUBLE-CODE>U0100-00</DISPLAY-TROUBLE-CODE>
+                  <TEXT>U0100-00</TEXT>
+                </DTC>
+              </DTCS>
+            </DTC-DOP>
+          </DTC-DOPS>
           <DATA-OBJECT-PROPS>
             <DATA-OBJECT-PROP ID="DOP.0">
               <SHORT-NAME>Key1_32</SHORT-NAME>
@@ -372,18 +398,6 @@
               <POS-RESPONSE-REF ID-REF="PR.ReadDataByPeriodicIdentifier" />
             </POS-RESPONSE-REFS>
           </DIAG-SERVICE>
-          <DIAG-SERVICE ID="DS.InputOutputControlByIdentifier">
-            <SHORT-NAME>InputOutputControlByIdentifier</SHORT-NAME>
-            <PRE-CONDITION-STATE-REFS>
-              <PRE-CONDITION-STATE-REF ID-REF="S.Extendedsession" />
-              <PRE-CONDITION-STATE-REF ID-REF="S.Locked" />
-              <PRE-CONDITION-STATE-REF ID-REF="S.UnlockedLevel1" />
-            </PRE-CONDITION-STATE-REFS>
-            <REQUEST-REF ID-REF="RQ.InputOutputControlByIdentifier" />
-            <POS-RESPONSE-REFS>
-              <POS-RESPONSE-REF ID-REF="PR.InputOutputControlByIdentifier" />
-            </POS-RESPONSE-REFS>
-          </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS.RequestDownload">
             <SHORT-NAME>RequestDownload</SHORT-NAME>
             <PRE-CONDITION-STATE-REFS>
@@ -587,11 +601,35 @@
               <POS-RESPONSE-REF ID-REF="PR.Temperature_Read" />
             </POS-RESPONSE-REFS>
           </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS.Temperature_IOControl">
+            <SHORT-NAME>Temperature_IOControl</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S.Extendedsession" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.Locked" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.UnlockedLevel1" />
+            </PRE-CONDITION-STATE-REFS>
+            <REQUEST-REF ID-REF="RQ.Temperature_IOControl" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR.Temperature_IOControl" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS.Pressure_Read">
             <SHORT-NAME>Pressure_Read</SHORT-NAME>
             <REQUEST-REF ID-REF="RQ.Pressure_Read" />
             <POS-RESPONSE-REFS>
               <POS-RESPONSE-REF ID-REF="PR.Pressure_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS.Pressure_IOControl">
+            <SHORT-NAME>Pressure_IOControl</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S.Extendedsession" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.Locked" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.UnlockedLevel1" />
+            </PRE-CONDITION-STATE-REFS>
+            <REQUEST-REF ID-REF="RQ.Pressure_IOControl" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR.Pressure_IOControl" />
             </POS-RESPONSE-REFS>
           </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS.IdleSpeedTarget_Read">
@@ -678,11 +716,35 @@
               <POS-RESPONSE-REF ID-REF="PR.PeriodicTemperature_Read" />
             </POS-RESPONSE-REFS>
           </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS.PeriodicTemperature_IOControl">
+            <SHORT-NAME>PeriodicTemperature_IOControl</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S.Extendedsession" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.Locked" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.UnlockedLevel1" />
+            </PRE-CONDITION-STATE-REFS>
+            <REQUEST-REF ID-REF="RQ.PeriodicTemperature_IOControl" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR.PeriodicTemperature_IOControl" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS.PeriodicPressure_Read">
             <SHORT-NAME>PeriodicPressure_Read</SHORT-NAME>
             <REQUEST-REF ID-REF="RQ.PeriodicPressure_Read" />
             <POS-RESPONSE-REFS>
               <POS-RESPONSE-REF ID-REF="PR.PeriodicPressure_Read" />
+            </POS-RESPONSE-REFS>
+          </DIAG-SERVICE>
+          <DIAG-SERVICE ID="DS.PeriodicPressure_IOControl">
+            <SHORT-NAME>PeriodicPressure_IOControl</SHORT-NAME>
+            <PRE-CONDITION-STATE-REFS>
+              <PRE-CONDITION-STATE-REF ID-REF="S.Extendedsession" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.Locked" />
+              <PRE-CONDITION-STATE-REF ID-REF="S.UnlockedLevel1" />
+            </PRE-CONDITION-STATE-REFS>
+            <REQUEST-REF ID-REF="RQ.PeriodicPressure_IOControl" />
+            <POS-RESPONSE-REFS>
+              <POS-RESPONSE-REF ID-REF="PR.PeriodicPressure_IOControl" />
             </POS-RESPONSE-REFS>
           </DIAG-SERVICE>
           <DIAG-SERVICE ID="DS.SelfTest_Start">
@@ -1100,19 +1162,6 @@
               </PARAM>
             </PARAMS>
           </REQUEST>
-          <REQUEST ID="RQ.InputOutputControlByIdentifier">
-            <SHORT-NAME>RQ_InputOutputControlByIdentifier</SHORT-NAME>
-            <PARAMS>
-              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
-                <SHORT-NAME>SID_RQ</SHORT-NAME>
-                <BYTE-POSITION>0</BYTE-POSITION>
-                <CODED-VALUE>47</CODED-VALUE>
-                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
-                  <BIT-LENGTH>8</BIT-LENGTH>
-                </DIAG-CODED-TYPE>
-              </PARAM>
-            </PARAMS>
-          </REQUEST>
           <REQUEST ID="RQ.RequestDownload">
             <SHORT-NAME>RQ_RequestDownload</SHORT-NAME>
             <PARAMS>
@@ -1456,6 +1505,27 @@
               </PARAM>
             </PARAMS>
           </REQUEST>
+          <REQUEST ID="RQ.Temperature_IOControl">
+            <SHORT-NAME>RQ_Temperature_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_RQ</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>47</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST">
+                <SHORT-NAME>Const1</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>257</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
           <REQUEST ID="RQ.Pressure_Read">
             <SHORT-NAME>RQ_Pressure_Read</SHORT-NAME>
             <PARAMS>
@@ -1463,6 +1533,27 @@
                 <SHORT-NAME>SID_RQ</SHORT-NAME>
                 <BYTE-POSITION>0</BYTE-POSITION>
                 <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST">
+                <SHORT-NAME>Const1</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>258</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ.Pressure_IOControl">
+            <SHORT-NAME>RQ_Pressure_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_RQ</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>47</CODED-VALUE>
                 <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
                   <BIT-LENGTH>8</BIT-LENGTH>
                 </DIAG-CODED-TYPE>
@@ -1697,6 +1788,27 @@
               </PARAM>
             </PARAMS>
           </REQUEST>
+          <REQUEST ID="RQ.PeriodicTemperature_IOControl">
+            <SHORT-NAME>RQ_PeriodicTemperature_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_RQ</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>47</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST">
+                <SHORT-NAME>Const1</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>61953</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
           <REQUEST ID="RQ.PeriodicPressure_Read">
             <SHORT-NAME>RQ_PeriodicPressure_Read</SHORT-NAME>
             <PARAMS>
@@ -1704,6 +1816,27 @@
                 <SHORT-NAME>SID_RQ</SHORT-NAME>
                 <BYTE-POSITION>0</BYTE-POSITION>
                 <CODED-VALUE>34</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="CODED-CONST">
+                <SHORT-NAME>Const1</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <CODED-VALUE>61954</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>16</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+            </PARAMS>
+          </REQUEST>
+          <REQUEST ID="RQ.PeriodicPressure_IOControl">
+            <SHORT-NAME>RQ_PeriodicPressure_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_RQ</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>47</CODED-VALUE>
                 <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
                   <BIT-LENGTH>8</BIT-LENGTH>
                 </DIAG-CODED-TYPE>
@@ -2228,19 +2361,6 @@
               </PARAM>
             </PARAMS>
           </POS-RESPONSE>
-          <POS-RESPONSE ID="PR.InputOutputControlByIdentifier">
-            <SHORT-NAME>PR_InputOutputControlByIdentifier</SHORT-NAME>
-            <PARAMS>
-              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
-                <SHORT-NAME>SID_PR</SHORT-NAME>
-                <BYTE-POSITION>0</BYTE-POSITION>
-                <CODED-VALUE>111</CODED-VALUE>
-                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
-                  <BIT-LENGTH>8</BIT-LENGTH>
-                </DIAG-CODED-TYPE>
-              </PARAM>
-            </PARAMS>
-          </POS-RESPONSE>
           <POS-RESPONSE ID="PR.RequestDownload">
             <SHORT-NAME>PR_RequestDownload</SHORT-NAME>
             <PARAMS>
@@ -2563,6 +2683,25 @@
               </PARAM>
             </PARAMS>
           </POS-RESPONSE>
+          <POS-RESPONSE ID="PR.Temperature_IOControl">
+            <SHORT-NAME>PR_Temperature_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_PR</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>111</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM">
+                <SHORT-NAME>Echo</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
           <POS-RESPONSE ID="PR.Pressure_Read">
             <SHORT-NAME>PR_Pressure_Read</SHORT-NAME>
             <PARAMS>
@@ -2584,6 +2723,25 @@
                 <SHORT-NAME>Pressure</SHORT-NAME>
                 <BYTE-POSITION>3</BYTE-POSITION>
                 <DOP-REF ID-REF="DOP.3" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR.Pressure_IOControl">
+            <SHORT-NAME>PR_Pressure_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_PR</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>111</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM">
+                <SHORT-NAME>Echo</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
               </PARAM>
             </PARAMS>
           </POS-RESPONSE>
@@ -2817,6 +2975,25 @@
               </PARAM>
             </PARAMS>
           </POS-RESPONSE>
+          <POS-RESPONSE ID="PR.PeriodicTemperature_IOControl">
+            <SHORT-NAME>PR_PeriodicTemperature_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_PR</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>111</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM">
+                <SHORT-NAME>Echo</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
           <POS-RESPONSE ID="PR.PeriodicPressure_Read">
             <SHORT-NAME>PR_PeriodicPressure_Read</SHORT-NAME>
             <PARAMS>
@@ -2838,6 +3015,25 @@
                 <SHORT-NAME>Pressure</SHORT-NAME>
                 <BYTE-POSITION>3</BYTE-POSITION>
                 <DOP-REF ID-REF="DOP.3" />
+              </PARAM>
+            </PARAMS>
+          </POS-RESPONSE>
+          <POS-RESPONSE ID="PR.PeriodicPressure_IOControl">
+            <SHORT-NAME>PR_PeriodicPressure_IOControl</SHORT-NAME>
+            <PARAMS>
+              <PARAM xsi:type="CODED-CONST" SEMANTIC="SERVICE-ID">
+                <SHORT-NAME>SID_PR</SHORT-NAME>
+                <BYTE-POSITION>0</BYTE-POSITION>
+                <CODED-VALUE>111</CODED-VALUE>
+                <DIAG-CODED-TYPE BASE-DATA-TYPE="A_UINT32" xsi:type="STANDARD-LENGTH-TYPE">
+                  <BIT-LENGTH>8</BIT-LENGTH>
+                </DIAG-CODED-TYPE>
+              </PARAM>
+              <PARAM xsi:type="MATCHING-REQUEST-PARAM">
+                <SHORT-NAME>Echo</SHORT-NAME>
+                <BYTE-POSITION>1</BYTE-POSITION>
+                <REQUEST-BYTE-POS>1</REQUEST-BYTE-POS>
+                <BYTE-LENGTH>2</BYTE-LENGTH>
               </PARAM>
             </PARAMS>
           </POS-RESPONSE>
@@ -3116,9 +3312,6 @@
                 <DIAG-COMM-SNREF SHORT-NAME="ReadDataByPeriodicIdentifier" />
               </NOT-INHERITED-DIAG-COMM>
               <NOT-INHERITED-DIAG-COMM>
-                <DIAG-COMM-SNREF SHORT-NAME="InputOutputControlByIdentifier" />
-              </NOT-INHERITED-DIAG-COMM>
-              <NOT-INHERITED-DIAG-COMM>
                 <DIAG-COMM-SNREF SHORT-NAME="ResponseOnEvent_00" />
               </NOT-INHERITED-DIAG-COMM>
               <NOT-INHERITED-DIAG-COMM>
@@ -3140,13 +3333,25 @@
                 <DIAG-COMM-SNREF SHORT-NAME="Temperature_Read" />
               </NOT-INHERITED-DIAG-COMM>
               <NOT-INHERITED-DIAG-COMM>
+                <DIAG-COMM-SNREF SHORT-NAME="Temperature_IOControl" />
+              </NOT-INHERITED-DIAG-COMM>
+              <NOT-INHERITED-DIAG-COMM>
                 <DIAG-COMM-SNREF SHORT-NAME="Pressure_Read" />
+              </NOT-INHERITED-DIAG-COMM>
+              <NOT-INHERITED-DIAG-COMM>
+                <DIAG-COMM-SNREF SHORT-NAME="Pressure_IOControl" />
               </NOT-INHERITED-DIAG-COMM>
               <NOT-INHERITED-DIAG-COMM>
                 <DIAG-COMM-SNREF SHORT-NAME="PeriodicTemperature_Read" />
               </NOT-INHERITED-DIAG-COMM>
               <NOT-INHERITED-DIAG-COMM>
+                <DIAG-COMM-SNREF SHORT-NAME="PeriodicTemperature_IOControl" />
+              </NOT-INHERITED-DIAG-COMM>
+              <NOT-INHERITED-DIAG-COMM>
                 <DIAG-COMM-SNREF SHORT-NAME="PeriodicPressure_Read" />
+              </NOT-INHERITED-DIAG-COMM>
+              <NOT-INHERITED-DIAG-COMM>
+                <DIAG-COMM-SNREF SHORT-NAME="PeriodicPressure_IOControl" />
               </NOT-INHERITED-DIAG-COMM>
               <NOT-INHERITED-DIAG-COMM>
                 <DIAG-COMM-SNREF SHORT-NAME="SelfTest_Start" />

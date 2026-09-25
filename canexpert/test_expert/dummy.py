@@ -8,6 +8,7 @@ forced NRCs and changed settings show up as failures.
 """
 from __future__ import annotations
 
+from canexpert.odx_services import dtc_display
 from canexpert.simulator.ecu import (DEFAULT_SESSION, EXTENDED_SESSION, PROGRAMMING_SESSION, SERVICE_NAMES,
                                      SERVICE_SESSIONS, SUB_FUNCTIONS, EcuConfig, data_tables, security_levels,
                                      service_rules)
@@ -26,6 +27,17 @@ SIGNAL_SCALES = {"EngineData.Temperature": (0.1, "degC"), "EngineData.Pressure":
 SESSION_TEXTS = {DEFAULT_SESSION: "Default", PROGRAMMING_SESSION: "Programming", EXTENDED_SESSION: "Extended"}
 # Texts of a length of their own: the software version, which the bootloader and a flashed image change.
 VARIABLE_TEXT = {0xF195}
+
+
+def io_access(description: EcuDescription, read: Access) -> Access | None:
+    """Where a DID that follows a signal is an output (InputOutputControlByIdentifier): where the service is
+    allowed and the DID read."""
+    service = description.services.get(0x2F)
+    if service is None:
+        return None
+    sessions = service.access.sessions & read.sessions if service.access.sessions and read.sessions else \
+        set(service.access.sessions or read.sessions)
+    return Access(sessions, set(read.levels or service.access.levels))
 
 
 def did_fields(did: int, name: str, data: bytes, signal: str = "", valid=()) -> list[DataField]:
@@ -95,7 +107,8 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
             write = Access(write_sessions, {level} if level else set(levels))     # WDBI needs some unlocked level
         name = DID_NAMES.get(did, f"DID 0x{did:04X}")
         description.dids[did] = DataIdentifier(did, name, None if did in VARIABLE_TEXT else len(data), read, write,
-                                               did_fields(did, name, data, signal, tables.valid.get(did, ())))
+                                               did_fields(did, name, data, signal, tables.valid.get(did, ())),
+                                               io_access(description, read) if signal else None)
     for did, (name, length) in BUILT_IN_DIDS.items():
         description.dids.setdefault(did, DataIdentifier(did, name, length, Access(), None,
                                                         did_fields(did, name, bytes(length))))
@@ -117,6 +130,9 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
     writes = [entry.write for entry in description.dids.values() if entry.write is not None]
     if writes and 0x2E in description.services:
         description.services[0x2E].access = merged(writes)
+    ios = [entry.io for entry in description.dids.values() if entry.io is not None]
+    if ios and 0x2F in description.services:
+        description.services[0x2F].access = merged(ios)
     controls = {}
     for routine in description.routines.values():
         for sub, access in routine.sub_functions.items():
@@ -124,4 +140,5 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
     if controls and 0x31 in description.services:
         description.services[0x31].access = merged(access for accesses in controls.values() for access in accesses)
         description.services[0x31].sub_functions = {sub: merged(accesses) for sub, accesses in sorted(controls.items())}
+    description.dtcs = {int(item["dtc"]): dtc_display(int(item["dtc"])) for item in config.dtcs}
     return description

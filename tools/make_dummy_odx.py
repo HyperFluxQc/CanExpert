@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from canexpert.odx_services import dtc_display  # noqa: E402
 from canexpert.simulator.ecu import BOOT_SERVICES, BOOT_VERSION, EcuConfig  # noqa: E402
 from canexpert.test_expert.dummy import dummy_description  # noqa: E402
 
@@ -49,6 +50,8 @@ class Writer:
         _element(self.base, "SHORT-NAME", "DummyECU")
         _element(self.base, "LONG-NAME", "CAN Expert Dummy ECU")
         spec = _element(self.base, "DIAG-DATA-DICTIONARY-SPEC")
+        if description.dtcs:
+            self.dtc_dop(_element(spec, "DTC-DOPS"))
         self.dops = _element(spec, "DATA-OBJECT-PROPS")
         self.units = _element(_element(spec, "UNIT-SPEC"), "UNITS")
         self.comms = _element(self.base, "DIAG-COMMS")
@@ -234,13 +237,31 @@ class Writer:
             self.application_only.append(name)
         return name
 
+    def dtc_dop(self, parent):
+        """The ECU's DTCs, 3-byte trouble codes with their SAE J2012 display and their text."""
+        dop = _element(parent, "DTC-DOP", ID="DOP.DTC")
+        _element(dop, "SHORT-NAME", "DTC")
+        _element(dop, "DIAG-CODED-TYPE", BASE__DATA__TYPE="A_UINT32",
+                 **{TYPE: "STANDARD-LENGTH-TYPE"}).append(_leaf("BIT-LENGTH", 24))
+        _element(dop, "PHYSICAL-TYPE", BASE__DATA__TYPE="A_UINT32")
+        _element(_element(dop, "COMPU-METHOD"), "CATEGORY", "IDENTICAL")
+        dtcs = _element(dop, "DTCS")
+        for code, text in sorted(self.d.dtcs.items()):
+            name = dtc_display(code).replace("-", "_")
+            dtc = _element(dtcs, "DTC", ID=f"DTC.{name}")
+            _element(dtc, "SHORT-NAME", name)
+            _element(dtc, "TROUBLE-CODE", code)
+            _element(dtc, "DISPLAY-TROUBLE-CODE", dtc_display(code))
+            _element(dtc, "TEXT", text)
+
     def write(self):
         d = self.d
         self.write_states()
         unlocked = [("security", level) for level in sorted(d.security_levels)]
         boot = BOOT_SERVICES
+        io_dids = any(entry.io is not None for entry in d.dids.values())
         for sid, service in sorted(d.services.items()):
-            if sid in (0x22, 0x2E, 0x31, 0x27):
+            if sid in (0x22, 0x2E, 0x31, 0x27) or (sid == 0x2F and io_dids):
                 continue
             if sid == 0x10:
                 for sub in sorted(d.sessions):
@@ -273,6 +294,8 @@ class Writer:
             if entry.write is not None:
                 values = [(item.name, self.dop(item), item.bits) for item in entry.fields]
                 self.service(f"{name}_Write", [(0x2E, 8), (did, 16)], entry.write, values=values)
+            if entry.io is not None:
+                self.service(f"{name}_IOControl", [(0x2F, 8), (did, 16)], entry.io, application_only=True)
         for rid, routine in sorted(d.routines.items()):
             for sub, access in sorted(routine.sub_functions.items()):
                 self.service(f"{routine.name}_{ROUTINE_CONTROLS.get(sub, sub)}", [(0x31, 8), (sub, 8), (rid, 16)],

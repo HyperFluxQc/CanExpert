@@ -747,7 +747,7 @@ saved as **JSON**; **Dummy ECU** describes the Dummy ECU from its settings. The 
 was read: the sessions and where each may be entered from, the security levels, every service with its
 sub-functions and the sessions and security level it needs, every DID with its length, where it may be read
 and written and — opened — the fields of its data (a text table, the valid values, a scale and unit, text),
-and the routines. What the file did not say clearly is listed under **Warnings**.
+and the routines, and the DTCs the file lists. What the file did not say clearly is listed under **Warnings**.
 
 From a CDD, TestExpert follows the chain CANdelaStudio writes — each variant's diagnostic instances, their
 services, the protocol services they are built from, and the state groups: where a service may be executed
@@ -758,7 +758,8 @@ offset, limits and unit, BCD and ASCII values, gaps, structures and unions. Olde
 the states a service may be executed in are read with every service allowed everywhere, and a warning says so;
 a KWP2000 document (sessions 81, 85..., data by local identifier) is read with a warning that TestExpert's
 tests are UDS's. From ODX, a DID's fields come from the value parameters of its ReadDataByIdentifier response:
-their place, coded type, text table or linear scale, internal limits and unit.
+their place, coded type, text table or linear scale, internal limits and unit. A DID's InputOutputControl comes
+from its 2F services, and an ODX file's DTC-DOPs give the ECU's DTCs (a CDD's are not read).
 
 The readers were checked against real files: a CANdelaStudio export (the example CDD of the cantools project)
 and odxtools' example PDX. `ODX/dummy_ecu.cdd` and `ODX/dummy_ecu_services.odx-d` describe the Dummy ECU in
@@ -802,7 +803,8 @@ The tests are grouped as DiVa groups them; untick any you do not want.
 | Data identifiers | every DID read in every session — positive with its length where allowed, 0x31 where not, 0x33 while locked and positive once unlocked; a DID that does not exist; writing a read-only DID (0x31); the **values** of each DID the description gives fields for — each within its limits, in its text table, text that is text |
 | Security access | sendKey before requestSeed (0x24), a seed, a wrong key (0x35), unlocking, the zero seed once unlocked, locked again by a new session; a level that does not exist |
 | Routines | each routine refused where it may not run (0x31) and while locked (0x33); a routine that does not exist; its stop and results asked before a start (0x24); the routines you allow **started**, their results asked and stopped |
-| Fault memory | 19 01, 19 02 and 19 0A answered in their format; a group of DTCs that does not exist (0x31) |
+| Fault memory | 19 01, 19 02 and 19 0A answered in their format; a group of DTCs that does not exist (0x31); when the description lists the ECU's DTCs, **the ECU's DTCs are the description's** — every DTC it supports (19 0A) is listed, every listed one is supported, every one it reports (19 02 FF) is listed |
+| Input/output control | for the DIDs the description gives InputOutputControlByIdentifier: returnControlToECU (00) answered; with destructive tests, shortTermAdjustment (03) to the value read first, then control given back; a DID that has none (0x31) |
 | Communication | CommunicationControl and ControlDTCSetting answered, silent with the suppress bit, put back; CommunicationControl **stopping the ECU's own frames** — the frames it sends besides diagnostics stop while their transmission is disabled and come back once enabled (only this ECU should be on the bus; without frames of its own the test is skipped) |
 | Download and upload | TransferData and RequestTransferExit before a RequestDownload (0x24), RequestDownload while locked (0x33) and of a format the ECU does not take (0x31); with **Download** set and destructive tests, that download started — maxNumberOfBlockLength given — then a second RequestDownload (0x22), a wrong block counter (0x73) and RequestTransferExit before the data (0x24), and the default session to end it |
 | Memory by address | ReadMemoryByAddress of a format the ECU does not take (0x31); with **Memory** set, that memory read; with destructive tests too, written while locked (0x33) and written back with its own bytes |

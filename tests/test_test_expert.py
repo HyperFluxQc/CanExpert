@@ -138,10 +138,26 @@ class DescriptionTest(unittest.TestCase):
         self.assertEqual(d.routines[0xFF00].sub_functions[1], Access({2}, {1}))
         self.assertEqual(d.services[0x2E].access, Access({3}, {1}))
 
+    def test_io_control_from_its_services(self):
+        raw = [RawService(b"\x10\x01", "Default", [1, 2, 3, 4, 5], [(1, 1), (2, 1), (3, 1)]),
+               RawService(b"\x10\x03", "Extended", [1, 2, 3, 4, 5], [(1, 3), (2, 3), (3, 3)]),
+               RawService(b"\x22\x01\x01", "Lamp", None, length=1),
+               RawService(b"\x2f\x01\x01\x00", "Lamp_ReturnControlToECU", [3, 4, 5]),
+               RawService(b"\x2f\x01\x01\x03", "Lamp_ShortTermAdjustment", [3, 4, 5])]
+        d = build_description(raw, self.STATES, "ECU")
+        self.assertEqual(d.dids[0x0101].io, Access({3}, set()))
+        self.assertEqual(d.dids[0x0101].io_parameters, {0x00, 0x03}, "an instance per control parameter")
+        self.assertEqual(d.dids[0x0101].length, 1, "IO control does not change the DID's own data")
+        self.assertEqual(d.services[0x2F].access, Access({3}, set()))
+
     def test_json_round_trip_and_the_default_session(self):
         d = dummy_description()
+        self.assertEqual(d.dids[0x0101].io, Access({0x03}, set()), "a DID that follows a signal is an output")
+        self.assertEqual(d.dtcs, {0x010100: "P0101-00", 0xC10000: "U0100-00"})
+        self.assertIn("2 DTCs", d.summary())
         again = EcuDescription.from_dict(d.to_dict())
         self.assertEqual(again.to_dict(), d.to_dict())
+        self.assertEqual((again.dids[0x0101].io, again.dtcs), (d.dids[0x0101].io, d.dtcs))
         path = Path(tempfile.mkdtemp()) / "ecu.json"
         d.save(path)
         self.assertEqual(EcuDescription.load(path).dids.keys(), d.dids.keys())
@@ -156,8 +172,8 @@ class CddTest(unittest.TestCase):
         self.assertEqual(cdd.warnings, [])
         self.assertEqual({s: (x.access, x.sub_functions) for s, x in cdd.services.items()},
                          {s: (x.access, x.sub_functions) for s, x in dummy.services.items()})
-        self.assertEqual({d: (x.name, x.length, x.read, x.write, x.fields) for d, x in cdd.dids.items()},
-                         {d: (x.name, x.length, x.read, x.write, x.fields) for d, x in dummy.dids.items()},
+        self.assertEqual({d: (x.name, x.length, x.read, x.write, x.fields, x.io) for d, x in cdd.dids.items()},
+                         {d: (x.name, x.length, x.read, x.write, x.fields, x.io) for d, x in dummy.dids.items()},
                          "the fields too: text tables, ranges, scales, units, text")
         self.assertEqual(cdd.routines, dummy.routines)
         self.assertEqual({s: x.entered_from for s, x in cdd.sessions.items()},
@@ -301,10 +317,11 @@ class OdxTest(unittest.TestCase):
         self.assertEqual(odx.name, "Application", "the first ECU variant")
         self.assertEqual({s: (x.access, x.sub_functions) for s, x in odx.services.items()},
                          {s: (x.access, x.sub_functions) for s, x in dummy.services.items()})
-        self.assertEqual({d: (x.name, x.length, x.read, x.write, x.fields) for d, x in odx.dids.items()},
-                         {d: (x.name, x.length, x.read, x.write, x.fields) for d, x in dummy.dids.items()},
+        self.assertEqual({d: (x.name, x.length, x.read, x.write, x.fields, x.io) for d, x in odx.dids.items()},
+                         {d: (x.name, x.length, x.read, x.write, x.fields, x.io) for d, x in dummy.dids.items()},
                          "read through odxtools: states by their IDs, names without _Read, ASCII texts")
         self.assertEqual(odx.routines, dummy.routines)
+        self.assertEqual(odx.dtcs, dummy.dtcs, "its DTC-DOP: trouble codes and their texts")
         self.assertEqual({s: (x.name, x.entered_from) for s, x in odx.sessions.items()},
                          {s: (x.name, x.entered_from) for s, x in dummy.sessions.items()})
 
@@ -715,7 +732,8 @@ class TransportTest(unittest.TestCase):
         self.assertEqual(extended.segments(bytes(8))[0], bytes([0x10, 8]) + bytes(5))
 
 
-SERVICE_GROUPS = ("Download and upload", "Memory by address", "Periodic data", "ResponseOnEvent", "Communication")
+SERVICE_GROUPS = ("Download and upload", "Memory by address", "Periodic data", "ResponseOnEvent", "Communication",
+                  "Input/output control", "Fault memory")
 
 
 class ServicesTest(unittest.TestCase):
@@ -723,10 +741,11 @@ class ServicesTest(unittest.TestCase):
 
     OPTIONS = {"destructive": True, "download": "10000:300", "memory": "10000:10", "transport": False}
 
-    def run_groups(self, config=None, **options):
+    def run_groups(self, config=None, description=None, **options):
         config = config or EcuConfig(lockout_seconds=1, require_erase=False)       # its frames too
         bench = Bench(self, config)
-        suite = Suite(dummy_description(config), Options(key=key, s3_test=False, **{**self.OPTIONS, **options}))
+        suite = Suite(description or dummy_description(config), Options(key=key, s3_test=False,
+                                                                          **{**self.OPTIONS, **options}))
         suite.tester = Tester(bench.tester_bus, TRANSPORT, 0x7DF)
         names = [case.name for case in suite.cases if suite.group_of[case.name] in SERVICE_GROUPS]
         report = Runner(suite.module(names), send=suite.tester.send_frame).run(names)
@@ -738,7 +757,8 @@ class ServicesTest(unittest.TestCase):
         self.assertEqual({title: case.verdict for title, case in cases.items() if case.verdict != "passed"}, {})
         for title in ("A download started, then refused out of order", "WriteMemoryByAddress of the same bytes",
                       "WriteMemoryByAddress while locked", "Periodic data of F201", "An event on a DID that changes",
-                      "CommunicationControl stops the ECU's own frames"):
+                      "CommunicationControl stops the ECU's own frames", "IO control of 0100, which has none",
+                      "IO control of 0101 Temperature", "The ECU's DTCs are the description's"):
             self.assertIn(title, cases)
         started = [step.description for step in cases["A download started, then refused out of order"].steps]
         self.assertIn("a second RequestDownload while one runs: NRC 0x22", started)
@@ -774,6 +794,21 @@ class ServicesTest(unittest.TestCase):
                          "its frames go on")
         self.assertEqual(cases["Periodic data of F201"].verdict, "failed", "no periodic data")
         self.assertEqual(cases["RequestDownload of a format the ECU does not take"].verdict, "passed")
+
+    def test_io_control_and_dtcs_that_differ_are_found(self):
+        from canexpert.simulator import ecu as ecu_module
+        config = EcuConfig(lockout_seconds=1, require_erase=False)
+        description = dummy_description(config)
+        del description.dtcs[0xC10000]
+        description.dtcs[0x123456] = "not in the ECU"
+        with patch.object(ecu_module.DummyEcu, "_service_2f", lambda ecu, request: bytes([0x7F, 0x2F, 0x31])):
+            cases, report = self.run_groups(config, description)
+        dtcs = cases["The ECU's DTCs are the description's"]
+        self.assertEqual({step.description: step.detail for step in dtcs.failures()},
+                         {"every DTC the ECU supports is in the description": "not described: U0100-00",
+                          "every DTC of the description is supported": "not supported: 123456 not in the ECU"})
+        self.assertEqual(cases["IO control of 0101 Temperature"].verdict, "failed")
+        self.assertEqual(cases["IO control of 0100, which has none"].verdict, "passed")
 
     def test_without_frames_of_its_own(self):
         cases, report = self.run_groups(EcuConfig(lockout_seconds=1, require_erase=False, broadcast_interval=0),
@@ -1508,6 +1543,16 @@ class WindowTest(unittest.TestCase):
         window.modules_tab.module_list.item(0).setSelected(True)
         window.modules_tab._remove(window.modules_tab.module_list)
         self.assertEqual(len(window.suite.cases), count)
+
+    def test_io_control_and_dtcs_in_the_description_tab(self):
+        tree = self.window.description_tree
+        branches = {tree.topLevelItem(index).text(0): tree.topLevelItem(index) for index in range(tree.topLevelItemCount())}
+        self.assertIn("DTCs (2)", branches)
+        self.assertEqual(branches["DTCs (2)"].child(0).text(0), "010100 P0101-00")
+        dids = next(item for text, item in branches.items() if text.startswith("DIDs"))
+        temperature = next(dids.child(index) for index in range(dids.childCount())
+                           if dids.child(index).text(0).startswith("0101 "))
+        self.assertIn("IO control: 03", temperature.text(1))
 
     def test_the_download_and_memory_settings(self):
         window = self.window

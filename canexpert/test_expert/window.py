@@ -691,7 +691,8 @@ class TestExpertWindow(QMainWindow):
                              + (f" [{', '.join(f'{sub:02X}' for sub in sorted(s.sub_functions))}]" if s.sub_functions else ""),
                              access_text(s.access)) for sid, s in sorted(d.services.items())])
         dids = branch("DIDs", [(f"{did:04X} {e.name} ({e.length if e.length else '?'} bytes)",
-                                f"read: {access_text(e.read)}; write: {access_text(e.write)}")
+                                f"read: {access_text(e.read)}; write: {access_text(e.write)}"
+                                + (f"; IO control: {access_text(e.io)}" if e.io is not None else ""))
                                for did, e in sorted(d.dids.items())])
         for index, entry in enumerate(e for _did, e in sorted(d.dids.items())):
             for item in entry.fields:
@@ -699,6 +700,8 @@ class TestExpertWindow(QMainWindow):
                                                             field_text(item)]))
         branch("Routines", [(f"{rid:04X} {r.name}", "; ".join(f"{sub:02X}: {access_text(a)}" for sub, a in sorted(r.sub_functions.items())))
                             for rid, r in sorted(d.routines.items())])
+        if d.dtcs:
+            branch("DTCs", [(f"{code:06X} {text}", "") for code, text in sorted(d.dtcs.items())])
         if d.warnings:
             branch("Warnings", [(warning, "") for warning in d.warnings])
         tree.topLevelItem(2).setExpanded(True)

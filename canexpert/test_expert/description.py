@@ -187,6 +187,8 @@ class DataIdentifier:
     read: Access | None = None   # None: not readable
     write: Access | None = None  # None: not writable
     fields: list = field(default_factory=list)          # DataField, where the description says
+    io: Access | None = None     # InputOutputControlByIdentifier; None: none
+    io_parameters: set = field(default_factory=set)     # its inputOutputControlParameters, where the file says
 
 
 @dataclass
@@ -210,6 +212,7 @@ class EcuDescription:
     # written), "sub-functions", "starting routines" - the tests that would rely on it are left out
     variants: list = field(default_factory=list)          # the variants its file has (CDD VARs, ODX variants)
     variant: str = ""                                     # the one read
+    dtcs: dict = field(default_factory=dict)              # trouble code -> its text (ODX DTC-DOPs); {}: not said
 
     def service(self, sid: int) -> Service | None:
         return self.services.get(sid)
@@ -232,7 +235,8 @@ class EcuDescription:
 
     def summary(self) -> str:
         return (f"{len(self.sessions)} sessions, {len(self.security_levels)} security levels, "
-                f"{len(self.services)} services, {len(self.dids)} DIDs, {len(self.routines)} routines")
+                f"{len(self.services)} services, {len(self.dids)} DIDs, {len(self.routines)} routines"
+                + (f", {len(self.dtcs)} DTCs" if self.dtcs else ""))
 
     # --- JSON ------------------------------------------------------------------------------------
 
@@ -248,7 +252,8 @@ class EcuDescription:
                           "sub_functions": [{"id": sub, **a.to_dict()} for sub, a in sorted(s.sub_functions.items())]}
                          for s in sorted(self.services.values(), key=lambda s: s.sid)],
             "dids": [{"did": d.did, "name": d.name, "length": d.length, "read": access(d.read), "write": access(d.write),
-                      **({"fields": [item.to_dict() for item in d.fields]} if d.fields else {})}
+                      **({"fields": [item.to_dict() for item in d.fields]} if d.fields else {}),
+                      **({"io": access(d.io), "io_parameters": sorted(d.io_parameters)} if d.io is not None else {})}
                      for d in sorted(self.dids.values(), key=lambda d: d.did)],
             "routines": [{"rid": r.rid, "name": r.name,
                           "sub_functions": [{"id": sub, **a.to_dict()} for sub, a in sorted(r.sub_functions.items())]}
@@ -256,6 +261,7 @@ class EcuDescription:
             "warnings": list(self.warnings),
             "unknown": sorted(self.unknown),
             "variants": list(self.variants), "variant": self.variant,
+            **({"dtcs": {f"{code:06X}": text for code, text in sorted(self.dtcs.items())}} if self.dtcs else {}),
         }
 
     @classmethod
@@ -277,7 +283,9 @@ class EcuDescription:
             did = int(item["did"])
             description.dids[did] = DataIdentifier(did, item.get("name", ""), item.get("length"),
                                                    access(item.get("read")), access(item.get("write")),
-                                                   [DataField.from_dict(part) for part in item.get("fields", ())])
+                                                   [DataField.from_dict(part) for part in item.get("fields", ())],
+                                                   access(item.get("io")),
+                                                   {int(value) for value in item.get("io_parameters", ())})
         for item in values.get("routines", ()):
             rid = int(item["rid"])
             description.routines[rid] = Routine(rid, item.get("name", ""),
@@ -286,6 +294,7 @@ class EcuDescription:
         description.unknown = set(values.get("unknown", ()))
         description.variants = [str(name) for name in values.get("variants", ())]
         description.variant = str(values.get("variant", ""))
+        description.dtcs = {int(code, 16): str(text) for code, text in (values.get("dtcs") or {}).items()}
         return description
 
     def save(self, path):
@@ -385,7 +394,7 @@ def build_description(raw_services, states: dict, name: str = "ECU", source: str
                 sub = sub if sub % 2 else sub - 1                # both steps of a level share its access
             previous = service.sub_functions.get(sub)
             service.sub_functions[sub] = previous.merged(access) if previous else access
-        if sid in (0x22, 0x2E) and len(raw.prefix) >= 3:
+        if sid in (0x22, 0x2E, 0x2F) and len(raw.prefix) >= 3:
             did = int.from_bytes(raw.prefix[1:3], "big")
             entry = description.dids.setdefault(did, DataIdentifier(did, raw.name or f"DID 0x{did:04X}"))
             if raw.length is not None and entry.length is None:
@@ -394,8 +403,12 @@ def build_description(raw_services, states: dict, name: str = "ECU", source: str
                 entry.fields = list(raw.fields)
             if sid == 0x22:
                 entry.read = entry.read.merged(access) if entry.read else access
-            else:
+            elif sid == 0x2E:
                 entry.write = entry.write.merged(access) if entry.write else access
+            else:
+                entry.io = entry.io.merged(access) if entry.io else access
+                if len(raw.prefix) >= 4:                       # an instance per inputOutputControlParameter
+                    entry.io_parameters.add(raw.prefix[3])
         if sid == 0x31 and len(raw.prefix) >= 4:
             rid = int.from_bytes(raw.prefix[2:4], "big")
             routine = description.routines.setdefault(rid, Routine(rid, raw.name or f"Routine 0x{rid:04X}"))

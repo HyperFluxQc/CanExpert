@@ -38,6 +38,7 @@ SITUATIONS = {
     "memory_format": ("A memory address and size of a format the ECU does not take", (0x31,)),
     "periodic_mode": ("A periodic transmission mode that does not exist", (0x31,)),
     "roe_sequence": ("startResponseOnEvent with no event set up", (0x24,)),
+    "io_unknown": ("InputOutputControl of a DID that has none", (0x31,)),
 }
 # What TestExpert accepted before it had a policy: a routine refused in the session with 0x7F or 0x7E.
 DEFAULT_EXTRA = {"routine_not_in_session": (0x7F, 0x7E)}

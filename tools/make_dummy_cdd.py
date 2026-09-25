@@ -228,8 +228,9 @@ class Writer:
         session_states = [self.states[("session", s)] for s in sorted(d.sessions)]
         locked = self.states[("security", 0)]
         unlocked = [self.states[("security", level)] for level in sorted(d.security_levels)]
+        io_dids = any(entry.io is not None for entry in d.dids.values())
         for sid, service in sorted(d.services.items()):
-            if sid in (0x22, 0x2E, 0x31, 0x27):
+            if sid in (0x22, 0x2E, 0x31, 0x27) or (sid == 0x2F and io_dids):
                 continue
             if sid == 0x10 or service.sub_functions:
                 protocol, statics, _proxies, _all = self.protocol(
@@ -280,9 +281,13 @@ class Writer:
         write, _statics, write_proxies, write_statics = self.protocol(
             "WriteDataByIdentifier", [("const", 0x2E, 8), ("static", "DID", 16), ("data",)],
             [("const", 0x6E, 8), ("static", "DID", 16)])
+        io, _statics, io_proxies, io_statics = self.protocol(
+            "InputOutputControlByIdentifier", [("const", 0x2F, 8), ("static", "DID", 16), ("data",)],
+            [("const", 0x6F, 8), ("static", "DID", 16), ("data",)])
         shstatics, templates, template_id = self.template(
-            "DataIdentifier", {"DID": read_statics["DID"] + write_statics["DID"]}, [("Read", read), ("Write", write)],
-            {"data": read_proxies + write_proxies, "resCode": []})
+            "DataIdentifier", {"DID": read_statics["DID"] + write_statics["DID"] + io_statics["DID"]},
+            [("Read", read), ("Write", write), ("IOControl", io)],
+            {"data": read_proxies + write_proxies + io_proxies, "resCode": []})
         diag_class = self.diag_class(template_id, "DataIdentifiers")
         for did, entry in sorted(d.dids.items()):
             services = []
@@ -290,6 +295,8 @@ class Writer:
                 services.append((templates["Read"], self.may_be_exec(entry.read), None))
             if entry.write is not None:
                 services.append((templates["Write"], self.may_be_exec(entry.write), None))
+            if entry.io is not None:
+                services.append((templates["IOControl"], self.may_be_exec(entry.io), None))
             self.instance(diag_class, entry.name.replace(" ", "_"), {shstatics["DID"]: did}, services, entry.length,
                           entry.fields, self.shproxies[template_id])
         # Routines: startRoutine, stopRoutine and requestRoutineResults, where each routine has them.

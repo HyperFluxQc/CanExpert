@@ -218,8 +218,9 @@ availability per session (0x7F) and the NRC order, message length (0x13), sub-fu
 and written per session and security level (0x31, 0x33), security access (0x24, 0x35, the lockout's 0x36 and
 0x37), routines, the fault memory, CommunicationControl and ControlDTCSetting, ECU reset, functional
 addressing and P2 timing, and the ISO-TP transport layer (flow control, sequence numbers, N_Cr and N_Bs, WAIT and
-overflow, frames to ignore). Download, memory, periodic data and ResponseOnEvent are taken further than their
-availability, and CommunicationControl must really stop the ECU's frames. CAN Expert's own test modules run in the same run, as groups after the generated tests.
+overflow, frames to ignore). Download, memory, periodic data, ResponseOnEvent and IO control are taken further than
+their availability, CommunicationControl must really stop the ECU's frames, and the ECU's DTCs must be the
+description's. CAN Expert's own test modules run in the same run, as groups after the generated tests.
 Pre-test and post-test sequences run around the run, a group or a test — a hard
 reset after a test, an ignition frame before the run, a recovery reset after a failure — and a test plan keeps
 it all in one file, which also runs without the window for a CI server (exit code and JUnit report). An NRC
