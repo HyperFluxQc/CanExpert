@@ -755,7 +755,7 @@ class TestExpertWindow(QMainWindow):
         self._write(f"Description saved: {path} (edit it and open it again to change what is expected)")
         return path
 
-    # --- the tests -------------------------------------------------------------------------------------------------
+    # --- the settings as typed ---------------------------------------------------------------------------------
 
     def options(self) -> Options:
         return self.plan().make_options()
