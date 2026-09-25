@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -52,10 +53,12 @@ from canexpert.test_expert.engine import PlanRun
 from canexpert.test_expert.generator import Options, Suite
 from canexpert.test_expert.odx import load_description
 from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file, options_dict
+from canexpert.test_expert.policy import Deviation, today
+from canexpert.test_expert.policy_editor import PolicyEditor
 from canexpert.test_expert.sequence_editor import SequenceEditor
 from canexpert.test_expert.sequences import PRESETS, Attachment
 from canexpert.testing.report import COLOURS, summary_text
-from canexpert.testing.runner import PASSED
+from canexpert.testing.runner import INFO, PASS, PASSED
 from canexpert.testing.window import MemorySettings, step_text
 from canexpert.ui_common import app_icon, app_settings, enable_maximize
 from canexpert.uds.observer import SERVICE_NAMES
@@ -68,7 +71,7 @@ FILE_FILTER = "Diagnostic descriptions (*.cdd *.odx *.odx-d *.pdx *.json);;All f
 PLAN_FILTER = "TestExpert plans (*.json);;All files (*.*)"
 PREFIX = "test_expert/"                           # the settings TestExpert keeps
 COL_NAME, COL_VERDICT, COL_STEPS, COL_TIME, COL_SEQUENCES = range(5)
-TARGET = Qt.UserRole                              # a tests tree item's ("test", name) or ("group", name)
+TARGET = Qt.UserRole        # a tests tree item's ("test", name), ("group", name) or ("step", test name, description)
 
 
 def access_text(access) -> str:
@@ -99,7 +102,9 @@ class TestExpertWindow(QMainWindow):
         self._description_path = ""                   # the description's file; "": the Dummy ECU's
         self._items = {}
         self._group_items = {}
-        self._running_item = None
+        self._running_item = None                     # the tests tree item of the test running
+        self._cases_started = False
+        self._hook_items = {}                         # "setup"/"teardown" -> the item of the run's own steps
         self._build()
         self.run_event.connect(self._on_event)
         self.run_finished.connect(self._on_finished)
@@ -174,6 +179,9 @@ class TestExpertWindow(QMainWindow):
         self.sequence_editor = SequenceEditor()
         self.sequence_editor.changed.connect(self._sequences_changed)
         side.addTab(self.sequence_editor, "Sequences")
+        self.policy_editor = PolicyEditor()
+        self.policy_editor.changed.connect(self._save_settings)
+        side.addTab(self.policy_editor, "Deviations")
         self.side = side
         splitter.addWidget(side)
 
@@ -461,6 +469,8 @@ class TestExpertWindow(QMainWindow):
         plan.reports = plan.relative(reports) if reports else ""
         plan.excluded = [name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Unchecked]
         plan.sequences = self.sequence_editor.sequences()
+        plan.nrc_policy = self.policy_editor.policy()
+        plan.deviations = self.policy_editor.deviations()
         plan.path = target
         return plan
 
@@ -494,6 +504,8 @@ class TestExpertWindow(QMainWindow):
         self.record.setChecked(plan.record)
         self.reports_edit.setText(str(plan.resolve(plan.reports)) if plan.reports else "")
         self.sequence_editor.set_sequences(plan.sequences)
+        self.policy_editor.set_policy(plan.nrc_policy)
+        self.policy_editor.set_deviations(plan.deviations)
         self._items = {}                                    # the plan says what is left out, not the old tree
         description = plan.resolve(plan.description)
         if description is not None and description.is_file():
@@ -559,8 +571,9 @@ class TestExpertWindow(QMainWindow):
         if self.description is None:
             return
         unticked = {name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Unchecked}
+        self._running_item, self._hook_items = None, {}     # their items go with the tree
         plan = self.plan()
-        self.suite = Suite(self.description, plan.make_options(), plan.sequences, plan.folder())
+        self.suite = Suite(self.description, plan.make_options(), plan.sequences, plan.folder(), plan.nrc_policy)
         self.tree.clear()
         self._items = {}
         self._group_items = {}
@@ -580,6 +593,7 @@ class TestExpertWindow(QMainWindow):
                 parent.addChild(item)
                 self._items[case.name] = item
         self.sequence_editor.set_targets(list(self.suite.groups()), self.suite.titles())
+        self.policy_editor.set_titles(self.suite.titles())
         self._show_sequences()
         self.status.setText(f"{len(self.suite.cases)} tests")
 
@@ -619,10 +633,15 @@ class TestExpertWindow(QMainWindow):
         return menu
 
     def sequence_menu(self, item):
-        """The menu of a test or a group in the tests tree: sequences to run before or after it."""
+        """The menu of an item of the tests tree: for a test or a group, sequences to run before or after it;
+        for a failed step (or a test), accepting the deviation."""
         target = item.data(COL_NAME, TARGET) if item is not None else None
         if not target:
             return None
+        if target[0] == "step":
+            return self._step_menu(item, *target[1:])
+        if target[0] == "hook":
+            return self._run_menu("before" if target[1] == "setup" else "after")
         scope, name = target
         menu = QMenu(self)
         what = "test" if scope == "test" else "group"
@@ -644,7 +663,56 @@ class TestExpertWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(f"No sequences around this {what}").triggered.connect(
             lambda: self.sequence_editor.detach(scope, name))
+        if scope == "test":
+            menu.addSeparator()
+            if self.policy_editor.find(name, "*") is None:
+                menu.addAction("Accept every failure of this test...").triggered.connect(
+                    lambda: self.accept_deviation(name, "*"))
+            else:
+                menu.addAction("No longer accept this test's failures").triggered.connect(
+                    lambda: self.policy_editor.remove(name, "*"))
         return menu
+
+    def _run_menu(self, when):
+        """Sequences to run before or after the whole run."""
+        menu = QMenu(self)
+        submenu = menu.addMenu(f"{when.capitalize()} the run")
+        attachment = Attachment(when, "run")
+        for sequence in self.sequence_editor.sequences():
+            submenu.addAction(sequence.name).triggered.connect(
+                lambda _checked=False, name=sequence.name: self.sequence_editor.attach(name, attachment))
+        for preset in PRESETS:
+            submenu.addAction(f"New: {preset}").triggered.connect(
+                lambda _checked=False, preset=preset: self._attach_preset(preset, attachment))
+        return menu
+
+    def _step_menu(self, item, test, step):
+        menu = QMenu(self)
+        if self.policy_editor.find(test, step) is not None:
+            menu.addAction("No longer accept this deviation").triggered.connect(
+                lambda: self.policy_editor.remove(test, step))
+        elif item.text(COL_VERDICT) in ("fail", "accepted"):
+            menu.addAction("Accept this deviation...").triggered.connect(
+                lambda: self.accept_deviation(test, step, item))
+        else:
+            return None
+        return menu
+
+    def accept_deviation(self, test, step, item=None, comment=None):
+        """Accept a failure (step "*": every failure of the test), with a comment asked for when not given."""
+        if comment is None:
+            comment, ok = QInputDialog.getText(self, "Accept the deviation",
+                                               "Why is it accepted (a ticket, an agreement...)?")
+            if not ok:
+                return None
+        deviation = Deviation(test, step, comment.strip(), today())
+        self.policy_editor.add(deviation)
+        if item is not None:
+            item.setText(COL_VERDICT, "accepted")
+            item.setForeground(COL_VERDICT, QColor(COLOURS["accepted"]))
+        self._write(f"Accepted: {self.suite.titles().get(test, test) if self.suite else test}"
+                    + (f" - {step}" if step != "*" else " - every failure") + (f" ({comment})" if comment else ""))
+        return deviation
 
     def _attach_preset(self, preset, attachment):
         sequence = self.sequence_editor.add_sequence(preset, PRESETS[preset], [attachment])
@@ -755,6 +823,7 @@ class TestExpertWindow(QMainWindow):
         if self.record.isChecked():
             self._report_folder.mkdir(parents=True, exist_ok=True)
             self.recorder = Recorder(self._report_folder / f"traffic_{datetime.now().strftime('%Y%m%d-%H%M%S')}.blf")
+        self._cases_started = False
         for name in names:
             item = self._items[name]
             item.takeChildren()
@@ -778,17 +847,40 @@ class TestExpertWindow(QMainWindow):
         if self.runner is not None:
             self.runner.stop()
 
+    def _hook_item(self):
+        """The item of the steps the run takes before its first test (the pre-run sequences, the ECU's P2) or
+        after its last (the post-run sequences)."""
+        hook = "teardown" if self._cases_started else "setup"
+        item = self._hook_items.get(hook)
+        if item is None:
+            item = QTreeWidgetItem(["Before the tests" if hook == "setup" else "After the tests", "", "", "", ""])
+            item.setData(COL_NAME, TARGET, ("hook", hook))
+            if hook == "setup":
+                self.tree.insertTopLevelItem(0, item)
+            else:
+                self.tree.addTopLevelItem(item)
+            self._hook_items[hook] = item
+        return item
+
     def _on_event(self, kind, data):
         if kind == "case":
+            self._cases_started = True
             self._running_item = self._items.get(data.name)
             if self._running_item is not None:
                 self._running_item.setText(COL_VERDICT, "running")
                 self.tree.scrollToItem(self._running_item)
-        elif kind == "step" and self._running_item is not None:
+        elif kind == "step":
+            parent = self._running_item if self._running_item is not None else self._hook_item()
             step = QTreeWidgetItem([step_text(data), data.verdict, "", f"{data.time:.3f}"])
             step.setForeground(COL_VERDICT, QColor(COLOURS.get(data.verdict, "#6b7280")))
-            self._running_item.addChild(step)
+            owner = parent.data(COL_NAME, TARGET)
+            if owner:
+                step.setData(COL_NAME, TARGET, ("step", owner[1], data.description))
+            parent.addChild(step)
+            if parent is not self._running_item and data.verdict not in (PASS, INFO):
+                parent.setExpanded(True)
         elif kind == "verdict":
+            self._running_item = None
             item = self._items.get(data.name)
             if item is not None:
                 item.setText(COL_VERDICT, data.verdict)

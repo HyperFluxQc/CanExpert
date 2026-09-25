@@ -780,7 +780,7 @@ On the **Settings** tab:
   **margin over P2**.
 
 **Run** runs the ticked tests; each shows its verdict and, opened, every step with the request and the answer.
-A step that got another NRC than ISO 14229-1 asks for, but one it tolerates, passes with a note. **Stop** ends
+A step that got another NRC than ISO 14229-1 asks for, but one the NRC policy accepts, passes with a note. **Stop** ends
 the run after the current step. Every run leaves an HTML and a JUnit XML report in `TestExpert/reports`
 (**Open report**).
 
@@ -820,10 +820,29 @@ A sequence stops at its first step that goes wrong. What that means depends on w
 Before every test TestExpert still puts the ECU in the default session (`10 01`), and after it again; the
 sequences run in between — around a test in the order group, every test, the test, and back out.
 
+### The NRC policy and accepted deviations
+
+ISO 14229-1 leaves some choices open, and vehicle manufacturers' specifications make them differently — a DID
+read in a session where it may not be read gets 0x31 for one, 0x7F for another. The **Deviations** tab has the
+**NRC policy**: for each situation the tests meet (a service not allowed in the session, a DID that does not
+exist, writing a read-only DID, a wrong key...), ISO's code and the codes that pass. Type the ones your
+specification allows (`31, 7F`), or put its own in their place (`22` alone: ISO's 0x31 then fails too). An
+answer that passes by the policy but not by ISO shows a note saying so. **Back to ISO 14229-1** puts every
+situation back.
+
+An **accepted deviation** is a failure agreed on — with the supplier, in a ticket — that should stop showing
+as a failure. After a run, right-click the failed step in the results: **Accept this deviation...** asks why
+(the comment is kept with it). Right-click a test to accept **every failure of this test**. From then on that
+step is *accepted* (blue) instead of *failed*, and a test whose failures are all accepted passes; a new
+failure still fails. The **Accepted deviations** list shows them all with their comment and date — edit a
+comment there, or **Remove** one. The NRC policy and the deviations are part of the test plan, and a report
+says how many deviations the run accepted. The steps before and after the tests (the pre-run and post-run
+sequences) appear in the results as **Before the tests** and **After the tests**.
+
 ### Test plans
 
 A **test plan** keeps everything a run needs in one file: the description, the ECU connection, the settings
-and the key source, the tests left out (unticked) and the sequences. **File → Save plan** (Ctrl+S) or **Save
+and the key source, the tests left out (unticked), the sequences, the NRC policy and the accepted deviations. **File → Save plan** (Ctrl+S) or **Save
 plan as...** writes it; **Open plan...** (Ctrl+Shift+O) reads it back, and **New plan** (Ctrl+N) starts
 afresh. Give it a **Plan name** and a **Reports folder** on the Settings tab if you like (the reports go to
 `TestExpert/reports` otherwise). Paths are written relative to the plan's folder, so a plan and its CDD can be

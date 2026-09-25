@@ -19,9 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from canexpert.test_expert.description import DEFAULT_SESSION, ISO_SERVICES, SUB_FUNCTION_SERVICES, EcuDescription
+from canexpert.test_expert.policy import NrcPolicy, nrc_text
 from canexpert.test_expert.sequences import LABELS, SequenceRunner, due
 from canexpert.testing.runner import BLOCKED, ERROR, FAILED, PASSED, TestCase, TestModule
-from canexpert.uds.client import NRC_NAMES
 from canexpert.uds.observer import SERVICE_NAMES
 
 # Identifiers that are hardly ever used: the ones the tests send expecting "not supported", when free.
@@ -57,11 +57,14 @@ def _slug(text: str) -> str:
 
 class Suite:
     """The generated test cases of a description; tester is set before a run (a test_expert.tester.Tester).
-    sequences: the pre-test and post-test sequences; base_dir: where their Python files are looked for."""
+    sequences: the pre-test and post-test sequences; base_dir: where their Python files are looked for;
+    policy: the NRCs that pass in each situation (NrcPolicy; ISO 14229-1's by default)."""
 
-    def __init__(self, description: EcuDescription, options: Options | None = None, sequences=(), base_dir=None):
+    def __init__(self, description: EcuDescription, options: Options | None = None, sequences=(), base_dir=None,
+                 policy: NrcPolicy | None = None):
         self.d = description
         self.o = options or Options()
+        self.policy = policy or NrcPolicy()
         self.sequences = list(sequences)
         self.sequence_runner = SequenceRunner(self, base_dir)
         self.tester = None
@@ -160,17 +163,17 @@ class Suite:
         t.check(ok, what, detail)
         return raw if ok else None
 
-    def negative(self, t, payload, nrc, what, functional=False, tolerated=()):
-        """A step: NRC nrc (or one of them: the first is ISO's). An NRC in tolerated passes with a note."""
-        expected = (nrc,) if isinstance(nrc, int) else tuple(nrc)
+    def negative(self, t, payload, situation, what, functional=False):
+        """A step: the negative response the situation calls for (policy.SITUATIONS): one of the NRCs the NRC
+        policy accepts there. One that ISO 14229-1 does not name passes with a note."""
+        iso, accepted = self.policy.iso(situation), self.policy.accepted(situation)
         answer = self.tester.ask(payload, functional)
         got = answer.nrc
-        good = answer.raw is not None and answer.raw[:2] == bytes([0x7F, payload[0]]) and got in expected
-        if not good and got in tolerated and answer.raw[1] == payload[0]:
-            t.check(True, what, f"{answer.text()} - ISO 14229-1 asks for NRC 0x{expected[0]:02X} "
-                               f"{NRC_NAMES.get(expected[0], '')}; tolerated")
-            return True
-        wanted = " or ".join(f"0x{code:02X} {NRC_NAMES.get(code, '')}" for code in expected)
+        good = answer.raw is not None and answer.raw[:2] == bytes([0x7F, payload[0]]) and got in accepted
+        if good and got not in iso:
+            return t.check(True, what, f"{answer.text()} - accepted by the NRC policy; ISO 14229-1 asks for "
+                                       f"{' or '.join(nrc_text(code) for code in iso)}")
+        wanted = " or ".join(nrc_text(code) for code in accepted)
         return t.check(good, what, answer.text() if good else f"{answer.text()} - expected NRC {wanted}")
 
     def silent(self, t, payload, what, functional=False):
@@ -325,7 +328,7 @@ class Suite:
             sources = self.d.sessions[session].entered_from
             if sources and DEFAULT_SESSION not in sources:
                 def refused(t, session=session):
-                    self.negative(t, bytes([0x10, session]), (0x22, 0x7E),
+                    self.negative(t, bytes([0x10, session]), "session_not_from_here",
                                   f"from the default session, 10 {session:02X} is refused")
                 self._add(group, f"The {self.d.session_name(session)} is not entered from the default session",
                           refused)
@@ -333,14 +336,14 @@ class Suite:
         unused = self.unused(UNUSED_SUB_FUNCTIONS, self.d.sessions)
 
         def unsupported(t):
-            self.negative(t, bytes([0x10, unused]), 0x12, f"10 {unused:02X}: no such session")
-            self.negative(t, bytes([0x10, unused | 0x80]), 0x12,
+            self.negative(t, bytes([0x10, unused]), "sub_function_not_supported", f"10 {unused:02X}: no such session")
+            self.negative(t, bytes([0x10, unused | 0x80]), "sub_function_not_supported",
                           f"10 {unused | 0x80:02X}: the suppress bit does not hide a negative response")
         self._add(group, "A session that does not exist", unsupported)
 
         def length(t):
-            self.negative(t, b"\x10", 0x13, "10 alone: incorrect length")
-            self.negative(t, b"\x10\x01\x00", 0x13, "10 01 00: one byte too many")
+            self.negative(t, b"\x10", "incorrect_length", "10 alone: incorrect length")
+            self.negative(t, b"\x10\x01\x00", "incorrect_length", "10 01 00: one byte too many")
         self._add(group, "Message length", length)
 
         def suppress(t):
@@ -355,10 +358,11 @@ class Suite:
         def case(t):
             self.positive(t, b"\x3e\x00", "3E 00 is answered 7E 00", echo=[0x00], length=2)
             self.silent(t, b"\x3e\x80", "3E 80: the suppress bit set, no answer")
-            self.negative(t, b"\x3e\x01", 0x12, "3E 01: zeroSubFunction only")
-            self.negative(t, b"\x3e\x81", 0x12, "3E 81: the suppress bit does not hide a negative response")
-            self.negative(t, b"\x3e", 0x13, "3E alone: incorrect length")
-            self.negative(t, b"\x3e\x00\x00", 0x13, "3E 00 00: one byte too many")
+            self.negative(t, b"\x3e\x01", "sub_function_not_supported", "3E 01: zeroSubFunction only")
+            self.negative(t, b"\x3e\x81", "sub_function_not_supported",
+                          "3E 81: the suppress bit does not hide a negative response")
+            self.negative(t, b"\x3e", "incorrect_length", "3E alone: incorrect length")
+            self.negative(t, b"\x3e\x00\x00", "incorrect_length", "3E 00 00: one byte too many")
         self._add("TesterPresent", "TesterPresent (3E)", case)
 
     def _unsupported_services(self):
@@ -368,7 +372,8 @@ class Suite:
 
         def case(t):
             for sid in missing:
-                self.negative(t, bytes([sid]), 0x11, f"{sid:02X} {SERVICE_NAMES.get(sid, '')}: not supported")
+                self.negative(t, bytes([sid]), "service_not_supported",
+                              f"{sid:02X} {SERVICE_NAMES.get(sid, '')}: not supported")
         self._add("Services", f"Services the ECU does not have ({len(missing)})", case,
                   "Each ISO 14229-1 service the description does not list must get NRC 0x11 serviceNotSupported.")
 
@@ -391,7 +396,8 @@ class Suite:
                     self.enter(t, session)
                     name = self.d.session_name(session)
                     if not service.access.allows(session):
-                        self.negative(t, request, 0x7F, f"{name}: {_hex(request)} is refused, NRC 0x7F")
+                        self.negative(t, request, "service_not_in_session",
+                                      f"{name}: {_hex(request)} is refused, NRC 0x7F")
                     elif harmless:
                         self.available(t, request, f"{name}: {_hex(request)} is answered")
             self._add(group, f"{service.name} ({sid:02X}) by session", case)
@@ -412,10 +418,11 @@ class Suite:
             for sid, service, session in cases:
                 self.enter(t, session)
                 name = self.d.session_name(session)
-                self.negative(t, bytes([sid]), 0x7F, f"{name}: {sid:02X} alone gets 0x7F before 0x13")
+                self.negative(t, bytes([sid]), "service_not_in_session",
+                              f"{name}: {sid:02X} alone gets 0x7F before 0x13")
                 if sid in SUB_FUNCTION_SERVICES:
                     unused = self.unused(UNUSED_SUB_FUNCTIONS, service.sub_functions)
-                    self.negative(t, bytes([sid, unused, 0x00, 0x00]), 0x7F,
+                    self.negative(t, bytes([sid, unused, 0x00, 0x00]), "service_not_in_session",
                                   f"{name}: {sid:02X} {unused:02X} gets 0x7F before 0x12")
         self._add("NRC order", "Session before length and sub-function", case,
                   "ISO 14229-1 figure 5: SID supported, then supported in the active session, then the rest.")
@@ -453,8 +460,8 @@ class Suite:
                         continue
                     self.unlock(t, min(service.access.levels))
                 for request in wrong:
-                    self.negative(t, request, 0x13, f"{self.d.session_name(session)}: {_hex(request)} has an "
-                                                    f"incorrect length")
+                    self.negative(t, request, "incorrect_length",
+                                  f"{self.d.session_name(session)}: {_hex(request)} has an incorrect length")
         if checks:
             self._add("Message length", "Requests too short or too long", case)
 
@@ -475,8 +482,8 @@ class Suite:
         def case(t):
             for sid, session, request in checks:
                 self.enter(t, session)
-                self.negative(t, request, 0x12, f"{self.d.session_name(session)}: {_hex(request)}: no such "
-                                                f"sub-function")
+                self.negative(t, request, "sub_function_not_supported",
+                              f"{self.d.session_name(session)}: {_hex(request)}: no such sub-function")
         if checks:
             self._add("Sub-functions", "Sub-functions the ECU does not have", case)
 
@@ -493,11 +500,13 @@ class Suite:
                     self.enter(t, session)
                     name = self.d.session_name(session)
                     if not self.allowed(0x22, session):
-                        self.negative(t, request, 0x7F, f"{name}: ReadDataByIdentifier is not allowed")
+                        self.negative(t, request, "service_not_in_session",
+                                      f"{name}: ReadDataByIdentifier is not allowed")
                     elif not entry.read.allows(session):
-                        self.negative(t, request, 0x31, f"{name}: not readable in this session, NRC 0x31")
+                        self.negative(t, request, "did_not_in_session",
+                                      f"{name}: not readable in this session, NRC 0x31")
                     elif entry.read.levels:
-                        self.negative(t, request, 0x33, f"{name}: locked, NRC 0x33")
+                        self.negative(t, request, "locked", f"{name}: locked, NRC 0x33")
                         if self.o.key is not None and self.unlock(t, min(entry.read.levels)):
                             self.positive(t, request, f"{name}: unlocked, read", echo=did.to_bytes(2, "big"),
                                           length=length)
@@ -512,7 +521,7 @@ class Suite:
                 for session in self.sessions():
                     if self.allowed(0x22, session):
                         self.enter(t, session)
-                        self.negative(t, b"\x22" + unknown.to_bytes(2, "big"), 0x31,
+                        self.negative(t, b"\x22" + unknown.to_bytes(2, "big"), "did_unknown",
                                       f"{self.d.session_name(session)}: DID {unknown:04X} does not exist")
             self._add(group, f"A DID that does not exist ({unknown:04X})", unknown_did)
 
@@ -525,7 +534,7 @@ class Suite:
                 self.enter(t, session)
                 for did in read_only:
                     data = bytes(self.d.dids[did].length or 1)
-                    self.negative(t, b"\x2e" + did.to_bytes(2, "big") + data, 0x31,
+                    self.negative(t, b"\x2e" + did.to_bytes(2, "big") + data, "did_read_only",
                                   f"{did:04X} ({self.d.dids[did].name}) is not writable, NRC 0x31")
             self._add(group, "Writing a read-only DID", not_writable)
         for did, entry in sorted(self.d.dids.items()):
@@ -540,7 +549,7 @@ class Suite:
                 identifier = did.to_bytes(2, "big")
                 if entry.write.levels:
                     probe = b"\x2e" + identifier + bytes(entry.length or 1)
-                    self.negative(t, probe, 0x33, "locked: NRC 0x33, nothing written")
+                    self.negative(t, probe, "locked", "locked: NRC 0x33, nothing written")
                     if self.o.key is None:
                         t.skip("no key source set for SecurityAccess")
                     self.unlock(t, min(entry.write.levels))
@@ -549,7 +558,8 @@ class Suite:
                     t.fail("the DID could not be read")
                 value = current[3:]
                 self.positive(t, b"\x2e" + identifier + value, "its own value written back", echo=identifier, length=3)
-                self.negative(t, b"\x2e" + identifier + value + b"\x00", 0x13, "one byte too many: NRC 0x13")
+                self.negative(t, b"\x2e" + identifier + value + b"\x00", "incorrect_length",
+                              "one byte too many: NRC 0x13")
             self._add(group, f"Write {entry.name} ({did:04X}) back", write)
 
     def _security(self):
@@ -564,14 +574,14 @@ class Suite:
 
             def case(t, level=level, session=session):
                 self.enter(t, session)
-                self.negative(t, bytes([0x27, level + 1, 0x00, 0x00, 0x00, 0x00]), 0x24,
+                self.negative(t, bytes([0x27, level + 1, 0x00, 0x00, 0x00, 0x00]), "key_before_seed",
                               "sendKey before requestSeed: NRC 0x24 requestSequenceError")
                 seed = self.positive(t, bytes([0x27, level]), "requestSeed answers a seed", echo=[level])
                 if seed is None:
                     return
                 t.check(len(seed) > 2 and any(seed[2:]), "the seed is not empty and not zero while locked", _hex(seed))
                 wrong = bytes(byte ^ 0xFF for byte in (self.o.key(level, seed[2:]) if self.o.key else seed[2:]))
-                self.negative(t, bytes([0x27, level + 1]) + wrong, 0x35, "a wrong key: NRC 0x35 invalidKey")
+                self.negative(t, bytes([0x27, level + 1]) + wrong, "invalid_key", "a wrong key: NRC 0x35 invalidKey")
                 if self.o.key is None:
                     t.log("No key source: unlocking is not tested")
                     return
@@ -594,9 +604,10 @@ class Suite:
                         if seed is None:
                             return
                         wrong = bytes(byte ^ 0xFF for byte in seed[2:])
-                        expected = 0x36 if attempt == self.o.attempts else 0x35
+                        expected = "attempts_exceeded" if attempt == self.o.attempts else "invalid_key"
                         self.negative(t, bytes([0x27, level + 1]) + wrong, expected, f"attempt {attempt}: a wrong key")
-                    self.negative(t, bytes([0x27, level]), 0x37, "locked out: NRC 0x37 requiredTimeDelayNotExpired")
+                    self.negative(t, bytes([0x27, level]), "delay_not_expired",
+                                  "locked out: NRC 0x37 requiredTimeDelayNotExpired")
                     deadline = time.monotonic() + self.o.lockout_seconds + 0.5
                     while time.monotonic() < deadline:
                         t.wait(min(2.0, max(0.0, deadline - time.monotonic())))
@@ -621,9 +632,9 @@ class Suite:
                     self.enter(t, session)
                     name = self.d.session_name(session)
                     if not start.allows(session):
-                        self.negative(t, request, 0x31, f"{name}: not in this session", tolerated=(0x7F, 0x7E))
+                        self.negative(t, request, "routine_not_in_session", f"{name}: not in this session")
                     elif start.levels:
-                        self.negative(t, request, 0x33, f"{name}: locked, NRC 0x33")
+                        self.negative(t, request, "locked", f"{name}: locked, NRC 0x33")
                     else:
                         t.log(f"{name}: allowed; not started (routines are not run)")
             self._add("Routines", f"{routine.name} ({rid:04X})", case)
@@ -632,7 +643,8 @@ class Suite:
         if session is not None:
             def unknown_routine(t):
                 self.enter(t, session)
-                self.negative(t, b"\x31\x01" + unknown.to_bytes(2, "big"), 0x31, f"routine {unknown:04X} does not exist")
+                self.negative(t, b"\x31\x01" + unknown.to_bytes(2, "big"), "routine_unknown",
+                              f"routine {unknown:04X} does not exist")
             self._add("Routines", f"A routine that does not exist ({unknown:04X})", unknown_routine)
 
     def _fault_memory(self):
@@ -662,7 +674,7 @@ class Suite:
 
             def clear_case(t):
                 self.enter(t, session)
-                self.negative(t, b"\x14" + UNUSED_DTC_GROUP.to_bytes(3, "big"), 0x31,
+                self.negative(t, b"\x14" + UNUSED_DTC_GROUP.to_bytes(3, "big"), "dtc_group_unknown",
                               f"14 {UNUSED_DTC_GROUP:06X}: no such group of DTCs")
                 if self.o.destructive:
                     self.positive(t, b"\x14\xff\xff\xff", "14 FF FF FF: every DTC cleared", length=1)
@@ -711,9 +723,9 @@ class Suite:
             else:
                 self.positive(t, b"\x10\x01", "after the reset: the ECU answers", echo=[0x01])
             self.enter(t, session)
-            self.negative(t, bytes([0x11, self.unused(UNUSED_SUB_FUNCTIONS, service.sub_functions)]), 0x12,
-                          "a reset type that does not exist")
-            self.negative(t, bytes([0x11, subs[0], 0x00]), 0x13, "one byte too many")
+            self.negative(t, bytes([0x11, self.unused(UNUSED_SUB_FUNCTIONS, service.sub_functions)]),
+                          "sub_function_not_supported", "a reset type that does not exist")
+            self.negative(t, bytes([0x11, subs[0], 0x00]), "incorrect_length", "one byte too many")
         self._add("ECU reset", f"ECUReset (11 {subs[0]:02X})", case)
 
     def _functional(self):

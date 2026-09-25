@@ -1,7 +1,8 @@
 """
 Test plans: everything a TestExpert run needs, in one JSON file - the description, the ECU connection, the
-settings, the key source, the tests left out and the sequences - so the same run can be made again, from the
-window or without it (test_expert.py plan.json --run), on a bench or a CI server.
+settings, the key source, the tests left out, the sequences, the NRC policy and the accepted deviations - so
+the same run can be made again, from the window or without it (test_expert.py plan.json --run), on a bench or
+a CI server.
 
 Paths in a plan are kept relative to the plan's folder when they can be, so a plan and its CDD move together.
 Identifiers are written as hexadecimal text ("0x7E0"); numbers are read too.
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.generator import Options
+from canexpert.test_expert.policy import Deviation, NrcPolicy
 from canexpert.test_expert.sequences import Sequence
 
 PLAN_FORMAT = "TestExpert plan"
@@ -127,6 +129,8 @@ class TestPlan:
     reports: str = ""                     # the reports' folder; "": TestExpert/reports
     excluded: list = field(default_factory=list)       # names of the tests not run
     sequences: list = field(default_factory=list)      # Sequence
+    nrc_policy: NrcPolicy = field(default_factory=NrcPolicy)
+    deviations: list = field(default_factory=list)     # Deviation: failures accepted
     path: Path | None = None              # where it was read from or saved to (not saved)
 
     # --- files -----------------------------------------------------------------------------------------
@@ -177,7 +181,9 @@ class TestPlan:
         return {"format": PLAN_FORMAT, "version": PLAN_VERSION, "name": self.name, "description": self.description,
                 "connection": self.connection.to_dict(), "options": dict(self.options), "key": self.key.to_dict(),
                 "record": self.record, "reports": self.reports, "excluded": sorted(self.excluded),
-                "sequences": [sequence.to_dict() for sequence in self.sequences]}
+                "sequences": [sequence.to_dict() for sequence in self.sequences],
+                "nrc_policy": self.nrc_policy.to_dict(),
+                "deviations": [deviation.to_dict() for deviation in self.deviations]}
 
     @classmethod
     def from_dict(cls, values: dict, path=None) -> "TestPlan":
@@ -194,6 +200,8 @@ class TestPlan:
                        bool(values.get("record", False)), str(values.get("reports", "")),
                        [str(name) for name in values.get("excluded", ())],
                        [Sequence.from_dict(item) for item in values.get("sequences", ())],
+                       NrcPolicy.from_dict(values.get("nrc_policy")),
+                       [Deviation.from_dict(item) for item in values.get("deviations", ())],
                        Path(path) if path is not None else None)
         except (TypeError, ValueError, AttributeError) as exc:
             raise PlanError(f"the plan cannot be read: {exc}") from None

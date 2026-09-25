@@ -1,6 +1,7 @@
 """TestExpert: descriptions (JSON, how states become sessions and levels, CDD, ODX), the tests generated from
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
-post-test sequences around them, test plans and their run from the command line, and the window."""
+post-test sequences around them, the NRC policy and accepted deviations, test plans and their run from the
+command line, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import can
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
 from canexpert.paths import ODX_DIR
@@ -28,6 +30,7 @@ from canexpert.test_expert.description import (Access, EcuDescription, RawServic
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.generator import Options, Suite
 from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file
+from canexpert.test_expert.policy import Deviation, NrcPolicy, accept_function, parse_nrcs
 from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
                                              parse_frame, parse_hex, parse_script)
 from canexpert.test_expert.tester import Tester
@@ -178,11 +181,12 @@ class Bench:
             ecu_bus.shutdown()
         test.addCleanup(close)
 
-    def run(self, description, names=None, sequences=(), base_dir=None, **options):
+    def run(self, description, names=None, sequences=(), base_dir=None, policy=None, deviations=(), **options):
         options.setdefault("key", key)
-        suite = Suite(description, Options(**options), sequences, base_dir)
+        suite = Suite(description, Options(**options), sequences, base_dir, policy)
         suite.tester = Tester(self.tester_bus, TRANSPORT, 0x7DF)
-        return suite, Runner(suite.module(names), send=suite.tester.send_frame).run(names)
+        runner = Runner(suite.module(names), send=suite.tester.send_frame, accept=accept_function(deviations))
+        return suite, runner.run(names)
 
 
 def failures(report):
@@ -340,6 +344,66 @@ class SequenceTest(unittest.TestCase):
         self.assertEqual(report.verdict, "failed")
 
 
+class PolicyTest(unittest.TestCase):
+    READ_ONLY = ["data_identifiers.writing_a_read_only_did"]
+
+    def test_the_policy_and_deviations_as_values(self):
+        self.assertEqual(parse_nrcs("31, 0x7F 22"), (0x31, 0x7F, 0x22))
+        with self.assertRaises(ValueError):
+            parse_nrcs("131")
+        policy = NrcPolicy()
+        self.assertEqual(policy.accepted("did_not_in_session"), (0x31,))
+        self.assertEqual(policy.accepted("routine_not_in_session"), (0x31, 0x7F, 0x7E), "what TestExpert tolerated")
+        policy.set("did_not_in_session", (0x31, 0x7F))
+        policy.set("locked", (0x33,))                                         # the default: nothing kept
+        self.assertEqual(policy.to_dict(), {"did_not_in_session": ["31", "7F"]})
+        self.assertEqual(NrcPolicy.from_dict(policy.to_dict()), policy)
+        deviations = [Deviation("sessions.message_length", "10 alone: incorrect length", "ticket 7"),
+                      Deviation("timing.responses_within_p2", "*", "")]
+        accept = accept_function(deviations)
+        self.assertEqual(accept("sessions.message_length", "10 alone: incorrect length"), "ticket 7")
+        self.assertIsNone(accept("sessions.message_length", "10 01 00: one byte too many"))
+        self.assertEqual(accept("timing.responses_within_p2", "anything"), "")
+        self.assertIsNone(accept_function([]), "no deviations: nothing to ask")
+
+    def test_what_the_ecu_answers_instead(self):
+        config = EcuConfig(broadcast_interval=0, forced_nrcs=[{"sid": 0x2E, "nrc": 0x7F}])
+        bench = Bench(self, config)
+        description = dummy_description(EcuConfig())
+        _suite, report = bench.run(description, self.READ_ONLY)
+        (case,) = report.cases
+        self.assertEqual(case.verdict, "failed", "0x7F where ISO 14229-1 asks for 0x31")
+        self.assertIn("expected NRC 0x31 requestOutOfRange", case.steps[0].detail)
+        policy = NrcPolicy()
+        policy.set("did_read_only", (0x31, 0x7F))
+        _suite, report = bench.run(description, self.READ_ONLY, policy=policy)
+        (case,) = report.cases
+        self.assertEqual(case.verdict, "passed")
+        self.assertIn("accepted by the NRC policy; ISO 14229-1 asks for 0x31 requestOutOfRange", case.steps[0].detail)
+        policy.set("did_read_only", (0x22,))                  # a specification with its own code
+        _suite, report = bench.run(description, self.READ_ONLY, policy=policy)
+        self.assertEqual(report.cases[0].verdict, "failed")
+        self.assertIn("expected NRC 0x22 conditionsNotCorrect", report.cases[0].steps[0].detail)
+
+    def test_accepted_deviations(self):
+        config = EcuConfig(broadcast_interval=0, forced_nrcs=[{"sid": 0x2E, "nrc": 0x7F}])
+        bench = Bench(self, config)
+        description = dummy_description(EcuConfig())
+        _suite, report = bench.run(description, self.READ_ONLY)
+        steps = [item.description for item in report.cases[0].steps]
+        self.assertGreater(len(steps), 1, "one step for each read-only DID")
+        deviation = Deviation(self.READ_ONLY[0], steps[0], "the supplier's 0x7F, agreed in ticket 42")
+        _suite, report = bench.run(description, self.READ_ONLY, deviations=[deviation])
+        (case,) = report.cases
+        self.assertEqual([item.verdict for item in case.steps], ["accepted"] + ["fail"] * (len(steps) - 1))
+        self.assertIn("accepted deviation: the supplier's 0x7F", case.steps[0].detail)
+        self.assertEqual(case.verdict, "failed", "the other DIDs still fail")
+        every = Deviation(self.READ_ONLY[0], "*", "")
+        _suite, report = bench.run(description, self.READ_ONLY, deviations=[every])
+        self.assertEqual(report.cases[0].verdict, "passed")
+        self.assertEqual({item.verdict for item in report.cases[0].steps}, {"accepted"})
+
+
 class PlanTest(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -353,7 +417,9 @@ class PlanTest(unittest.TestCase):
         plan = TestPlan("Nightly", str(description), Connection("vector", "1", 250000, 0x18DA10F1, 0x18DAF110, None,
                                                                True, None),
                         excluded=["timing.responses_within_p2"], key=KeySource("dll", 0x5A, "keys/ecu.dll", "B"),
-                        sequences=[Sequence("Hard reset", [SequenceStep("reset", "01")], [Attachment("after", "run")])])
+                        sequences=[Sequence("Hard reset", [SequenceStep("reset", "01")], [Attachment("after", "run")])],
+                        nrc_policy=NrcPolicy({"locked": (0x33, 0x22)}),
+                        deviations=[Deviation("timing.responses_within_p2", "*", "slow gateway", "2026-09-24")])
         plan.options["destructive"] = True
         path = self.folder / "plans" / "nightly.json"
         path.parent.mkdir()
@@ -547,6 +613,55 @@ class WindowTest(unittest.TestCase):
         self.addCleanup(restarted.close)
         self.assertEqual(restarted.plan_path, path, "the plan in use when the window was left")
         self.assertEqual(restarted._items[name].checkState(0), 0)
+
+    def test_policy_and_deviations_in_the_window(self):
+        window = self.window
+        editor = window.policy_editor
+        row = next(row for row in range(editor.nrcs.rowCount())
+                   if editor.nrcs.item(row, 0).data(Qt.UserRole) == "did_not_in_session")
+        editor.nrcs.item(row, 2).setText("31, 7F")
+        self.assertEqual(window.plan().nrc_policy.accepted("did_not_in_session"), (0x31, 0x7F))
+        editor.nrcs.item(row, 2).setText("zz")
+        self.assertEqual(window.plan().nrc_policy.accepted("did_not_in_session"), (0x31, 0x7F), "a typo is not taken")
+        bench = Bench(self, EcuConfig(broadcast_interval=0, forced_nrcs=[{"sid": 0x2E, "nrc": 0x7F}]))
+        self.assertTrue(window.connect_ecu(can.Bus(interface="virtual", channel=bench.channel)))
+        self.addCleanup(window.disconnect_ecu)
+        name = PolicyTest.READ_ONLY[0]
+        self.assertIsNotNone(window.run([name]))
+        self.assertTrue(spin_until(lambda: window.report is not None and window.run_btn.isEnabled()))
+        self.assertEqual(window.report.cases[0].verdict, "failed")
+        item = window._items[name]
+        step = item.child(0)
+        self.assertEqual(step.text(1), "fail")
+        menu = window.sequence_menu(step)
+        self.assertEqual([action.text() for action in menu.actions()], ["Accept this deviation..."])
+        test, description = step.data(0, Qt.UserRole)[1:]
+        window.accept_deviation(test, description, step, comment="ticket 42")
+        self.assertEqual(step.text(1), "accepted")
+        self.assertEqual(editor.deviations()[0].comment, "ticket 42")
+        self.assertEqual(editor.table.item(0, 0).text(), "Data identifiers: Writing a read-only DID")
+        self.assertEqual([action.text() for action in window.sequence_menu(step).actions()],
+                         ["No longer accept this deviation"])
+        window.report = None
+        window.run([name])
+        self.assertTrue(spin_until(lambda: window.report is not None and window.run_btn.isEnabled()))
+        self.assertEqual(window.report.cases[0].verdict, "failed", "only the first DID's failure is accepted")
+        self.assertEqual(window._items[name].child(0).text(1), "accepted")
+        self.assertEqual(window._items[name].child(1).text(1), "fail")
+        before = window.tree.topLevelItem(0)
+        self.assertEqual(before.text(0), "Before the tests", "the run's own steps")
+        self.assertIn("P2 50 ms, as the ECU announces", [before.child(i).text(0) for i in range(before.childCount())])
+        self.assertEqual([action.text() for action in window.sequence_menu(before).actions()], ["Before the run"])
+        item = window._items[name]
+        test_menu = [action.text() for action in window.sequence_menu(item).actions()]
+        self.assertIn("Accept every failure of this test...", test_menu)
+        path = self.folder / "policy.json"
+        window.save_plan_as(path)
+        saved = TestPlan.load(path)
+        self.assertEqual(saved.nrc_policy.accepted("did_not_in_session"), (0x31, 0x7F))
+        self.assertEqual([deviation.comment for deviation in saved.deviations], ["ticket 42"])
+        editor.remove(test, description)
+        self.assertEqual(window.plan().deviations, [])
 
     def test_main_smoke_test(self):
         self.assertEqual(window_module.main(["--smoke-test"]), 0)

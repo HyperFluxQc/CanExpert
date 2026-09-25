@@ -10,6 +10,7 @@ from pathlib import Path
 from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.generator import Suite
 from canexpert.test_expert.plan import TestPlan
+from canexpert.test_expert.policy import accept_function
 from canexpert.test_expert.tester import Tester
 from canexpert.testing.report import save_reports
 from canexpert.testing.runner import Runner, TestReport
@@ -39,13 +40,13 @@ class PlanRun:
 
     def __init__(self, plan: TestPlan, description: EcuDescription, bus, names=None, on_event=None):
         self.plan, self.description = plan, description
-        self.suite = Suite(description, plan.make_options(), plan.sequences, plan.folder())
+        self.suite = Suite(description, plan.make_options(), plan.sequences, plan.folder(), plan.nrc_policy)
         excluded = set(plan.excluded)
         self.names = [case.name for case in self.suite.cases if case.name not in excluded] if names is None \
             else [case.name for case in self.suite.cases if case.name in set(names)]
         self.suite.tester = Tester(bus, plan.connection.transport(), plan.connection.functional_id)
         self.runner = Runner(self.suite.module(self.names), send=self.suite.tester.send_frame, on_event=on_event,
-                             configuration=plan.connection.text())
+                             configuration=plan.connection.text(), accept=accept_function(plan.deviations))
         self.report: TestReport | None = None
 
     def run(self) -> TestReport:
@@ -62,6 +63,11 @@ class PlanRun:
                  ("Described", self.description.summary())]
         if self.plan.path is not None:
             facts.insert(0, ("Test plan", str(self.plan.path)))
+        if self.plan.nrc_policy.nrcs:
+            facts.append(("NRC policy", "; ".join(f"{situation}: {', '.join(f'{nrc:02X}' for nrc in nrcs)}"
+                                                  for situation, nrcs in sorted(self.plan.nrc_policy.nrcs.items()))))
+        if self.plan.deviations:
+            facts.append(("Accepted deviations", str(len(self.plan.deviations))))
         return facts
 
     def save(self, folder) -> list[Path]:
