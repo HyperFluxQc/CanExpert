@@ -11,10 +11,11 @@ from datetime import datetime
 from pathlib import Path
 
 import canexpert
-from canexpert.testing.runner import ERROR, FAILED, PASSED, SKIPPED, CaseResult, TestReport
+from canexpert.testing.runner import (ACCEPTED, BLOCKED, ERROR, FAILED, PASSED, SKIPPED, WARN, CaseResult,
+                                      TestReport)
 
-COLOURS = {PASSED: "#15803d", FAILED: "#b91c1c", ERROR: "#b45309", SKIPPED: "#6b7280",
-           "pass": "#15803d", "fail": "#b91c1c", "info": "#6b7280"}
+COLOURS = {PASSED: "#15803d", FAILED: "#b91c1c", ERROR: "#b45309", SKIPPED: "#6b7280", BLOCKED: "#7c3aed",
+           "pass": "#15803d", "fail": "#b91c1c", "info": "#6b7280", WARN: "#c2410c", ACCEPTED: "#0369a1"}
 
 
 def _when(timestamp: float) -> str:
@@ -39,32 +40,36 @@ def _steps_table(result: CaseResult) -> str:
 
 
 def _section(result: CaseResult, open_it: bool) -> str:
-    failed = len(result.failures())
     summary = f"{len(result.steps)} step{'s' if len(result.steps) != 1 else ''}"
-    if failed:
-        summary += f", {failed} failed"
+    for count, what in ((len(result.failures()), "failed"), (len(result.warnings()), "with a warning"),
+                        (len(result.accepted()), "accepted")):
+        if count:
+            summary += f", {count} {what}"
     return (f'<details{" open" if open_it else ""}><summary>{_badge(result.verdict)} '
             f'<b>{html.escape(result.title)}</b> <span class="muted">{html.escape(result.name)} - {summary} - '
             f'{result.duration:.3f} s</span></summary>{_steps_table(result)}</details>')
 
 
-def html_report(report: TestReport) -> str:
+def html_report(report: TestReport, facts=(), sections: str = "") -> str:
     """The report as one HTML page: the verdict, the counts, and every test case with its steps (the ones
-    that did not pass are opened)."""
+    that did not pass, or passed with warnings or accepted deviations, are opened). facts: more (name, value)
+    rows for the table at the top; sections: HTML put between the test cases and their steps."""
     counts = report.counts()
     rows = "".join(
         f"<tr><td>{_badge(case.verdict)}</td><td>{html.escape(case.title)}</td>"
         f'<td class="num">{len(case.steps)}</td><td class="num">{len(case.failures())}</td>'
         f'<td class="num">{case.duration:.3f}</td></tr>' for case in report.cases)
     hooks = [hook for hook in (report.setup,) if hook is not None]
-    sections = "".join(_section(result, result.verdict != PASSED)
-                       for result in hooks + report.cases + ([report.teardown] if report.teardown else []))
-    facts = [("Test module", report.path), ("Configuration", report.configuration or "-"),
-             ("Started", _when(report.started)), ("Duration", f"{report.duration:.3f} s"),
-             ("CAN Expert", canexpert.__version__), ("Computer", platform.node() or "-")]
+    steps = "".join(_section(result, result.verdict != PASSED or bool(result.warnings() or result.accepted()))
+                    for result in hooks + report.cases + ([report.teardown] if report.teardown else []))
+    rows_facts = [("Test module", report.path), ("Configuration", report.configuration or "-"),
+                  ("Started", _when(report.started)), ("Duration", f"{report.duration:.3f} s"),
+                  ("CAN Expert", canexpert.__version__), ("Computer", platform.node() or "-"), *facts]
     if report.stopped:
-        facts.append(("Stopped", "by the user, before every test case had run"))
-    facts_html = "".join(f"<tr><th>{html.escape(name)}</th><td>{html.escape(value)}</td></tr>" for name, value in facts)
+        rows_facts.append(("Stopped", "by the user, before every test case had run"))
+    facts_html = "".join(f"<tr><th>{html.escape(str(name))}</th><td>{html.escape(str(value))}</td></tr>"
+                         for name, value in rows_facts)
+    blocked = f", {counts[BLOCKED]} blocked" if counts[BLOCKED] else ""
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>{html.escape(report.title)} - test report</title>
@@ -82,19 +87,30 @@ def html_report(report: TestReport) -> str:
  tr.fail td {{ background: #fef2f2; }}
  details {{ border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px 10px; margin: 6px 0; }}
  summary {{ cursor: pointer; }}
+ tr.warn td {{ background: #fff7ed; }}
+ tr.accepted td {{ background: #f0f9ff; }}
  .muted, .none {{ color: #6b7280; }}
  pre.error {{ background: #fff7ed; border: 1px solid #fdba74; padding: 8px; white-space: pre-wrap; }}
 </style></head><body>
 <h1>{html.escape(report.title)}</h1>
 <div class="verdict">{_badge(report.verdict)} {counts[PASSED]} passed, {counts[FAILED]} failed, {counts[ERROR]} with
-an error, {counts[SKIPPED]} skipped</div>
+an error, {counts[SKIPPED]} skipped{blocked}</div>
 <table class="facts">{facts_html}</table>
 <h2>Test cases</h2>
 <table><tr><th>Verdict</th><th>Test case</th><th>Steps</th><th>Failed</th><th>Time (s)</th></tr>{rows}</table>
-<h2>Steps</h2>
 {sections}
+<h2>Steps</h2>
+{steps}
 </body></html>
 """
+
+
+def summary_text(report: TestReport) -> str:
+    """"PASSED: 12 passed, 0 failed, 0 error, 1 skipped in 3.2 s" (and the blocked ones, when any were)."""
+    counts = report.counts()
+    blocked = f", {counts[BLOCKED]} blocked" if counts[BLOCKED] else ""
+    return (f"{report.verdict.upper()}: {counts[PASSED]} passed, {counts[FAILED]} failed, {counts[ERROR]} error, "
+            f"{counts[SKIPPED]} skipped{blocked} in {report.duration:.1f} s")
 
 
 def _text(result: CaseResult) -> str:
@@ -111,7 +127,7 @@ def junit_report(report: TestReport) -> str:
         if hook is not None and hook.verdict in (FAILED, ERROR):
             cases.append(hook)
     failures = sum(case.verdict == FAILED for case in cases)
-    errors = sum(case.verdict == ERROR for case in cases)
+    errors = sum(case.verdict in (ERROR, BLOCKED) for case in cases)
     attributes = {"tests": str(len(cases)), "failures": str(failures), "errors": str(errors),
                   "skipped": str(counts[SKIPPED]), "time": f"{report.duration:.3f}"}
     root = ElementTree.Element("testsuites", name="CAN Expert", **attributes)
@@ -135,6 +151,9 @@ def junit_report(report: TestReport) -> str:
         elif case.verdict == ERROR:
             last = case.error.strip().splitlines()[-1] if case.error.strip() else "error"
             ElementTree.SubElement(element, "error", message=last, type="Exception").text = case.error
+        elif case.verdict == BLOCKED:
+            ElementTree.SubElement(element, "error", message=case.error or "blocked", type="Blocked").text = \
+                _text(case)
         elif case.verdict == SKIPPED:
             ElementTree.SubElement(element, "skipped", message=case.error or "skipped")
         if case.steps:
@@ -143,13 +162,18 @@ def junit_report(report: TestReport) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ElementTree.tostring(root, encoding="unicode") + "\n"
 
 
-def save_reports(report: TestReport, folder) -> tuple[Path, Path]:
+def report_stem(report: TestReport) -> str:
+    """<module>_<date-time>: the name of a run's report files."""
+    return f"{Path(report.path).stem}_{datetime.fromtimestamp(report.started).strftime('%Y%m%d-%H%M%S')}"
+
+
+def save_reports(report: TestReport, folder, facts=(), sections: str = "") -> tuple[Path, Path]:
     """Write <module>_<date-time>.html and .xml into folder; returns their paths."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    stem = f"{Path(report.path).stem}_{datetime.fromtimestamp(report.started).strftime('%Y%m%d-%H%M%S')}"
+    stem = report_stem(report)
     html_path, xml_path = folder / f"{stem}.html", folder / f"{stem}.xml"
-    html_path.write_text(html_report(report), encoding="utf-8")
+    html_path.write_text(html_report(report, facts, sections), encoding="utf-8")
     xml_path.write_text(junit_report(report), encoding="utf-8")
     return html_path, xml_path
 

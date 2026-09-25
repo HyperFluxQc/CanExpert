@@ -4,8 +4,12 @@ DID, routine and security level of the description, what ISO 14229-1 says the EC
 where it is allowed, and the right negative response code where it is not.
 
 Each test case is a function run by canexpert.testing.runner (verdicts per step, Stop, HTML and JUnit reports);
-Suite.module() gives them as a test module. What changes the ECU for good - ECU reset, clearing the fault
-memory, writing a DID (its own value back), the security lockout - runs only when Options ask for it.
+Suite.module() gives them as a test module, with the pre-test and post-test sequences (sequences.py) around
+the run, the groups and the tests. What changes the ECU for good - ECU reset, clearing the fault memory,
+writing a DID (its own value back), the security lockout - runs only when Options ask for it.
+
+A test case's name - "data_identifiers.read_vin_f190" - comes from its group and title, so a test plan can
+name it whatever else the description or the options add.
 """
 from __future__ import annotations
 
@@ -15,7 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from canexpert.test_expert.description import DEFAULT_SESSION, ISO_SERVICES, SUB_FUNCTION_SERVICES, EcuDescription
-from canexpert.testing.runner import TestCase, TestModule
+from canexpert.test_expert.sequences import LABELS, SequenceRunner, due
+from canexpert.testing.runner import BLOCKED, ERROR, FAILED, PASSED, TestCase, TestModule
 from canexpert.uds.client import NRC_NAMES
 from canexpert.uds.observer import SERVICE_NAMES
 
@@ -51,33 +56,95 @@ def _slug(text: str) -> str:
 
 
 class Suite:
-    """The generated test cases of a description; tester is set before a run (a test_expert.tester.Tester)."""
+    """The generated test cases of a description; tester is set before a run (a test_expert.tester.Tester).
+    sequences: the pre-test and post-test sequences; base_dir: where their Python files are looked for."""
 
-    def __init__(self, description: EcuDescription, options: Options | None = None):
+    def __init__(self, description: EcuDescription, options: Options | None = None, sequences=(), base_dir=None):
         self.d = description
         self.o = options or Options()
+        self.sequences = list(sequences)
+        self.sequence_runner = SequenceRunner(self, base_dir)
         self.tester = None
         self.p2 = 0.05                     # the P2 the ECU announces in its default session answer
         self.cases: list[TestCase] = []
+        self.group_of: dict[str, str] = {}      # test case name -> its group
         self._build()
+        self._start_run(None)
 
     # --- the module ----------------------------------------------------------------------------------
 
-    def module(self) -> TestModule:
+    def module(self, names=None) -> TestModule:
+        """The test module to run; names: the test cases the run takes (None: all), for the sequences that
+        follow a group."""
+        self._start_run(names)
         path = Path(self.d.source) if self.d.source and Path(self.d.source).suffix else Path(_slug(self.d.name))
-        hooks = {"setup": self._setup, "teardown": self._default, "before_each": self._default,
-                 "after_each": self._default}
+        hooks = {"setup": self._setup, "teardown": self._teardown, "before_each": self._before_each,
+                 "after_each": self._after_each}
         return TestModule(path, f"TestExpert: {self.d.name}", list(self.cases), hooks, {})
 
     def groups(self) -> dict[str, list[TestCase]]:
         grouped = {}
         for case in self.cases:
-            grouped.setdefault(case.title.split(":")[0], []).append(case)
+            grouped.setdefault(self.group_of[case.name], []).append(case)
         return grouped
 
+    def titles(self) -> dict[str, str]:
+        """test case name -> its title."""
+        return {case.name: case.title for case in self.cases}
+
     def _add(self, group, title, function, doc=""):
-        name = f"{_slug(group)}_{len(self.cases) + 1:03d}"
+        base = f"{_slug(group)}.{_slug(title)}"
+        name, number = base, 1
+        while name in self.group_of:
+            number += 1
+            name = f"{base}_{number}"
+        self.group_of[name] = group
         self.cases.append(TestCase(name, f"{group}: {title}", function, doc))
+
+    # --- the run and its sequences ------------------------------------------------------------------------
+
+    def _start_run(self, names):
+        chosen = [case.name for case in self.cases if names is None or case.name in names]
+        self._last_in_group = {self.group_of[name]: name for name in chosen}
+        self._group = None
+        self._group_failed = {}
+        self._blocked_groups = {}
+        self._run_failed = False
+
+    def _sequences(self, t, when, scope, target="", outcome=None, mode="check") -> str:
+        """Run the sequences attached there; returns the name of the one that failed, or ""."""
+        for sequence in due(self.sequences, when, scope, target, outcome):
+            if not self.sequence_runner.run(t, sequence, LABELS[when, scope], mode):
+                return sequence.name
+        return ""
+
+    def _before_each(self, t):
+        name = t.result.name
+        group = self.group_of.get(name, "")
+        self._default()
+        if group != self._group:
+            self._group = group
+            failed = self._sequences(t, "before", "group", group)
+            if failed:
+                self._blocked_groups[group] = f"the pre-group sequence '{failed}' failed"
+        if group in self._blocked_groups:
+            t.block(self._blocked_groups[group])
+        failed = self._sequences(t, "before", "each") or self._sequences(t, "before", "test", name)
+        if failed:
+            t.block(f"the pre-test sequence '{failed}' failed")
+
+    def _after_each(self, t):
+        name, verdict = t.result.name, t.result.verdict
+        group = self.group_of.get(name, "")
+        outcome = "passed" if verdict == PASSED else "failed" if verdict in (FAILED, ERROR, BLOCKED) else None
+        if outcome == "failed":
+            self._run_failed = self._group_failed[group] = True
+        self._sequences(t, "after", "test", name, outcome, "warn")
+        self._sequences(t, "after", "each", "", outcome, "warn")
+        if self._last_in_group.get(group) == name:
+            self._sequences(t, "after", "group", group, "failed" if self._group_failed.get(group) else "passed",
+                            "warn")
+        self._default()
 
     # --- steps ------------------------------------------------------------------------------------------
 
@@ -152,6 +219,7 @@ class Suite:
         time.sleep(0.02)
 
     def _setup(self, t):
+        self._sequences(t, "before", "run", mode="require")
         answer = self.tester.ask(b"\x10\x01")
         t.require(answer.positive(), "the ECU answers DiagnosticSessionControl default (10 01)", answer.text())
         if answer.raw is not None and len(answer.raw) >= 4:
@@ -159,6 +227,10 @@ class Suite:
             if 0 < p2 < 5:
                 self.p2 = p2
                 t.log(f"P2 {p2 * 1000:.0f} ms, as the ECU announces")
+
+    def _teardown(self, t):
+        self._default()
+        self._sequences(t, "after", "run", "", "failed" if self._run_failed else "passed", "warn")
 
     # --- what the description has ---------------------------------------------------------------------
 
@@ -679,7 +751,8 @@ class Suite:
                 ([b"\x22" + short.to_bytes(2, "big")] if short is not None else [])
             for request in requests:
                 answer = self.tester.ask(request)
-                t.check(answer.positive() and answer.elapsed <= limit,
+                first = answer.first if answer.first is not None else answer.elapsed     # 0x78 counts
+                t.check(answer.positive() and first <= limit,
                         f"{_hex(request)} answered within P2 ({self.p2 * 1000:.0f} ms + {self.o.timing_margin_ms} ms)",
                         answer.text())
         self._add("Timing", "Responses within P2", case)

@@ -29,7 +29,7 @@ from canexpert.config import uds_transport
 from canexpert.paths import TEST_MODULES_DIR
 from canexpert.j1939.transport import J1939Link
 from canexpert.j1939_window import address_setting
-from canexpert.testing.report import COLOURS, save_reports
+from canexpert.testing.report import COLOURS, save_reports, summary_text
 from canexpert.testing.runner import PASSED, FrameMailbox, Runner, load_module, uds_names
 from canexpert.uds.client import make_request
 
@@ -256,9 +256,7 @@ class TestWindow(QWidget):
             self.report_btn.setEnabled(True)
         except OSError as exc:
             self.report_paths, where = None, f"   The report could not be written: {exc}"
-        counts = report.counts()
-        summary = (f"{report.verdict.upper()}: {counts['passed']} passed, {counts['failed']} failed, "
-                   f"{counts['error']} error, {counts['skipped']} skipped in {report.duration:.1f} s")
+        summary = summary_text(report)
         colour = COLOURS.get(report.verdict, "#6b7280")
         self.status.setText(f"<b style='color:{colour}'>{summary}</b>{where}")
         self._write(f"{summary}{'  (stopped)' if report.stopped else ''}{where}")

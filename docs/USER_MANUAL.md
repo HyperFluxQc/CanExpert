@@ -555,8 +555,8 @@ writes a report of every run. It opens `TestModules/dummy_ecu_checks.py`, the ex
 another module with **Open...**; the one used last is opened again.
 
 Connect first. Tick the test cases to run and press **Run**: each one appears with its verdict — *passed*,
-*failed*, *error* (the test itself broke) or *skipped* — and under it every step with its own verdict, as
-it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
+*failed*, *error* (the test itself broke), *skipped* or *blocked* (what it needs could not be set up, so it
+did not run; it counts with the failures) — and under it every step with its own verdict, as it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
 still runs. The module is read again before every run, so you can edit it in any editor and run it again
 straight away (**Reload** shows the new list without running).
 
@@ -596,6 +596,8 @@ scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` of
 | `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
 | `t.require(condition, "step")` | A check that ends the test case when it fails |
 | `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
+| `t.block("why")` | In `before_each`: the test case cannot run — it is *blocked* |
+| `t.warn("step", detail)` | A step that went wrong without failing the test case (a clean-up that did not work) |
 | `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
 | `t.send(0x200, [1, 2])` | Send a frame |
 | `t.marker("before the reset")` | A marker in the measurement (Trace, Logger, recording) and a line in the report |
@@ -781,6 +783,42 @@ On the **Settings** tab:
 A step that got another NRC than ISO 14229-1 asks for, but one it tolerates, passes with a note. **Stop** ends
 the run after the current step. Every run leaves an HTML and a JUnit XML report in `TestExpert/reports`
 (**Open report**).
+
+### Pre-test and post-test sequences
+
+A sequence is a list of steps TestExpert runs around the tests: a **hard reset** after a test that leaves the
+ECU changed, an ignition frame and a wait before the run, the DTCs cleared before the fault memory is read, a
+recovery reset after any test that failed. Make them on the **Sequences** tab — **New**, or one of the
+ready-made ones from its arrow (hard, key off/on and soft reset, default or extended session, clear DTCs, keep
+the session) — or right-click a test or a group in the tests list: **Before this test**, **After this test**,
+**After this test, if it did not pass**, then a sequence or **New: Hard reset**. The **Sequences** column shows
+what runs around each test and group.
+
+| Step | Value | What it does |
+|---|---|---|
+| Request | `11 01` | Sends it (physical, or functional when ticked) and checks the answer: *positive*, *NRC 22*, *any answer*, *no answer*, or *not checked* |
+| Wait | `2.5` | Waits, in seconds |
+| Keep alive | `10` | Waits, sending TesterPresent `3E 80` every 2 s so the session stays |
+| Session | `03` | Enters the session, through the sessions it must be entered from |
+| Unlock | `01` | SecurityAccess for that level, with the key source of the Settings tab |
+| ECU reset | `01` | `11 01` answered, the **ECU reset time** waited, then `10 01` answered again (01 hard, 02 key off/on, 03 soft) |
+| CAN frame | `12F 01 02` | Sends a frame (an identifier above 7FF, or written with more than three digits, is extended) |
+| Python | `power.py:cycle` | Calls `cycle(t, tester)` in that file — to switch a power supply or a relay card; `False` or an exception fails the step. `t.log()`, `t.wait()`, `t.send()` and `tester.ask(bytes)` are there to use |
+
+Under **Runs**, say where the sequence runs: *before* or *after* **the run**, **every test**, **the group**
+or **the test** you choose; an *after* sequence **always**, or only **if it did not pass** (failed, error or
+blocked) or **if it passed**. Around a group, *before* runs ahead of its first ticked test and *after* behind
+its last. Untick a sequence to keep it without running it. The sequences are kept for the next start.
+
+A sequence stops at its first step that goes wrong. What that means depends on where it ran:
+
+- **before the run**: the run stops — every test is skipped, and the run fails;
+- **before a test**: the test is **blocked**: it does not run, and it counts with the failures (the failed
+  step is shown under it). Before a group, every test of the group is blocked;
+- **after** anything: the step is a **warning** (orange); the test keeps its verdict.
+
+Before every test TestExpert still puts the ECU in the default session (`10 01`), and after it again; the
+sequences run in between — around a test in the order group, every test, the test, and back out.
 
 ### Trying it with the Dummy ECU
 

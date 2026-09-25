@@ -1,5 +1,6 @@
 """TestExpert: descriptions (JSON, how states become sessions and levels, CDD, ODX), the tests generated from
-them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - and the window."""
+them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
+post-test sequences around them, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
@@ -23,6 +24,8 @@ from canexpert.test_expert.cdd import CddError, load_cdd
 from canexpert.test_expert.description import (Access, EcuDescription, RawService, RawState, build_description)
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.generator import Options, Suite
+from canexpert.test_expert.sequences import (Attachment, Sequence, SequenceError, SequenceStep, due, parse_expect,
+                                             parse_frame, parse_hex, parse_script)
 from canexpert.test_expert.tester import Tester
 from canexpert.testing.runner import Runner
 from canexpert.testing.window import MemorySettings
@@ -171,11 +174,11 @@ class Bench:
             ecu_bus.shutdown()
         test.addCleanup(close)
 
-    def run(self, description, **options):
+    def run(self, description, names=None, sequences=(), base_dir=None, **options):
         options.setdefault("key", key)
-        suite = Suite(description, Options(**options))
+        suite = Suite(description, Options(**options), sequences, base_dir)
         suite.tester = Tester(self.tester_bus, TRANSPORT, 0x7DF)
-        return suite, Runner(suite.module()).run()
+        return suite, Runner(suite.module(names), send=suite.tester.send_frame).run(names)
 
 
 def failures(report):
@@ -220,6 +223,117 @@ class AgainstTheDummyEcuTest(unittest.TestCase):
         self.assertIn("Read DID 0xF190 (F190)", "".join(found))
         self.assertTrue(any("17 bytes" in step.detail or "20 bytes" in step.detail
                             for case in report.cases for step in case.failures()))
+
+
+class SequenceTest(unittest.TestCase):
+    def test_step_values(self):
+        self.assertEqual(parse_hex("11 01"), b"\x11\x01")
+        self.assertEqual(parse_hex("0x14,0xFF ff FF"), b"\x14\xff\xff\xff")
+        self.assertEqual(parse_hex("22F190"), b"\x22\xf1\x90")
+        self.assertEqual(parse_expect("NRC 0x22"), ("nrc", 0x22))
+        self.assertEqual(parse_expect("31"), ("nrc", 0x31))
+        self.assertEqual(parse_expect("no answer"), ("none", None))
+        self.assertEqual(parse_frame("12F 01 02"), (0x12F, b"\x01\x02", False))
+        self.assertEqual(parse_frame("18FEF100#0102"), (0x18FEF100, b"\x01\x02", True))
+        self.assertEqual(parse_frame("012F"), (0x12F, b"", True), "four digits: an extended identifier")
+        self.assertEqual(parse_script(r"C:\bench\power.py:cycle"), (r"C:\bench\power.py", "cycle"))
+        self.assertEqual(parse_script("power.py"), ("power.py", "run"))
+        for text in ("zz", "11 1FF"):
+            with self.assertRaises(SequenceError):
+                parse_hex(text)
+        self.assertEqual(SequenceStep("unlock", "02").problem(), "requestSeed levels are odd")
+        self.assertIn("not seconds", SequenceStep("wait", "soon").problem())
+        self.assertEqual(SequenceStep("reset", "").problem(), "", "a hard reset by default")
+        self.assertEqual(SequenceStep("request", "10 03", "NRC 7F").problem(), "")
+        sequence = Sequence("Bench", [SequenceStep("wait", "x")], [Attachment("after", "test", "a.b", "failed")])
+        self.assertEqual(Sequence.from_dict(sequence.to_dict()), sequence)
+        self.assertEqual(sequence.problems(), ["step 1: not seconds: 'x'"])
+
+    def test_where_sequences_run(self):
+        always = Sequence("Always", [], [Attachment("after", "each")])
+        failed = Sequence("On failure", [], [Attachment("after", "each", condition="failed")])
+        group = Sequence("Group", [], [Attachment("before", "group", "Sessions")])
+        off = Sequence("Off", [], [Attachment("after", "each")], enabled=False)
+        sequences = [always, failed, group, off]
+        self.assertEqual(due(sequences, "after", "each", outcome="passed"), [always])
+        self.assertEqual(due(sequences, "after", "each", outcome="failed"), [always, failed])
+        self.assertEqual(due(sequences, "after", "each", outcome=None), [always], "a skipped test")
+        self.assertEqual(due(sequences, "before", "group", "Sessions"), [group])
+        self.assertEqual(due(sequences, "before", "group", "Timing"), [])
+
+    def test_around_tests_against_the_dummy_ecu(self):
+        bench = Bench(self)
+        description = dummy_description(bench.ecu.config)
+        names = ["sessions.enter_the_extended_session_10_03", "sessions.suppress_positive_response",
+                 "testerpresent.testerpresent_3e", "timing.responses_within_p2"]
+        folder = Path(tempfile.mkdtemp())
+        (folder / "bench.py").write_text("def power(t, tester):\n    t.log('power cycled')\n\n"
+                                         "def broken(t, tester):\n    return False\n", encoding="utf-8")
+        sequences = [
+            Sequence("Ignition on", [SequenceStep("frame", "200 01"), SequenceStep("wait", "0.05"),
+                                     SequenceStep("script", "bench.py:power")], [Attachment("before", "run")]),
+            Sequence("Hard reset", [SequenceStep("reset", "01")],
+                     [Attachment("after", "test", "sessions.enter_the_extended_session_10_03")]),
+            Sequence("Extended", [SequenceStep("session", "03"), SequenceStep("request", "22 F1 86", "positive")],
+                     [Attachment("before", "group", "TesterPresent")]),
+            Sequence("Wrong", [SequenceStep("request", "22 12 34", "positive")],
+                     [Attachment("before", "test", "sessions.suppress_positive_response")]),
+            Sequence("Cleanup", [SequenceStep("request", "22 12 34", "NRC 22"), SequenceStep("wait", "5")],
+                     [Attachment("after", "group", "Timing")]),
+            Sequence("After a failure", [SequenceStep("script", "bench.py:broken")],
+                     [Attachment("after", "each", condition="failed")]),
+            Sequence("Done", [SequenceStep("request", "3E 80", "no answer")], [Attachment("after", "run")]),
+        ]
+        _suite, report = bench.run(description, names, sequences, folder, reset_time=0.6)
+        cases = {case.name: case for case in report.cases}
+        setup = [step.description for step in report.setup.steps]
+        self.assertIn("Pre-run 'Ignition on': frame 200 01 sent", setup)
+        self.assertIn("Pre-run 'Ignition on': bench.py:power()", setup)
+        self.assertTrue(bench.ecu.running, "the frame reached the ECU: 200 01 starts its application")
+        extended = cases["sessions.enter_the_extended_session_10_03"]
+        self.assertEqual(extended.verdict, "passed")
+        self.assertEqual(extended.steps[-1].description,
+                         "Post-test 'Hard reset': ECU reset (11 01) and the ECU back after 0.6 s")
+        self.assertEqual(extended.steps[-1].verdict, "pass")
+        blocked = cases["sessions.suppress_positive_response"]
+        self.assertEqual(blocked.verdict, "blocked")
+        self.assertEqual(blocked.error, "the pre-test sequence 'Wrong' failed")
+        self.assertFalse(any(step.description.startswith("10 81") for step in blocked.steps), "not run")
+        self.assertEqual(blocked.steps[-1].description, "Post-test 'After a failure': bench.py:broken()",
+                         "after a test that did not pass")
+        self.assertEqual(blocked.steps[-1].verdict, "warn")
+        tester_present = cases["testerpresent.testerpresent_3e"]
+        self.assertEqual([step.description for step in tester_present.steps[:2]],
+                         ["Pre-group 'Extended': Extended session entered (10 03)",
+                          "Pre-group 'Extended': 22 F1 86 answered positively"])
+        self.assertEqual(tester_present.verdict, "passed")
+        timing = cases["timing.responses_within_p2"]
+        self.assertEqual(timing.verdict, "passed", "a post-group warning leaves the verdict")
+        self.assertEqual(timing.steps[-1].verdict, "warn")
+        self.assertIn("22 12 34 answered NRC 0x22", timing.steps[-1].description)
+        self.assertFalse(any("wait 5 s" in step.description for step in timing.steps), "stopped at its failure")
+        self.assertFalse(any("After a failure" in step.description for step in timing.steps))
+        self.assertEqual(report.teardown.steps[-1].description, "Post-run 'Done': 3E 80 is not answered")
+        self.assertEqual(report.verdict, "failed", "the blocked test")
+
+    def test_a_failing_pre_group_sequence_blocks_the_group(self):
+        bench = Bench(self)
+        sequences = [Sequence("Unreachable", [SequenceStep("session", "7E")], [Attachment("before", "group", "Sessions")])]
+        names = ["sessions.default_session_10_01", "sessions.message_length", "testerpresent.testerpresent_3e"]
+        _suite, report = bench.run(dummy_description(bench.ecu.config), names, sequences)
+        verdicts = {case.name: (case.verdict, case.error) for case in report.cases}
+        self.assertEqual(verdicts, {
+            "sessions.default_session_10_01": ("blocked", "the pre-group sequence 'Unreachable' failed"),
+            "sessions.message_length": ("blocked", "the pre-group sequence 'Unreachable' failed"),
+            "testerpresent.testerpresent_3e": ("passed", "")})
+
+    def test_a_failing_pre_run_sequence_stops_the_run(self):
+        bench = Bench(self)
+        sequences = [Sequence("Unlock", [SequenceStep("unlock", "01")], [Attachment("before", "run")])]
+        _suite, report = bench.run(dummy_description(bench.ecu.config), ["sessions.message_length"], sequences)
+        self.assertEqual(report.setup.verdict, "failed", "SecurityAccess is not allowed in the default session")
+        self.assertEqual(report.cases[0].verdict, "skipped")
+        self.assertEqual(report.verdict, "failed")
 
 
 class WindowTest(unittest.TestCase):
@@ -268,6 +382,29 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(xml.exists())
         self.assertTrue(list((self.folder / "reports").glob("traffic_*.blf")), "the traffic was recorded")
         self.assertIn("PASSED", self.window.status.text())
+
+    def test_sequences_in_the_window(self):
+        window = self.window
+        name = "sessions.enter_the_extended_session_10_03"
+        item = window._items[name]
+        self.assertIsNone(window.sequence_menu(None))
+        menu = window.sequence_menu(item)
+        after = next(action for action in menu.actions() if action.text() == "After this test")
+        hard_reset = next(action for action in after.menu().actions() if action.text() == "New: Hard reset")
+        hard_reset.trigger()
+        self.assertEqual(item.text(window_module.COL_SEQUENCES), "after: Hard reset")
+        sequence = window.sequence_editor.sequences()[0]
+        self.assertEqual((sequence.name, sequence.attachments), ("Hard reset", [Attachment("after", "test", name)]))
+        window.sequence_editor.add_step("wait", "0.5")
+        self.assertEqual(window.sequence_editor.sequences()[0].steps[-1], SequenceStep("wait", "0.5"))
+        window.rebuild_tests()
+        self.assertEqual(window.suite.sequences, window.sequence_editor.sequences())
+        again = window_module.TestExpertWindow(self.settings)
+        self.addCleanup(again.close)
+        self.assertEqual(again.sequence_editor.sequences(), window.sequence_editor.sequences(), "kept in the settings")
+        self.assertEqual(window._items[name].text(window_module.COL_SEQUENCES), "after: Hard reset")
+        window.sequence_editor.detach("test", name)
+        self.assertEqual(window._items[name].text(window_module.COL_SEQUENCES), "")
 
     def test_main_smoke_test(self):
         self.assertEqual(window_module.main(["--smoke-test"]), 0)

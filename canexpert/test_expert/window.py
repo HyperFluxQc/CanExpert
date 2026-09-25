@@ -1,10 +1,12 @@
 """
 TestExpert's window: load a description (CDD, ODX, PDX, JSON, or the Dummy ECU's), connect to the ECU, choose
-the generated tests and run them; each run leaves an HTML and a JUnit report, and the traffic if asked.
+the generated tests and the sequences around them, and run them; each run leaves an HTML and a JUnit report,
+and the traffic if asked.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import threading
 import time
@@ -25,6 +27,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -47,8 +50,10 @@ from canexpert.test_expert.description import EcuDescription
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.generator import Options, Suite
 from canexpert.test_expert.odx import load_description
+from canexpert.test_expert.sequence_editor import SequenceEditor
+from canexpert.test_expert.sequences import PRESETS, Attachment, Sequence
 from canexpert.test_expert.tester import Tester
-from canexpert.testing.report import COLOURS, save_reports
+from canexpert.testing.report import COLOURS, save_reports, summary_text
 from canexpert.testing.runner import PASSED, Runner
 from canexpert.testing.window import MemorySettings, step_text
 from canexpert.ui_common import app_icon, app_settings, enable_maximize
@@ -61,7 +66,8 @@ BITRATES = ("125000", "250000", "500000", "1000000")
 KEY_SOURCES = ("key = seed XOR mask", "seed & key DLL")
 FILE_FILTER = "Diagnostic descriptions (*.cdd *.odx *.odx-d *.pdx *.json);;All files (*.*)"
 PREFIX = "test_expert/"                           # the settings TestExpert keeps
-COL_NAME, COL_VERDICT, COL_STEPS, COL_TIME = range(4)
+COL_NAME, COL_VERDICT, COL_STEPS, COL_TIME, COL_SEQUENCES = range(5)
+TARGET = Qt.UserRole                              # a tests tree item's ("test", name) or ("group", name)
 
 
 def access_text(access) -> str:
@@ -88,6 +94,7 @@ class TestExpertWindow(QMainWindow):
         self.bus = self.worker = self.mailbox = None
         self.runner = self.thread = self.report = self.report_paths = self.recorder = None
         self._items = {}
+        self._group_items = {}
         self._running_item = None
         self._build()
         self.run_event.connect(self._on_event)
@@ -118,6 +125,11 @@ class TestExpertWindow(QMainWindow):
         self.use_padding.setChecked(self._value("use_padding", "true") in ("true", True))
         self.dll_edit.setText(self._value("dll", ""))
         self.key_source.setCurrentIndex(int(self._value("key_source", 0, int)))
+        try:
+            saved = json.loads(self._value("sequences", "[]") or "[]")
+            self.sequence_editor.set_sequences([Sequence.from_dict(item) for item in saved])
+        except (TypeError, ValueError, AttributeError):
+            self._write("The sequences kept from last time could not be read")
         path = Path(self._value("description", "") or "")
         if path.is_file():
             self.open_description(path)
@@ -133,6 +145,10 @@ class TestExpertWindow(QMainWindow):
                            ("use_padding", "true" if self.use_padding.isChecked() else "false"),
                            ("dll", self.dll_edit.text()), ("key_source", self.key_source.currentIndex())):
             self._remember(key, value)
+        self._save_sequences()
+
+    def _save_sequences(self):
+        self._remember("sequences", json.dumps([sequence.to_dict() for sequence in self.sequence_editor.sequences()]))
 
     # --- UI ------------------------------------------------------------------------------------------------
 
@@ -157,6 +173,10 @@ class TestExpertWindow(QMainWindow):
         side.addTab(self._description_tab(), "Description")
         side.addTab(self._connection_tab(), "ECU")
         side.addTab(self._options_tab(), "Settings")
+        self.sequence_editor = SequenceEditor()
+        self.sequence_editor.changed.connect(self._sequences_changed)
+        side.addTab(self.sequence_editor, "Sequences")
+        self.side = side
         splitter.addWidget(side)
 
         right = QWidget()
@@ -181,10 +201,13 @@ class TestExpertWindow(QMainWindow):
         right_layout.addLayout(bar)
         tests = QSplitter(Qt.Vertical)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Test / step", "Verdict", "Steps", "Time (s)"])
-        self.tree.setColumnWidth(COL_NAME, 520)
+        self.tree.setHeaderLabels(["Test / step", "Verdict", "Steps", "Time (s)", "Sequences"])
+        self.tree.setColumnWidth(COL_NAME, 480)
         self.tree.setColumnWidth(COL_VERDICT, 80)
         self.tree.setColumnWidth(COL_STEPS, 55)
+        self.tree.setColumnWidth(COL_TIME, 70)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
         tests.addWidget(self.tree)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -194,7 +217,7 @@ class TestExpertWindow(QMainWindow):
         right_layout.addWidget(tests, 1)
         splitter.addWidget(right)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([400, 900])
+        splitter.setSizes([470, 850])
         self.setCentralWidget(splitter)
 
     def _description_tab(self):
@@ -413,22 +436,96 @@ class TestExpertWindow(QMainWindow):
         if self.description is None:
             return
         unticked = {name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Unchecked}
-        self.suite = Suite(self.description, self.options())
+        self.suite = Suite(self.description, self.options(), self.sequence_editor.sequences(), APP_DIR)
         self.tree.clear()
         self._items = {}
+        self._group_items = {}
         for group, cases in self.suite.groups().items():
-            parent = QTreeWidgetItem([f"{group} ({len(cases)})", "", "", ""])
+            parent = QTreeWidgetItem([f"{group} ({len(cases)})", "", "", "", ""])
             parent.setFlags(parent.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
+            parent.setData(COL_NAME, TARGET, ("group", group))
             self.tree.addTopLevelItem(parent)
+            self._group_items[group] = parent
             for case in cases:
-                item = QTreeWidgetItem([case.title.split(": ", 1)[1], "", "", ""])
+                item = QTreeWidgetItem([case.title.split(": ", 1)[1], "", "", "", ""])
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(COL_NAME, Qt.Unchecked if case.name in unticked else Qt.Checked)
+                item.setData(COL_NAME, TARGET, ("test", case.name))
                 if case.doc:
                     item.setToolTip(COL_NAME, case.doc)
                 parent.addChild(item)
                 self._items[case.name] = item
+        self.sequence_editor.set_targets(list(self.suite.groups()), self.suite.titles())
+        self._show_sequences()
         self.status.setText(f"{len(self.suite.cases)} tests")
+
+    # --- the sequences -----------------------------------------------------------------------------------
+
+    def _sequences_changed(self):
+        self._show_sequences()
+        self._save_sequences()
+
+    def _show_sequences(self):
+        """Each test's and group's own sequences in the Sequences column; the run's and every test's in the
+        status tip of the header."""
+        attached = {}
+        general = []
+        for sequence in self.sequence_editor.sequences():
+            if not sequence.enabled:
+                continue
+            for attachment in sequence.attachments:
+                condition = " (if it did not pass)" if attachment.condition == "failed" and attachment.when == "after" \
+                    else " (if it passed)" if attachment.condition == "passed" and attachment.when == "after" else ""
+                text = f"{attachment.when}: {sequence.name}{condition}"
+                if attachment.scope in ("group", "test"):
+                    attached.setdefault((attachment.scope, attachment.target), []).append(text)
+                else:
+                    general.append(f"{text} ({'the run' if attachment.scope == 'run' else 'every test'})")
+        for name, item in self._items.items():
+            item.setText(COL_SEQUENCES, "; ".join(attached.get(("test", name), [])))
+        for group, item in self._group_items.items():
+            item.setText(COL_SEQUENCES, "; ".join(attached.get(("group", group), [])))
+        header = self.tree.headerItem()
+        header.setToolTip(COL_SEQUENCES, "Around the run and every test: " + ("; ".join(general) or "none"))
+
+    def _tree_menu(self, position):
+        menu = self.sequence_menu(self.tree.itemAt(position))
+        if menu is not None:
+            menu.popup(self.tree.viewport().mapToGlobal(position))
+        return menu
+
+    def sequence_menu(self, item):
+        """The menu of a test or a group in the tests tree: sequences to run before or after it."""
+        target = item.data(COL_NAME, TARGET) if item is not None else None
+        if not target:
+            return None
+        scope, name = target
+        menu = QMenu(self)
+        what = "test" if scope == "test" else "group"
+        sequences = [sequence.name for sequence in self.sequence_editor.sequences()]
+        for when, condition, text in (("before", "always", f"Before this {what}"),
+                                      ("after", "always", f"After this {what}"),
+                                      ("after", "failed", f"After this {what}, if it did not pass")):
+            submenu = menu.addMenu(text)
+            attachment = Attachment(when, scope, name, condition)
+            for sequence in sequences:
+                submenu.addAction(sequence).triggered.connect(
+                    lambda _checked=False, sequence=sequence, attachment=attachment:
+                    self.sequence_editor.attach(sequence, attachment))
+            if sequences:
+                submenu.addSeparator()
+            for preset in PRESETS:
+                submenu.addAction(f"New: {preset}").triggered.connect(
+                    lambda _checked=False, preset=preset, attachment=attachment: self._attach_preset(preset, attachment))
+        menu.addSeparator()
+        menu.addAction(f"No sequences around this {what}").triggered.connect(
+            lambda: self.sequence_editor.detach(scope, name))
+        return menu
+
+    def _attach_preset(self, preset, attachment):
+        sequence = self.sequence_editor.add_sequence(preset, PRESETS[preset], [attachment])
+        self.side.setCurrentWidget(self.sequence_editor)
+        return sequence
 
     def ticked(self) -> list[str]:
         return [name for name, item in self._items.items() if item.checkState(COL_NAME) == Qt.Checked]
@@ -536,8 +633,8 @@ class TestExpertWindow(QMainWindow):
         self.suite.tester = Tester(self.mailbox, self.transport(), self.functional_id.value())
         configuration = (f"{self.interface.currentText()} {self.channel.currentText()}, {self.bitrate.currentText()} "
                          f"bit/s, {self.request_id.value():X}/{self.response_id.value():X}")
-        self.runner = Runner(self.suite.module(), on_event=lambda kind, data: self.run_event.emit(kind, data),
-                             configuration=configuration)
+        self.runner = Runner(self.suite.module(names), send=self.suite.tester.send_frame,
+                             on_event=lambda kind, data: self.run_event.emit(kind, data), configuration=configuration)
         if self.record.isChecked():
             folder = TEST_EXPERT_DIR / "reports"
             folder.mkdir(parents=True, exist_ok=True)
@@ -605,9 +702,7 @@ class TestExpertWindow(QMainWindow):
             where = f"   Report: {self.report_paths[0]}"
         except OSError as exc:
             self.report_paths, where = None, f"   The report could not be written: {exc}"
-        counts = report.counts()
-        summary = (f"{report.verdict.upper()}: {counts['passed']} passed, {counts['failed']} failed, "
-                   f"{counts['error']} error, {counts['skipped']} skipped in {report.duration:.1f} s")
+        summary = summary_text(report)
         self.status.setText(f"<b style='color:{COLOURS.get(report.verdict, '#6b7280')}'>{summary}</b>")
         self._write(summary + where)
 
