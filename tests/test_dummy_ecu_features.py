@@ -445,6 +445,36 @@ class AccessTest(unittest.TestCase):
                 config_from_dict(broken)
 
 
+class RoutineTest(unittest.TestCase):
+    def test_start_stop_and_results(self):
+        bench = Bench(self, quiet(self_test_seconds=0.3, erase_seconds=0.01))
+        self_test = [0x02, 0x01]
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x7f\x31\x7f", "not in the default session")
+        bench.request([0x10, 0x03])
+        self.assertEqual(bench.request([0x31, 0x03, *self_test]), b"\x7f\x31\x24", "results before a start")
+        self.assertEqual(bench.request([0x31, 0x02, *self_test]), b"\x7f\x31\x24", "a stop before a start")
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x71\x01\x02\x01\x01", "running")
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x7f\x31\x24", "already running")
+        self.assertEqual(bench.request([0x31, 0x03, *self_test]), b"\x71\x03\x02\x01\x01")
+        self.assertEqual(bench.request([0x31, 0x02, *self_test]), b"\x71\x02\x02\x01\x02", "stopped")
+        self.assertEqual(bench.request([0x31, 0x02, *self_test]), b"\x7f\x31\x24", "nothing running")
+        bench.request([0x31, 0x01, *self_test])
+        time.sleep(0.4)
+        self.assertEqual(bench.request([0x31, 0x03, *self_test]), b"\x71\x03\x02\x01\x00", "done")
+        self.assertEqual(bench.request([0x31, 0x03, *self_test, 0x00]), b"\x7f\x31\x13")
+        self.assertEqual(bench.request([0x31, 0x04, *self_test]), b"\x7f\x31\x12")
+        self.assertEqual(bench.request([0x31, 0x01, 0xFF, 0x00, 0x44, 0, 1, 0, 0, 0, 0, 0, 4]), b"\x7f\x31\x31",
+                         "erasing: in the programming session")
+        bench.request([0x10, 0x02])
+        self.assertEqual(bench.request([0x31, 0x01, *self_test]), b"\x7f\x31\x31", "the self test: extended only")
+        seed = bench.request([0x27, 0x01])[2:]
+        bench.request([0x27, 0x02, *(byte ^ 0xA5 for byte in seed)])
+        self.assertEqual(bench.request([0x31, 0x03, 0xFF, 0x00]), b"\x7f\x31\x24")
+        bench.request([0x31, 0x01, 0xFF, 0x00, 0x44, 0, 1, 0, 0, 0, 0, 0, 4])
+        self.assertEqual(bench.request([0x31, 0x03, 0xFF, 0x00]), b"\x71\x03\xff\x00\x00", "erased")
+        self.assertEqual(bench.request([0x31, 0x02, 0xFF, 0x00]), b"\x7f\x31\x12", "erasing is not stopped")
+
+
 class BootloaderTest(unittest.TestCase):
     def flash(self, bench, data=b"\x01\x02\x03\x04", address=0x10000, check=b""):
         bench.request([0x10, 0x03])

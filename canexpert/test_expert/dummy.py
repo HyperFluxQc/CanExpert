@@ -1,7 +1,8 @@
 """
 The Dummy ECU's description, from its settings: what TestExpert expects of it - its sessions, security
 levels, services with their sessions and sub-functions, DIDs with their sessions, levels and lengths, and
-the flashing routines. Tested against it, a Dummy ECU that keeps the rules passes; its errors on purpose,
+the routines: erasing and checking (start and results, in the programming session, unlocked) and the self
+test (start, stop and results, in the extended session). Tested against it, a Dummy ECU that keeps the rules passes; its errors on purpose,
 forced NRCs and changed settings show up as failures.
 """
 from __future__ import annotations
@@ -66,7 +67,10 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
         description.dids.setdefault(did, DataIdentifier(did, name, length, Access(), None))
 
     for rid, name in ((config.erase_routine, "EraseMemory"), (config.check_routine, "CheckProgrammingDependencies")):
-        description.routines[rid] = Routine(rid, name, {0x01: Access({PROGRAMMING_SESSION}, set(levels))})
+        description.routines[rid] = Routine(rid, name, {sub: Access({PROGRAMMING_SESSION}, set(levels))
+                                                        for sub in (0x01, 0x03)})
+    description.routines[config.self_test_routine] = Routine(
+        config.self_test_routine, "SelfTest", {sub: Access({EXTENDED_SESSION}, set()) for sub in (0x01, 0x02, 0x03)})
 
     # As a CDD describes them: WriteDataByIdentifier where a DID may be written, RoutineControl where a routine
     # may run.
@@ -79,8 +83,11 @@ def dummy_description(config: EcuConfig | None = None) -> EcuDescription:
     writes = [entry.write for entry in description.dids.values() if entry.write is not None]
     if writes and 0x2E in description.services:
         description.services[0x2E].access = merged(writes)
-    starts = [routine.sub_functions[0x01] for routine in description.routines.values()]
-    if starts and 0x31 in description.services:
-        description.services[0x31].access = merged(starts)
-        description.services[0x31].sub_functions = {0x01: merged(starts)}
+    controls = {}
+    for routine in description.routines.values():
+        for sub, access in routine.sub_functions.items():
+            controls.setdefault(sub, []).append(access)
+    if controls and 0x31 in description.services:
+        description.services[0x31].access = merged(access for accesses in controls.values() for access in accesses)
+        description.services[0x31].sub_functions = {sub: merged(accesses) for sub, accesses in sorted(controls.items())}
     return description

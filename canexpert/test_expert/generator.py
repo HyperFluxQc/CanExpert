@@ -224,14 +224,7 @@ class Suite:
         self.coverage.record(answer.request, answer.session, verdict, t.result.name, answer.functional)
 
     def path_to(self, session) -> list[int]:
-        if session == DEFAULT_SESSION:
-            return [DEFAULT_SESSION]
-        sources = self.d.sessions[session].entered_from if session in self.d.sessions else set()
-        if not sources or DEFAULT_SESSION in sources:
-            return [DEFAULT_SESSION, session]
-        via = next((s for s in sorted(sources) if s != session and s in self.d.sessions and
-                    (not self.d.sessions[s].entered_from or DEFAULT_SESSION in self.d.sessions[s].entered_from)), None)
-        return [DEFAULT_SESSION, via, session] if via is not None else [DEFAULT_SESSION, session]
+        return self.d.session_path(session)
 
     def enter(self, t, session):
         """Into a session, through the sessions it must be entered from; the case ends if one refuses."""
@@ -583,7 +576,7 @@ class Suite:
             return
         read_only = [did for did, entry in sorted(self.d.dids.items()) if entry.write is None]
         session = self.first_session(self.d.services[0x2E].access)
-        if read_only and session is not None:
+        if read_only and session is not None and "writing" not in self.d.unknown:
             def not_writable(t):
                 self.enter(t, session)
                 for did in read_only:

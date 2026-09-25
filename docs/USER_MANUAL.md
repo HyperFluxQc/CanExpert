@@ -784,6 +784,34 @@ A step that got another NRC than ISO 14229-1 asks for, but one the NRC policy ac
 the run after the current step. Every run leaves an HTML and a JUnit XML report in `TestExpert/reports`
 (**Open report**).
 
+### Discovering what the ECU has
+
+**Discover...** asks the ECU what it really has, session by session, and compares it with the description.
+Choose the sessions (the programming session is left out unless you tick it: entering it may start the
+ECU's bootloader), the DID and routine ranges (every DID and routine of the description is asked as well),
+and whether to ask for the services and the security levels. Every question is harmless: each service's SID
+alone (none is complete, or changes anything, in one byte), each DID read, each routine's *results* (`31 03` —
+no routine is started), each level's seed.
+
+The **Discovery** tab then shows, against the description:
+
+- **found, not described** — a service, DID, routine or security level the ECU has and the description does
+  not say (an undocumented DID is also a question of security);
+- **described, not found** — the ECU answers 0x11 or 0x31 for it in every session asked;
+- **different** — a DID of another length, a service or a DID answering in other sessions than described;
+
+and what was found, session by session. **Save...** keeps it as an HTML page, with the result as JSON beside
+it. **Use as the description** saves what was found as a JSON description and tests the ECU with it — for an
+ECU without a CDD. Discovery cannot find what asking harmlessly cannot tell — sub-functions, which DIDs may
+be written, how routines start — so the tests that need them are left out; add them to the JSON where you
+know them. The discovery's sessions and ranges are part of the test plan, and it runs without the window
+too:
+
+```bash
+python test_expert.py nightly.json --discover                     # exit code 0: the ECU matches its description
+python test_expert.py ODX/ecu.cdd --discover --dids F100-F1FF --save-description found.json
+```
+
 ### Coverage
 
 After a run the **Coverage** tab, beside the tests, shows where each service, DID and routine was checked: a
@@ -975,6 +1003,14 @@ over in the extended session: `2F 01 01 03 03 E8` holds the temperature at 100.0
 frames carry it, `2F 01 01 00` hands it back; *freezeCurrentState* and *resetToDefault* work too.
 ReadMemoryByAddress (`23`) and WriteMemoryByAddress (`3D`, extended session and unlocked) read and write
 the ECU's memory — the flashed image included.
+
+### Routines
+
+Besides erasing and the dependency check (programming session, unlocked; their results, `31 03`, give their
+status), the Dummy ECU has a **self test** routine (`0201`, extended session): started with `31 01 02 01`, it
+runs for the **Self test time** (2 s) — its results answer `01` while it runs and `00` once done — and
+`31 02 02 01` stops it (`02`). Stopping it, or asking its results, before it was started gets NRC 0x24
+(requestSequenceError); a routine of another session gets 0x31. Set both on the **Flashing** tab.
 
 ### The bootloader
 

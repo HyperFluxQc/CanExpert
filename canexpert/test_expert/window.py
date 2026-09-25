@@ -49,6 +49,8 @@ from canexpert.recording import Recorder
 from canexpert.simulator.ecu import parse_channel
 from canexpert.simulator.widgets import HexSpinBox
 from canexpert.test_expert.description import EcuDescription
+from canexpert.test_expert.discovery import Discovery, compare, discovery_html, discovery_page
+from canexpert.test_expert.discovery_view import DiscoveryDialog, DiscoveryView
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.engine import PlanRun
 from canexpert.test_expert.generator import Options, Suite
@@ -58,6 +60,7 @@ from canexpert.test_expert.policy import Deviation, today
 from canexpert.test_expert.policy_editor import PolicyEditor
 from canexpert.test_expert.sequence_editor import SequenceEditor
 from canexpert.test_expert.sequences import PRESETS, Attachment
+from canexpert.test_expert.tester import Tester
 from canexpert.testing.report import COLOURS, summary_text
 from canexpert.testing.runner import INFO, PASS, PASSED
 from canexpert.testing.window import MemorySettings, step_text
@@ -86,6 +89,8 @@ def access_text(access) -> str:
 class TestExpertWindow(QMainWindow):
     run_event = pyqtSignal(str, object)
     run_finished = pyqtSignal(object)
+    discovery_progress = pyqtSignal(int, int, str)
+    discovery_finished = pyqtSignal(object)
 
     def __init__(self, settings=None):
         super().__init__()
@@ -99,6 +104,9 @@ class TestExpertWindow(QMainWindow):
         self.bus = self.worker = self.mailbox = None
         self.runner = self.thread = self.report = self.report_paths = self.recorder = None
         self.plan_path: Path | None = None           # the plan file the window's plan was read from or saved to
+        self.discovery_options = TestPlan().discovery
+        self.discovery_result = None
+        self._discovery_stop = threading.Event()
         self._report_folder = TEST_EXPERT_DIR / "reports"
         self._description_path = ""                   # the description's file; "": the Dummy ECU's
         self._items = {}
@@ -109,6 +117,8 @@ class TestExpertWindow(QMainWindow):
         self._build()
         self.run_event.connect(self._on_event)
         self.run_finished.connect(self._on_finished)
+        self.discovery_progress.connect(self._on_discovery_progress)
+        self.discovery_finished.connect(self._on_discovery_finished)
         self._restore()
 
     # --- settings ----------------------------------------------------------------------------------------
@@ -198,7 +208,11 @@ class TestExpertWindow(QMainWindow):
         self.report_btn = QPushButton("Open report")
         self.report_btn.setEnabled(False)
         self.report_btn.clicked.connect(self.open_report)
-        for button in (self.run_btn, self.stop_btn, self.report_btn):
+        self.discover_btn = QPushButton("Discover...")
+        self.discover_btn.setToolTip("Ask the ECU what services, DIDs, routines and security levels it has, and "
+                                     "compare them with the description")
+        self.discover_btn.clicked.connect(lambda: self.discover())
+        for button in (self.run_btn, self.stop_btn, self.report_btn, self.discover_btn):
             bar.addWidget(button)
         self.status = QLabel("")
         bar.addWidget(self.status, 1)
@@ -220,6 +234,10 @@ class TestExpertWindow(QMainWindow):
         self.coverage_view = QTextBrowser()
         self.coverage_view.setPlaceholderText("After a run: where each service, DID and routine was checked")
         self.results.addTab(self.coverage_view, "Coverage")
+        self.discovery_view = DiscoveryView()
+        self.discovery_view.use_requested.connect(lambda: self.use_discovered())
+        self.discovery_view.save_requested.connect(lambda: self.save_discovery())
+        self.results.addTab(self.discovery_view, "Discovery")
         tests.addWidget(self.results)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -477,6 +495,7 @@ class TestExpertWindow(QMainWindow):
         plan.sequences = self.sequence_editor.sequences()
         plan.nrc_policy = self.policy_editor.policy()
         plan.deviations = self.policy_editor.deviations()
+        plan.discovery = self.discovery_options
         plan.path = target
         return plan
 
@@ -512,6 +531,7 @@ class TestExpertWindow(QMainWindow):
         self.sequence_editor.set_sequences(plan.sequences)
         self.policy_editor.set_policy(plan.nrc_policy)
         self.policy_editor.set_deviations(plan.deviations)
+        self.discovery_options = plan.discovery
         self._items = {}                                    # the plan says what is left out, not the old tree
         description = plan.resolve(plan.description)
         if description is not None and description.is_file():
@@ -852,6 +872,101 @@ class TestExpertWindow(QMainWindow):
     def stop(self):
         if self.runner is not None:
             self.runner.stop()
+        self._discovery_stop.set()
+
+    # --- discovery -----------------------------------------------------------------------------------------
+
+    def discover(self, options=None):
+        """Ask the ECU what it has (options: DiscoveryOptions; None: ask in a dialog), on a thread."""
+        if self.thread is not None and self.thread.is_alive():
+            return None
+        if self.mailbox is None:
+            self._write("Connect to the ECU first.")
+            return None
+        if options is None:
+            dialog = DiscoveryDialog(self.description, self.discovery_options, self)
+            if not dialog.exec_():
+                return None
+            options = dialog.options()
+        self.discovery_options = options
+        self._save_settings()
+        plan = self.plan()
+        tester = Tester(self.mailbox, plan.connection.transport(), plan.connection.functional_id)
+        self._discovery_stop.clear()
+        discovery = Discovery(tester, self.description, options, progress=self.discovery_progress.emit,
+                              stop=self._discovery_stop)
+        self.run_btn.setEnabled(False)
+        self.discover_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.results.setCurrentWidget(self.discovery_view)
+        self.discovery_view.show_html("<p>Asking the ECU...</p>", usable=False)
+        self._write(f"Discovering: sessions {', '.join(f'{s:02X}' for s in options.sessions)}, DIDs {options.dids}, "
+                    f"routines {options.rids}")
+        self.thread = threading.Thread(target=self._discover, args=(discovery,), daemon=True)
+        self.thread.start()
+        return self.thread
+
+    def _discover(self, discovery):
+        result = None
+        try:
+            result = discovery.run()
+        finally:
+            self.discovery_finished.emit(result)
+
+    def _on_discovery_progress(self, done, total, text):
+        self.status.setText(f"Discovering: {done} of {total} - {text}")
+
+    def _on_discovery_finished(self, result):
+        self.run_btn.setEnabled(True)
+        self.discover_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.discovery_result = result
+        if result is None:
+            self.status.setText("The discovery failed; see the log.")
+            self.discovery_view.show_html("<p>The discovery failed.</p>", usable=False)
+            return
+        findings = compare(result, self.description) if self.description is not None else []
+        self.discovery_view.show_html(discovery_html(result, self.description))
+        summary = (f"Discovery: {result.probes} requests in {result.duration:.1f} s, "
+                   f"{len(findings)} difference{'s' if len(findings) != 1 else ''} with the description")
+        self.status.setText(summary)
+        self._write(summary)
+        for note in result.notes:
+            self._write(f"Discovery: {note}")
+
+    def save_discovery(self, path=None):
+        """The discovery as an HTML page, with its result as JSON beside it (same name)."""
+        if self.discovery_result is None:
+            return None
+        if path is None:
+            TEST_EXPERT_DIR.mkdir(parents=True, exist_ok=True)
+            suggested = TEST_EXPERT_DIR / f"discovery_{datetime.now().strftime('%Y%m%d-%H%M%S')}.html"
+            path, _ = QFileDialog.getSaveFileName(self, "Save the discovery", str(suggested), "HTML (*.html)")
+            if not path:
+                return None
+        path = Path(path)
+        path.write_text(discovery_page(self.discovery_result, self.description), encoding="utf-8")
+        path.with_suffix(".json").write_text(json.dumps(self.discovery_result.to_dict(), indent=2), encoding="utf-8")
+        self._write(f"Discovery saved: {path}")
+        return path
+
+    def use_discovered(self, path=None):
+        """Save what was found as a JSON description, and test the ECU with it."""
+        if self.discovery_result is None:
+            return None
+        name = f"{self.description.name} (discovered)" if self.description is not None else "Discovered ECU"
+        found = self.discovery_result.to_description(name, self.description)
+        if path is None:
+            TEST_EXPERT_DIR.mkdir(parents=True, exist_ok=True)
+            path, _ = QFileDialog.getSaveFileName(self, "Save what was found as a description",
+                                                  str(TEST_EXPERT_DIR / "discovered.json"),
+                                                  "TestExpert description (*.json)")
+            if not path:
+                return None
+        found.save(path)
+        self._write(f"Discovered description saved: {path} - add what discovery cannot find (sub-functions, "
+                    "writing, routines' start) to it by hand")
+        return self.open_description(path)
 
     def _hook_item(self):
         """The item of the steps the run takes before its first test (the pre-run sequences, the ECU's P2) or

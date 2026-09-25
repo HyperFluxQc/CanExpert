@@ -524,6 +524,62 @@
         </REQ>
         <POS />
       </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="_ps0253" func="1" phys="1">
+        <NAME>
+          <TUV xml:lang="en-US">StopRoutine</TUV>
+        </NAME>
+        <QUAL>StopRoutine</QUAL>
+        <REQ>
+          <CONSTCOMP id="_cc0254" bl="8" v="49">
+            <NAME>
+              <TUV xml:lang="en-US">Constant</TUV>
+            </NAME>
+            <QUAL>Constant</QUAL>
+          </CONSTCOMP>
+          <CONSTCOMP id="_cc0255" bl="8" v="2">
+            <NAME>
+              <TUV xml:lang="en-US">Constant</TUV>
+            </NAME>
+            <QUAL>Constant</QUAL>
+          </CONSTCOMP>
+          <STATICCOMP id="_sc0256" bl="16">
+            <NAME>
+              <TUV xml:lang="en-US">RID</TUV>
+            </NAME>
+            <QUAL>RID</QUAL>
+          </STATICCOMP>
+          <SIMPLEPROXYCOMP id="_pc0257" dest="data" />
+        </REQ>
+        <POS />
+      </PROTOCOLSERVICE>
+      <PROTOCOLSERVICE id="_ps0258" func="1" phys="1">
+        <NAME>
+          <TUV xml:lang="en-US">ResultsRoutine</TUV>
+        </NAME>
+        <QUAL>ResultsRoutine</QUAL>
+        <REQ>
+          <CONSTCOMP id="_cc0259" bl="8" v="49">
+            <NAME>
+              <TUV xml:lang="en-US">Constant</TUV>
+            </NAME>
+            <QUAL>Constant</QUAL>
+          </CONSTCOMP>
+          <CONSTCOMP id="_cc0260" bl="8" v="3">
+            <NAME>
+              <TUV xml:lang="en-US">Constant</TUV>
+            </NAME>
+            <QUAL>Constant</QUAL>
+          </CONSTCOMP>
+          <STATICCOMP id="_sc0261" bl="16">
+            <NAME>
+              <TUV xml:lang="en-US">RID</TUV>
+            </NAME>
+            <QUAL>RID</QUAL>
+          </STATICCOMP>
+          <SIMPLEPROXYCOMP id="_pc0262" dest="data" />
+        </REQ>
+        <POS />
+      </PROTOCOLSERVICE>
     </PROTOCOLSERVICES>
     <DCLTMPLS>
       <DCLTMPL id="_ct0011">
@@ -825,23 +881,37 @@
           <QUAL>Write</QUAL>
         </DCLSRVTMPL>
       </DCLTMPL>
-      <DCLTMPL id="_ct0253">
+      <DCLTMPL id="_ct0263">
         <NAME>
           <TUV xml:lang="en-US">Routine</TUV>
         </NAME>
         <QUAL>Routine</QUAL>
-        <SHSTATIC id="_sh0254">
+        <SHSTATIC id="_sh0264">
           <NAME>
             <TUV xml:lang="en-US">RID</TUV>
           </NAME>
           <QUAL>RID</QUAL>
           <STATICCOMPREF idref="_sc0251" />
+          <STATICCOMPREF idref="_sc0256" />
+          <STATICCOMPREF idref="_sc0261" />
         </SHSTATIC>
-        <DCLSRVTMPL id="_tt0255" tmplref="_ps0248">
+        <DCLSRVTMPL id="_tt0265" tmplref="_ps0248">
           <NAME>
             <TUV xml:lang="en-US">Start</TUV>
           </NAME>
           <QUAL>Start</QUAL>
+        </DCLSRVTMPL>
+        <DCLSRVTMPL id="_tt0266" tmplref="_ps0253">
+          <NAME>
+            <TUV xml:lang="en-US">Stop</TUV>
+          </NAME>
+          <QUAL>Stop</QUAL>
+        </DCLSRVTMPL>
+        <DCLSRVTMPL id="_tt0267" tmplref="_ps0258">
+          <NAME>
+            <TUV xml:lang="en-US">Results</TUV>
+          </NAME>
+          <QUAL>Results</QUAL>
         </DCLSRVTMPL>
       </DCLTMPL>
     </DCLTMPLS>
@@ -1364,26 +1434,38 @@
             <SERVICE id="_sv0247" tmplref="_tt0203" mayBeExec="(1,2,3,4,5)" />
           </DIAGINST>
         </DIAGCLASS>
-        <DIAGCLASS id="_dc0256" tmplref="_ct0253">
+        <DIAGCLASS id="_dc0268" tmplref="_ct0263">
           <NAME>
             <TUV xml:lang="en-US">Routines</TUV>
           </NAME>
           <QUAL>Routines</QUAL>
-          <DIAGINST id="_di0257">
+          <DIAGINST id="_di0269">
+            <NAME>
+              <TUV xml:lang="en-US">SelfTest</TUV>
+            </NAME>
+            <QUAL>SelfTest</QUAL>
+            <STATICVALUE shstaticref="_sh0264" v="513" />
+            <SERVICE id="_sv0270" tmplref="_tt0265" mayBeExec="(3,4,5)" />
+            <SERVICE id="_sv0271" tmplref="_tt0266" mayBeExec="(3,4,5)" />
+            <SERVICE id="_sv0272" tmplref="_tt0267" mayBeExec="(3,4,5)" />
+          </DIAGINST>
+          <DIAGINST id="_di0273">
             <NAME>
               <TUV xml:lang="en-US">EraseMemory</TUV>
             </NAME>
             <QUAL>EraseMemory</QUAL>
-            <STATICVALUE shstaticref="_sh0254" v="65280" />
-            <SERVICE id="_sv0258" tmplref="_tt0255" mayBeExec="(2,5)" />
+            <STATICVALUE shstaticref="_sh0264" v="65280" />
+            <SERVICE id="_sv0274" tmplref="_tt0265" mayBeExec="(2,5)" />
+            <SERVICE id="_sv0275" tmplref="_tt0267" mayBeExec="(2,5)" />
           </DIAGINST>
-          <DIAGINST id="_di0259">
+          <DIAGINST id="_di0276">
             <NAME>
               <TUV xml:lang="en-US">CheckProgrammingDependencies</TUV>
             </NAME>
             <QUAL>CheckProgrammingDependencies</QUAL>
-            <STATICVALUE shstaticref="_sh0254" v="65281" />
-            <SERVICE id="_sv0260" tmplref="_tt0255" mayBeExec="(2,5)" />
+            <STATICVALUE shstaticref="_sh0264" v="65281" />
+            <SERVICE id="_sv0277" tmplref="_tt0265" mayBeExec="(2,5)" />
+            <SERVICE id="_sv0278" tmplref="_tt0267" mayBeExec="(2,5)" />
           </DIAGINST>
         </DIAGCLASS>
       </VAR>

@@ -26,6 +26,8 @@ What it simulates (each value is a setting in the window, or in a profile saved 
   whose status bits follow faults switched on and off, through operation cycles (dtc.py)
 - A forced negative response per service, and transport errors on purpose: refusals, missing answers,
   answers on another ID, a consecutive frame dropped, out of sequence or late
+- RoutineControl (0x31): start, stop and results; a self test in the extended session that runs for a while
+  and can be stopped
 - Flashing: RoutineControl erase / checkProgrammingDependencies (0x31, optionally checking the image's
   CRC-32), RequestDownload (0x34), RequestUpload (0x35), TransferData (0x36), RequestTransferExit (0x37),
   with the accepted data and address/length formats, maxNumberOfBlockLength, full blocks and memory
@@ -74,12 +76,13 @@ SERVICE_NAMES = {
 # The sessions each service may be used in (NRC 0x7F in the others); a service not listed: in every session.
 SERVICE_SESSIONS = {0x27: (EXTENDED_SESSION, PROGRAMMING_SESSION), 0x28: (EXTENDED_SESSION, PROGRAMMING_SESSION),
                     0x2A: (DEFAULT_SESSION, EXTENDED_SESSION), 0x2E: (EXTENDED_SESSION, PROGRAMMING_SESSION),
-                    0x2F: (EXTENDED_SESSION,), 0x31: (PROGRAMMING_SESSION,), 0x34: (PROGRAMMING_SESSION,),
+                    0x2F: (EXTENDED_SESSION,), 0x31: (EXTENDED_SESSION, PROGRAMMING_SESSION),
+                    0x34: (PROGRAMMING_SESSION,),
                     0x35: (PROGRAMMING_SESSION, EXTENDED_SESSION), 0x3D: (EXTENDED_SESSION, PROGRAMMING_SESSION),
                     0x85: (EXTENDED_SESSION, PROGRAMMING_SESSION), 0x86: (DEFAULT_SESSION, EXTENDED_SESSION)}
 # Sub-functions each service has (NRC 0x12 for the others).
 SUB_FUNCTIONS = {0x10: (0x01, 0x02, 0x03), 0x11: (0x01, 0x03), 0x19: (0x01, 0x02, 0x04, 0x06, 0x0A),
-                 0x28: (0x00, 0x01, 0x02, 0x03), 0x31: (0x01,), 0x3E: (0x00,), 0x85: (0x01, 0x02),
+                 0x28: (0x00, 0x01, 0x02, 0x03), 0x31: (0x01, 0x02, 0x03), 0x3E: (0x00,), 0x85: (0x01, 0x02),
                  0x86: (0x00, 0x01, 0x03, 0x04, 0x05, 0x06)}
 # What a bootloader answers; the application's services get NRC 0x11 while it runs.
 BOOT_SERVICES = {0x10, 0x11, 0x22, 0x23, 0x27, 0x28, 0x2E, 0x31, 0x34, 0x35, 0x36, 0x37, 0x3D, 0x3E, 0x85}
@@ -105,6 +108,8 @@ DEFAULT_DTCS = (
     {"dtc": 0xC10000, "status": 0x08, "snapshot": "", "extended": ""},             # U0100
 )
 IMAGE_CHECKS = ("off", "option", "trailer")
+# RoutineControl results: the routine is running, has run to its end, or was stopped.
+ROUTINE_RUNNING, ROUTINE_DONE, ROUTINE_STOPPED = 0x01, 0x00, 0x02
 PERIODIC_MODES = {0x01: "slow", 0x02: "medium", 0x03: "fast"}
 STOP_SENDING = 0x04
 MAX_PERIODIC = 16                     # periodic identifiers scheduled at once
@@ -168,6 +173,8 @@ class EcuConfig:
     require_erase: bool = True
     erase_routine: int = 0xFF00
     check_routine: int = 0xFF01
+    self_test_routine: int = 0x0201    # runs self_test_seconds in the extended session; stop and results
+    self_test_seconds: float = 2.0
     erase_seconds: float = 1.0
     allow_upload: bool = True          # RequestUpload (0x35) reads the memory back
     image_crc: str = "off"             # the check routine: "off"; "option": the CRC-32 of the image is its
@@ -370,6 +377,7 @@ class EcuState:
     events: list = field(default_factory=list)            # ResponseOnEvent: {"type", "window", "record", "service", "last"}
     events_active: bool = False
     io_controls: dict = field(default_factory=dict)       # DID -> the control parameter in force
+    routines: dict = field(default_factory=dict)          # RID -> {"status", "until"}: what was started
 
     @property
     def unlocked(self) -> bool:
@@ -719,6 +727,7 @@ class DummyEcu:
         self.state.seed = None
         self.state.transfer = None
         self.state.erased.clear()
+        self.state.routines.clear()
         self.state.dtc_setting_on = True
         self.dtc_memory.set_frozen(False)
         self.state.communication_enabled = True
@@ -1247,14 +1256,47 @@ class DummyEcu:
                 return text
         return f"APP-FLASHED-{zlib.crc32(image):08X}".encode()
 
+    def _routine_status(self, routine: int) -> int:
+        entry = self.state.routines[routine]
+        if entry["status"] == ROUTINE_RUNNING and entry["until"] is not None and time.monotonic() >= entry["until"]:
+            entry["status"] = ROUTINE_DONE
+        return entry["status"]
+
     def _service_31(self, request):
         control, suppress = self._subfunction(request, 4)
         routine = int.from_bytes(request[2:4], "big")
-        if control != 0x01:
+        if control not in SUB_FUNCTIONS[0x31]:
             raise NegativeResponse(0x12)
-        if routine == self.config.erase_routine:
-            self._require_session(PROGRAMMING_SESSION)
+        flashing = routine in (self.config.erase_routine, self.config.check_routine)
+        if not flashing and routine != self.config.self_test_routine:
+            raise NegativeResponse(0x31)
+        needed = PROGRAMMING_SESSION if flashing else EXTENDED_SESSION
+        if self.state.session != needed:
+            raise NegativeResponse(0x31)         # not a routine of this session
+        if flashing:
             self._require_unlocked()
+        if control != 0x01:                      # stop, results: of a routine started before
+            if flashing and control == 0x02:
+                raise NegativeResponse(0x12)     # erasing and checking run to their end
+            if len(request) != 4:
+                raise NegativeResponse(0x13)
+            if routine not in self.state.routines:
+                raise NegativeResponse(0x24)     # not started
+            status = self._routine_status(routine)
+            if control == 0x02:
+                if status != ROUTINE_RUNNING:
+                    raise NegativeResponse(0x24)     # nothing running to stop
+                self.state.routines[routine]["status"] = status = ROUTINE_STOPPED
+            return None if suppress else bytes([0x71, control, *request[2:4], status])
+        if routine == self.config.self_test_routine:
+            if len(request) != 4:
+                raise NegativeResponse(0x13)
+            if routine in self.state.routines and self._routine_status(routine) == ROUTINE_RUNNING:
+                raise NegativeResponse(0x24)     # already running
+            self.state.routines[routine] = {"status": ROUTINE_RUNNING,
+                                            "until": time.monotonic() + max(0.0, self.config.self_test_seconds)}
+            return None if suppress else bytes([0x71, 0x01, *request[2:4], ROUTINE_RUNNING])
+        if routine == self.config.erase_routine:
             address, size = self._memory_range(request, 4)
             self._check_range(address, size)
             self._busy(self.config.erase_seconds, 0x31, pending=True)  # erasing takes longer than P2
@@ -1263,9 +1305,7 @@ class DummyEcu:
             for start in [a for a in self.state.memory if address <= a < address + size]:
                 del self.state.memory[start]
             status = 0x00
-        elif routine == self.config.check_routine:
-            self._require_session(PROGRAMMING_SESSION)
-            self._require_unlocked()
+        else:
             ok, why = self._check_image(bytes(request[4:]))
             status = 0x00 if ok else 0x01
             if ok:
@@ -1277,8 +1317,7 @@ class DummyEcu:
                     self.write_image(self.config.dump_path)
             else:
                 self.log(f"checkProgrammingDependencies failed: {why}")
-        else:
-            raise NegativeResponse(0x31)
+        self.state.routines[routine] = {"status": status, "until": None}
         return None if suppress else bytes([0x71, 0x01, *request[2:4], status])
 
     def _start_transfer(self, request: bytes, direction: str) -> bytes:

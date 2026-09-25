@@ -12,6 +12,7 @@ from canexpert.test_expert.description import ISO_SERVICES, EcuDescription
 from canexpert.uds.observer import SERVICE_NAMES
 
 PASSED, FAILED, ACCEPTED = "pass", "fail", "accepted"
+TABLE = '<table border="1" cellspacing="0" cellpadding="3">'   # Qt's rich text draws no CSS borders
 COLOURS = {"passed": "#dcfce7", "failed": "#fee2e2", "accepted": "#e0f2fe", "": "#f3f4f6", "refused": "#f9fafb"}
 MARKS = {"passed": "&#10003;", "failed": "&#10007;", "accepted": "&#10003;", "": "&ndash;"}
 UNKNOWN_SESSION = -1          # a request before the ECU's session was known
@@ -219,7 +220,7 @@ def coverage_html(coverage: Coverage, description: EcuDescription, options=None)
         cells = "".join(_cell_html(coverage.services.get((sid, s)), service.access.allows(s) if service else None)
                         for s in sessions)
         rows.append(f"<tr><td>{label}</td>{cells}</tr>")
-    parts.append(f"<h3>Services</h3><table><tr><th>Service</th>{head}</tr>{''.join(rows)}</table>")
+    parts.append(f"<h3>Services</h3>{TABLE}<tr><th>Service</th>{head}</tr>{''.join(rows)}</table>")
 
     if description.dids:
         rows = []
@@ -231,7 +232,7 @@ def coverage_html(coverage: Coverage, description: EcuDescription, options=None)
                                            access.allows(s) if access is not None else False) for s in sessions)
                 label = kind if access is not None else f"{kind} (refused)"
                 rows.append(f"<tr><td>{did:04X} {html.escape(entry.name)}</td><td>{label}</td>{cells}</tr>")
-        parts.append(f"<h3>Data identifiers</h3><table><tr><th>DID</th><th></th>{head}</tr>{''.join(rows)}</table>")
+        parts.append(f"<h3>Data identifiers</h3>{TABLE}<tr><th>DID</th><th></th>{head}</tr>{''.join(rows)}</table>")
 
     if description.routines:
         rows = []
@@ -240,17 +241,17 @@ def coverage_html(coverage: Coverage, description: EcuDescription, options=None)
             cells = "".join(_cell_html(coverage.routines.get((rid, s)), start.allows(s) if start else None)
                             for s in sessions)
             rows.append(f"<tr><td>{rid:04X} {html.escape(routine.name)}</td>{cells}</tr>")
-        parts.append(f"<h3>Routines</h3><table><tr><th>Routine</th>{head}</tr>{''.join(rows)}</table>")
+        parts.append(f"<h3>Routines</h3>{TABLE}<tr><th>Routine</th>{head}</tr>{''.join(rows)}</table>")
 
     if coverage.functional:
         cells = "".join(f"<tr><td>{sid:02X} {html.escape(SERVICE_NAMES.get(sid, ''))}</td>{_cell_html(cell)}</tr>"
                         for sid, cell in sorted(coverage.functional.items()))
-        parts.append(f"<h3>Functional requests</h3><table><tr><th>Service</th><th>Checked</th></tr>{cells}</table>")
+        parts.append(f"<h3>Functional requests</h3>{TABLE}<tr><th>Service</th><th>Checked</th></tr>{cells}</table>")
 
     missing = untested(coverage, description, options)
     if missing:
         rows = "".join(f"<tr><td>{html.escape(what)}</td><td>{html.escape(why)}</td></tr>" for what, why in missing)
-        parts.append(f"<h3>Not tested</h3><table><tr><th>What</th><th>Why</th></tr>{rows}</table>")
+        parts.append(f"<h3>Not tested</h3>{TABLE}<tr><th>What</th><th>Why</th></tr>{rows}</table>")
     untested_iso = [sid for sid in ISO_SERVICES if sid not in description.services and not coverage.service(sid).count]
     if untested_iso:
         parts.append('<p class="muted">ISO 14229-1 services neither described nor checked: '

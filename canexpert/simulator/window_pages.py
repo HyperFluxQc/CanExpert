@@ -340,7 +340,15 @@ class Pages:
                          "NRC 0x78 is sent while erasing."))
         form.addRow("Check routine", self.check_routine)
         form.addRow(hint("checkProgrammingDependencies: status 00 once a download completed and the image "
-                         "passes the check below; the software version (F195) then changes."))
+                         "passes the check below; the software version (F195) then changes. Erase and check run "
+                         "in the programming session, unlocked; their results (31 03) give their status."))
+        self.self_test_routine = self._hex(0xFFFF)
+        self.self_test_seconds = self._double(0, 600, 1, " s")
+        form.addRow("Self test routine", self.self_test_routine)
+        form.addRow("Self test time", self.self_test_seconds)
+        form.addRow(hint("In the extended session: started (31 01), it runs this long - results (31 03) answer 01 "
+                         "while it runs, 00 once done - and can be stopped (31 02: 02). Stop or results before a "
+                         "start get NRC 0x24."))
         boot, form = self._group("Bootloader")
         self.image_crc = QComboBox()
         for name in IMAGE_CHECKS:

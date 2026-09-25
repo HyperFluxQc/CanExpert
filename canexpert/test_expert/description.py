@@ -88,6 +88,8 @@ class EcuDescription:
     dids: dict = field(default_factory=dict)              # identifier -> DataIdentifier
     routines: dict = field(default_factory=dict)          # identifier -> Routine
     warnings: list = field(default_factory=list)          # what a loader could not read
+    unknown: set = field(default_factory=set)             # what it does not say: "writing" (which DIDs may be
+    # written), "sub-functions", "starting routines" - the tests that would rely on it are left out
 
     def service(self, sid: int) -> Service | None:
         return self.services.get(sid)
@@ -95,6 +97,18 @@ class EcuDescription:
     def session_name(self, session: int) -> str:
         found = self.sessions.get(session)
         return found.name if found else f"session 0x{session:02X}"
+
+    def session_path(self, session: int) -> list[int]:
+        """The DiagnosticSessionControl requests that lead from the default session into session: through a
+        session it must be entered from, when it cannot be entered from the default one."""
+        if session == DEFAULT_SESSION:
+            return [DEFAULT_SESSION]
+        sources = self.sessions[session].entered_from if session in self.sessions else set()
+        if not sources or DEFAULT_SESSION in sources:
+            return [DEFAULT_SESSION, session]
+        via = next((s for s in sorted(sources) if s != session and s in self.sessions and
+                    (not self.sessions[s].entered_from or DEFAULT_SESSION in self.sessions[s].entered_from)), None)
+        return [DEFAULT_SESSION, via, session] if via is not None else [DEFAULT_SESSION, session]
 
     def summary(self) -> str:
         return (f"{len(self.sessions)} sessions, {len(self.security_levels)} security levels, "
@@ -119,6 +133,7 @@ class EcuDescription:
                           "sub_functions": [{"id": sub, **a.to_dict()} for sub, a in sorted(r.sub_functions.items())]}
                          for r in sorted(self.routines.values(), key=lambda r: r.rid)],
             "warnings": list(self.warnings),
+            "unknown": sorted(self.unknown),
         }
 
     @classmethod
@@ -145,6 +160,7 @@ class EcuDescription:
             description.routines[rid] = Routine(rid, item.get("name", ""),
                                                 {int(sub["id"]): Access.from_dict(sub) for sub in item.get("sub_functions", ())})
         description.warnings = list(values.get("warnings", ()))
+        description.unknown = set(values.get("unknown", ()))
         return description
 
     def save(self, path):

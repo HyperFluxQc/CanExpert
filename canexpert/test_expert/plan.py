@@ -1,6 +1,7 @@
 """
 Test plans: everything a TestExpert run needs, in one JSON file - the description, the ECU connection, the
-settings, the key source, the tests left out, the sequences, the NRC policy and the accepted deviations - so
+settings, the key source, the tests left out, the sequences, the NRC policy, the accepted deviations and
+what discovery asks - so
 the same run can be made again, from the window or without it (test_expert.py plan.json --run), on a bench or
 a CI server.
 
@@ -15,6 +16,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from canexpert.test_expert.description import EcuDescription
+from canexpert.test_expert.discovery import DiscoveryOptions
 from canexpert.test_expert.generator import Options
 from canexpert.test_expert.policy import Deviation, NrcPolicy
 from canexpert.test_expert.sequences import Sequence
@@ -131,6 +133,7 @@ class TestPlan:
     sequences: list = field(default_factory=list)      # Sequence
     nrc_policy: NrcPolicy = field(default_factory=NrcPolicy)
     deviations: list = field(default_factory=list)     # Deviation: failures accepted
+    discovery: DiscoveryOptions = field(default_factory=DiscoveryOptions)
     path: Path | None = None              # where it was read from or saved to (not saved)
 
     # --- files -----------------------------------------------------------------------------------------
@@ -183,7 +186,10 @@ class TestPlan:
                 "record": self.record, "reports": self.reports, "excluded": sorted(self.excluded),
                 "sequences": [sequence.to_dict() for sequence in self.sequences],
                 "nrc_policy": self.nrc_policy.to_dict(),
-                "deviations": [deviation.to_dict() for deviation in self.deviations]}
+                "deviations": [deviation.to_dict() for deviation in self.deviations],
+                "discovery": {"sessions": [f"{session:02X}" for session in self.discovery.sessions],
+                              "dids": self.discovery.dids, "rids": self.discovery.rids,
+                              "services": self.discovery.services, "security": self.discovery.security}}
 
     @classmethod
     def from_dict(cls, values: dict, path=None) -> "TestPlan":
@@ -202,6 +208,7 @@ class TestPlan:
                        [Sequence.from_dict(item) for item in values.get("sequences", ())],
                        NrcPolicy.from_dict(values.get("nrc_policy")),
                        [Deviation.from_dict(item) for item in values.get("deviations", ())],
+                       _discovery(values.get("discovery")),
                        Path(path) if path is not None else None)
         except (TypeError, ValueError, AttributeError) as exc:
             raise PlanError(f"the plan cannot be read: {exc}") from None
@@ -227,6 +234,14 @@ class TestPlan:
         except (OSError, ValueError) as exc:
             raise PlanError(f"{path.name} cannot be read: {exc}") from None
         return cls.from_dict(values, path)
+
+
+def _discovery(values) -> DiscoveryOptions:
+    values = values or {}
+    default = DiscoveryOptions()
+    sessions = [_number(session) for session in values.get("sessions", ())] or default.sessions
+    return DiscoveryOptions(sessions, str(values.get("dids", default.dids)), str(values.get("rids", default.rids)),
+                            bool(values.get("services", default.services)), bool(values.get("security", default.security)))
 
 
 def is_plan(values) -> bool:

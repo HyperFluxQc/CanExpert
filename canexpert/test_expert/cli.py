@@ -8,6 +8,9 @@ for a bench script or a CI server, which read the exit code and the JUnit report
     python test_expert.py nightly.json --run --junit results.xml --report-dir reports
     python test_expert.py nightly.json --run --channel 1     the plan, on another channel
     python test_expert.py --run --dummy-ecu                  the built-in description against a Dummy ECU in this process
+    python test_expert.py nightly.json --discover            ask the ECU what it has; exit code 0 when it matches
+                                                             the description, 1 when it does not
+    python test_expert.py ecu.cdd --discover --save-description found.json --dids F100-F1FF
 """
 from __future__ import annotations
 
@@ -36,15 +39,21 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--channel", help="with --run: the channel, instead of the plan's")
     parser.add_argument("--bitrate", type=int, help="with --run: the bit rate, instead of the plan's")
     parser.add_argument("--quiet", action="store_true", help="with --run: print the summary only")
+    parser.add_argument("--discover", action="store_true",
+                        help="ask the ECU what it has and compare it with the description, without the window; exit "
+                             "code 0 when they agree, 1 when they differ, 2 when it could not run")
+    parser.add_argument("--dids", help="with --discover: the DID ranges to read, e.g. 0100-02FF,F100-F2FF")
+    parser.add_argument("--rids", help="with --discover: the routine ranges whose results are asked")
+    parser.add_argument("--save-description", help="with --discover: what was found, as a JSON description")
     parser.add_argument("--smoke-test", action="store_true", help="build the window and exit (the Windows build)")
     return parser
 
 
 def main(argv=None) -> int:
     arguments = parser().parse_args(argv)
-    if arguments.run:
+    if arguments.run or arguments.discover:
         _console()
-        return run(arguments)
+        return discover(arguments) if arguments.discover else run(arguments)
     from canexpert.test_expert.window import gui
     return gui(arguments)
 
@@ -112,10 +121,75 @@ class DummyBench:
             bus.shutdown()
 
 
-def run(arguments) -> int:
+def _open_bus(arguments, plan):
+    """(bus, Dummy ECU bench or None) for the plan's connection; OSError-like errors propagate."""
     from canexpert.can_bus import create_can_bus
-    from canexpert.recording import Recorder
     from canexpert.simulator.ecu import parse_channel
+    if arguments.dummy_ecu:
+        bench = DummyBench(plan.connection)
+        return bench.tester_bus, bench
+    connection = plan.connection
+    return create_can_bus(connection.interface, parse_channel(connection.channel), connection.bitrate), None
+
+
+def discover(arguments) -> int:
+    from datetime import datetime
+
+    from canexpert.test_expert.discovery import Discovery, compare, discovery_page, parse_ranges
+    from canexpert.test_expert.plan import PlanError
+    from canexpert.test_expert.tester import Tester
+    from canexpert.test_expert.window import TEST_EXPERT_DIR
+    try:
+        plan = load_plan(arguments)
+        description = plan.load_description()
+        options = plan.discovery
+        if arguments.dids:
+            parse_ranges(arguments.dids)
+            options.dids = arguments.dids
+        if arguments.rids:
+            parse_ranges(arguments.rids)
+            options.rids = arguments.rids
+    except (PlanError, OSError, ValueError) as exc:
+        _say(f"TestExpert: {exc}")
+        return EXIT_NOT_RUN
+    try:
+        bus, bench = _open_bus(arguments, plan)
+    except Exception as exc:                             # the adapter's own errors, whatever the driver
+        _say(f"TestExpert: cannot open {plan.connection.interface} {plan.connection.channel}: {exc}")
+        return EXIT_NOT_RUN
+    try:
+        _say(f"TestExpert: discovering, against {description.name} - sessions "
+             f"{', '.join(f'{s:02X}' for s in options.sessions)}, DIDs {options.dids}, routines {options.rids}")
+        tester = Tester(bus, plan.connection.transport(), plan.connection.functional_id)
+        result = Discovery(tester, description, options).run()
+    finally:
+        if bench is not None:
+            bench.close()
+        else:
+            bus.shutdown()
+    findings = compare(result, description)
+    for note in result.notes:
+        _say(f"  Note: {note}")
+    for finding in findings:
+        _say(f"  {finding.kind.upper():12} {finding.what}: {finding.detail}")
+    folder = Path(arguments.report_dir) if arguments.report_dir else plan.report_folder(TEST_EXPERT_DIR / "reports")
+    folder.mkdir(parents=True, exist_ok=True)
+    page = folder / f"discovery_{datetime.fromtimestamp(result.started):%Y%m%d-%H%M%S}.html"
+    page.write_text(discovery_page(result, description), encoding="utf-8")
+    import json
+    page.with_suffix(".json").write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    _say(f"{result.probes} requests in {result.duration:.1f} s: {len(findings)} difference"
+         f"{'s' if len(findings) != 1 else ''} with the description")
+    _say(f"  {page}")
+    if arguments.save_description:
+        found = result.to_description(f"{description.name} (discovered)", description)
+        found.save(arguments.save_description)
+        _say(f"  {arguments.save_description}")
+    return EXIT_PASSED if not findings else EXIT_FAILED
+
+
+def run(arguments) -> int:
+    from canexpert.recording import Recorder
     from canexpert.test_expert.engine import PlanRun, RecordingBus
     from canexpert.test_expert.plan import PlanError
     from canexpert.test_expert.window import TEST_EXPERT_DIR
@@ -128,12 +202,7 @@ def run(arguments) -> int:
         return EXIT_NOT_RUN
     bench = bus = recorder = None
     try:
-        if arguments.dummy_ecu:
-            bench = DummyBench(plan.connection)
-            bus = bench.tester_bus
-        else:
-            connection = plan.connection
-            bus = create_can_bus(connection.interface, parse_channel(connection.channel), connection.bitrate)
+        bus, bench = _open_bus(arguments, plan)
     except Exception as exc:                             # the adapter's own errors, whatever the driver
         _say(f"TestExpert: cannot open {plan.connection.interface} {plan.connection.channel}: {exc}")
         return EXIT_NOT_RUN

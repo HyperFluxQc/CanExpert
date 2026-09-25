@@ -1,7 +1,7 @@
 """TestExpert: descriptions (JSON, how states become sessions and levels, CDD, ODX), the tests generated from
 them against the Dummy ECU - passing when it keeps the rules, failing where it is made not to - the pre-test and
-post-test sequences around them, the NRC policy and accepted deviations, what a run covered, test plans and
-their run from the command line, and the window."""
+post-test sequences around them, the NRC policy and accepted deviations, what a run covered, discovering what
+the ECU has, test plans and their run from the command line, and the window."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import argparse
@@ -28,6 +28,8 @@ from canexpert.test_expert import window as window_module
 from canexpert.test_expert.cdd import CddError, load_cdd
 from canexpert.test_expert.coverage import Coverage, coverage_html, untested
 from canexpert.test_expert.description import (Access, EcuDescription, RawService, RawState, build_description)
+from canexpert.test_expert.discovery import (Discovery, DiscoveryOptions, DiscoveryResult, compare, discovery_page,
+                                             expand, parse_ranges)
 from canexpert.test_expert.dummy import dummy_description
 from canexpert.test_expert.generator import Options, Suite
 from canexpert.test_expert.plan import Connection, KeySource, PlanError, TestPlan, is_plan_file
@@ -450,6 +452,67 @@ class CoverageTest(unittest.TestCase):
                       [step.description for step in report.setup.steps])
 
 
+class DiscoveryTest(unittest.TestCase):
+    OPTIONS = DiscoveryOptions([0x01, 0x03], "0100-0102, F180-F19F", "0200-0202, FF00-FF01")
+
+    def test_ranges(self):
+        self.assertEqual(parse_ranges("F100-F1FF, 0100"), [(0xF100, 0xF1FF), (0x0100, 0x0100)])
+        self.assertEqual(expand(parse_ranges("0100-0102,0101")), [0x100, 0x101, 0x102])
+        for text in ("F1FF-F100", "zz", "10000"):
+            with self.assertRaises(ValueError):
+                parse_ranges(text)
+
+    def discover(self, bench, description, options=None, stop=None):
+        tester = Tester(bench.tester_bus, TRANSPORT, 0x7DF)
+        return Discovery(tester, description, options or self.OPTIONS, stop=stop).run()
+
+    def test_what_the_ecu_has_and_the_description_does_not_say(self):
+        bench = Bench(self)
+        description = dummy_description(bench.ecu.config)
+        del description.dids[0xF18C]                        # forgotten
+        description.dids[0xF190].length = 16                # wrong
+        del description.services[0x86]                      # forgotten
+        description.dids[0xF1A0] = description.dids[0xF187].__class__(0xF1A0, "Ghost", 4, Access(), None)
+        result = self.discover(bench, description)
+        self.assertEqual(result.entered(), [0x01, 0x03])
+        self.assertTrue(result.service_found(0x86))
+        self.assertEqual(result.service_sessions(0x27), {0x03}, "SecurityAccess: extended only")
+        self.assertEqual(result.did_length(0xF190), 17)
+        self.assertEqual(result.found_levels(), [0x01])
+        self.assertTrue(result.routine_found(0x0201), "the self test: its results are asked, it is not started")
+        self.assertFalse(bench.ecu.state.routines, "nothing was started")
+        findings = {(finding.kind, finding.what) for finding in compare(result, description)}
+        self.assertEqual(findings, {("undocumented", "Service 86 ResponseOnEvent"), ("undocumented", "DID F18C"),
+                                    ("different", "DID F190"), ("missing", "DID F1A0 Ghost")})
+        again = DiscoveryResult.from_dict(json.loads(json.dumps(result.to_dict())))
+        self.assertEqual(again.to_dict(), result.to_dict())
+        page = discovery_page(result, description)
+        self.assertIn("found, not described", page)
+        self.assertIn("the ECU answers 17 bytes, the description says 16", page)
+
+    def test_testing_the_ecu_as_it_was_found(self):
+        bench = Bench(self)
+        result = self.discover(bench, None, DiscoveryOptions([0x01, 0x03], "0100-0102, F186-F195", "0201"))
+        found = result.to_description("Found")
+        self.assertEqual(found.unknown, {"writing", "sub-functions", "starting routines"})
+        self.assertEqual(found.services[0x34].access, Access({0x02}), "refused everywhere asked: elsewhere")
+        self.assertEqual(found.services[0x35].access.levels, {0x01}, "0x33 to the SID alone: behind a level")
+        self.assertEqual(found.dids[0xF190].length, 17)
+        self.assertEqual(EcuDescription.from_dict(found.to_dict()).unknown, found.unknown)
+        _suite, report = bench.run(found)
+        self.assertEqual(failures(report), {})
+        self.assertNotIn("Data identifiers: Writing a read-only DID", [case.title for case in report.cases],
+                         "which DIDs may be written is not known")
+
+    def test_stopping(self):
+        bench = Bench(self)
+        stop = threading.Event()
+        stop.set()
+        result = self.discover(bench, dummy_description(bench.ecu.config), stop=stop)
+        self.assertEqual(result.probes, 0)
+        self.assertIn("Stopped before the end", result.notes[0])
+
+
 class PlanTest(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -467,6 +530,7 @@ class PlanTest(unittest.TestCase):
                         nrc_policy=NrcPolicy({"locked": (0x33, 0x22)}),
                         deviations=[Deviation("timing.responses_within_p2", "*", "slow gateway", "2026-09-24")])
         plan.options["destructive"] = True
+        plan.discovery = DiscoveryOptions([0x01, 0x02], "F100-F1FF", "0200", False, True)
         path = self.folder / "plans" / "nightly.json"
         path.parent.mkdir()
         plan.path = path
@@ -545,6 +609,22 @@ class PlanTest(unittest.TestCase):
         self.assertTrue(list(reports.glob("*.blf")), "the traffic recorded beside the reports")
         plan.description = "nowhere.cdd"
         plan.save(path)
+        described = self.folder / "described.json"
+        description = dummy_description()
+        description.dids[0xF190].length = 16
+        description.save(described)
+        with patch("sys.stdout") as out:
+            code = cli.main([str(described), "--discover", "--dummy-ecu", "--dids", "F190", "--rids", "0201",
+                             "--report-dir", str(reports), "--save-description", str(self.folder / "found.json")])
+        printed = "".join(call.args[0] for call in out.write.call_args_list)
+        self.assertEqual(code, cli.EXIT_FAILED, printed)
+        self.assertIn("DIFFERENT    DID F190: the ECU answers 17 bytes, the description says 16", printed)
+        self.assertTrue(list(reports.glob("discovery_*.html")) and list(reports.glob("discovery_*.json")))
+        self.assertEqual(EcuDescription.load(self.folder / "found.json").dids[0xF190].length, 17)
+        with patch("sys.stdout"):
+            self.assertEqual(cli.main([str(DUMMY_CDD), "--discover", "--dummy-ecu", "--dids", "F190", "--rids", "0201",
+                                       "--report-dir", str(reports)]), cli.EXIT_PASSED, "no difference")
+            self.assertEqual(cli.main([str(DUMMY_CDD), "--discover", "--dummy-ecu", "--dids", "zz"]), cli.EXIT_NOT_RUN)
         with patch("sys.stdout"):
             self.assertEqual(cli.main([str(path), "--run", "--dummy-ecu"]), cli.EXIT_NOT_RUN)
             self.assertEqual(cli.main([str(DUMMY_CDD), "--run", "--interface", "no-such-interface"]), cli.EXIT_NOT_RUN)
@@ -712,6 +792,25 @@ class WindowTest(unittest.TestCase):
         self.assertEqual([deviation.comment for deviation in saved.deviations], ["ticket 42"])
         editor.remove(test, description)
         self.assertEqual(window.plan().deviations, [])
+
+    def test_discovery_in_the_window(self):
+        window = self.window
+        bench = Bench(self)
+        self.assertIsNone(window.discover(DiscoveryTest.OPTIONS), "not connected")
+        self.assertTrue(window.connect_ecu(can.Bus(interface="virtual", channel=bench.channel)))
+        self.addCleanup(window.disconnect_ecu)
+        window.description.dids[0xF190].length = 16
+        self.assertIsNotNone(window.discover(DiscoveryTest.OPTIONS))
+        self.assertTrue(spin_until(lambda: window.discovery_result is not None and window.run_btn.isEnabled()))
+        self.assertIn("1 difference with the description", window.status.text())
+        self.assertIn("the ECU answers 17 bytes", window.discovery_view.browser.toPlainText())
+        self.assertEqual(window.plan().discovery, DiscoveryTest.OPTIONS, "kept in the plan")
+        page = window.save_discovery(self.folder / "discovery.html")
+        self.assertTrue(page.exists() and page.with_suffix(".json").exists())
+        found = window.use_discovered(self.folder / "found.json")
+        self.assertEqual(found.name, "Dummy ECU (discovered)")
+        self.assertEqual(window.description.dids[0xF190].length, 17)
+        self.assertEqual(window.plan().description, str((self.folder / "found.json").resolve()))
 
     def test_main_smoke_test(self):
         self.assertEqual(window_module.main(["--smoke-test"]), 0)

@@ -222,7 +222,9 @@ reset after a test, an ignition frame before the run, a recovery reset after a f
 it all in one file, which also runs without the window for a CI server (exit code and JUnit report). An NRC
 policy says which codes pass where a specification differs from ISO, and failures agreed on are kept as
 accepted deviations. A coverage matrix shows where each service, DID and routine was checked, and what was not
-tested and why. Each run
+tested and why. **Discover** asks the ECU what it really has and compares it with the description:
+undocumented services and DIDs, missing ones, other lengths or sessions - and what it found can be tested as a
+description of its own. Each run
 leaves an HTML and a JUnit report. `ODX/dummy_ecu.cdd` describes the Dummy ECU, which passes every test.
 
 ```bash
@@ -248,7 +250,7 @@ Every setting applies at once, even while connected, and is remembered for the n
 | Flow control | Block size (BS), STmin (ms or 100-900 µs), WAIT frames before each ContinueToSend and their interval, receive buffer (longer requests get flow control overflow) |
 | UDS | P2 and P2* announced by DiagnosticSessionControl, response delay (NRC 0x78 beyond P2) and pending interval, S3 timeout, programming session only from extended, the slow/medium/fast rates of periodic data (0x2A) and whether it goes out as `6A` frames or on an ID of its own |
 | Access | SecurityAccess levels - the main one and more - each with its seed length and key (seed XOR a mask, or a `GenerateKeyEx` seed & key DLL), wrong keys allowed and lockout delay; rules allowing a service only in some sessions or after unlocking a level |
-| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, RequestUpload, file for the flashed image; the bootloader's image check (none, CRC-32 as the check routine's option record, or in the image's last four bytes) and where the software version is read from the image |
+| Flashing | Data bytes per TransferData (the ECU announces them + 2 as maxNumberOfBlockLength in its RequestDownload response), size of that length field, full blocks required, accepted dataFormatIdentifier values, required addressAndLengthFormatIdentifier, memory ranges, erase before download, erase and check routine IDs, erase time, the self test routine and its time, RequestUpload, file for the flashed image; the bootloader's image check (none, CRC-32 as the check routine's option record, or in the image's last four bytes) and where the software version is read from the image |
 | Signals | The DBC whose messages are sent (built-in: `DBC/dummy_ecu.dbc`), each message on or off with its period, and a generator per signal: constant, ramp, sine, square, random, counter, the engine running, logging, the session |
 | Data | DIDs (writable or not, following a signal, readable in some sessions or after unlocking a level), DTCs with their status, faults, snapshot and extended data, the fault memory's confirmation and aging cycles and snapshot DIDs, forced negative responses |
 | Errors | The chance of each transport error on purpose: refused, not answered, answered on another ID, a consecutive frame dropped, out of sequence or late |

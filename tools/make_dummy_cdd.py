@@ -208,16 +208,21 @@ class Writer:
             if entry.write is not None:
                 services.append((templates["Write"], self.may_be_exec(entry.write), None))
             self.instance(diag_class, entry.name.replace(" ", "_"), {shstatics["DID"]: did}, services, entry.length)
-        # Routines: startRoutine of each.
+        # Routines: startRoutine, stopRoutine and requestRoutineResults, where each routine has them.
         if d.routines:
-            start, start_statics = self.protocol("StartRoutine", [("const", 0x31, 8), ("const", 0x01, 8),
-                                                                  ("static", "RID", 16), ("data",)])
-            shstatics, templates, template_id = self.template("Routine", {"RID": [start_statics["RID"]]},
-                                                              [("Start", start)])
+            controls = {0x01: "Start", 0x02: "Stop", 0x03: "Results"}
+            protocols, rid_statics = [], []
+            for sub, qual in controls.items():
+                protocol, statics = self.protocol(f"{qual}Routine", [("const", 0x31, 8), ("const", sub, 8),
+                                                                    ("static", "RID", 16), ("data",)])
+                protocols.append((qual, protocol))
+                rid_statics.append(statics["RID"])
+            shstatics, templates, template_id = self.template("Routine", {"RID": rid_statics}, protocols)
             diag_class = self.diag_class(template_id, "Routines")
             for rid, routine in sorted(d.routines.items()):
                 self.instance(diag_class, routine.name, {shstatics["RID"]: rid},
-                              [(templates["Start"], self.may_be_exec(routine.sub_functions[0x01]), None)])
+                              [(templates[controls[sub]], self.may_be_exec(access), None)
+                               for sub, access in sorted(routine.sub_functions.items())])
         del session_states
         ElementTree.indent(self.root)
         return ElementTree.tostring(self.root, encoding="unicode", xml_declaration=True)
