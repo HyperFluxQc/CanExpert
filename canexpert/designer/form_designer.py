@@ -4,8 +4,9 @@ Form Designer
 Visual editor for panel databases, in the spirit of CANoe's Panel Designer: drag controls from the
 palette (or DBC signals from the symbol list) onto pages, arrange them with multi-select, align,
 distribute, grid snap, resize handles and undo/redo, set their properties, and write the panel's
-Python script (per-control handlers and CAPL-style event decorators). Test mode runs the panel
-against the simulated ECU on a virtual CAN bus.
+Python script (per-control handlers and CAPL-style event decorators). Check panel finds the typos - in
+the form, its DBC bindings and its script - with where they are; Test mode runs the panel against the
+simulated ECU on a virtual CAN bus.
 """
 import os
 import re
@@ -33,10 +34,12 @@ from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
 from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
+from canexpert.panel.check import ERROR, FORM, SCRIPT, Problem, check_panel, check_panel_file, display_name, summary
 from canexpert.panel.controls import CONTROLS, WIDGET_GROUPS
 from canexpert.config import read_configurations
 from canexpert.panel.database import (DATABASES_DIR, parse_application_database, parse_widget, select_database,
                                       split_database_id)
+from canexpert.panel.problems_dialog import ProblemsDialog
 from canexpert.panel.runtime import SCRIPT_TEMPLATE
 from canexpert.paths import CONFIG_DIR, EXAMPLE_FIRMWARE_DIR
 from canexpert.ui_common import SplitterPanel, enable_maximize, make_main_window
@@ -260,6 +263,7 @@ class FormDesigner(QDialog):
         self.description = description
         self._loaded_id = None          # the ID of the file on disk this form came from, if any
         self._dirty = False
+        self.problems_dialog = None     # what the last check found (show_problems)
 
         self.symbol_list = SymbolListPanel()
         self.palette = WidgetPalette()
@@ -428,6 +432,9 @@ class FormDesigner(QDialog):
         menu.aboutToShow.connect(lambda: self.handler_action.setEnabled(len(self.canvas.selection) == 1))
 
         menu = self.menus["test"] = bar.addMenu("&Test")
+        self._action(menu, "&Check the panel", self.show_check, "F6",
+                     "Find the typos in the form, its DBC bindings and its script, with where each one is")
+        menu.addSeparator()
         self._action(menu, "Test panel with the &simulated ECU", lambda: self.test_panel(), "F5",
                      "Run the panel and its script against the simulated ECU on a virtual CAN bus")
         self._action(menu, "Test panel &without an ECU", lambda: self.test_panel(simulate_ecu=False), "Shift+F5",
@@ -436,10 +443,19 @@ class FormDesigner(QDialog):
         menu = self.menus["help"] = bar.addMenu("&Help")
         self._action(menu, "Form Designer in the &manual", self.open_manual, "F1")
 
+        check_btn = QPushButton("Check panel")
+        check_btn.setToolTip("Find the typos in the form, its DBC bindings and its script, with where each one is "
+                             "and what was probably meant (F6)")
+        check_btn.clicked.connect(self.show_check)
         test_btn = QPushButton("Test panel...")
         test_btn.setToolTip("Run this panel and its script against the simulated ECU on a virtual CAN bus (F5)")
         test_btn.clicked.connect(lambda: self.test_panel())      # with the simulated ECU, not clicked's False
-        bar.setCornerWidget(test_btn, Qt.TopRightCorner)
+        corner = QWidget()
+        corner_layout = QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.addWidget(check_btn)
+        corner_layout.addWidget(test_btn)
+        bar.setCornerWidget(corner, Qt.TopRightCorner)
         return bar
 
     def _edit_target(self):
@@ -834,6 +850,7 @@ class FormDesigner(QDialog):
         path = str(path)
         try:
             root = ET.parse(path).getroot()
+            pages = self._read_pages(root)             # a value the panel cannot take stops here, before any change
             self.database_dir = Path(path).resolve().parent
             self.canvas.base_dir = self.properties.base_dir = self.database_dir
             self.db_id = Path(path).stem
@@ -853,29 +870,44 @@ class FormDesigner(QDialog):
             else:
                 self.remove_dbc()
 
-            pages_el = root.find("pages")
-            if pages_el is not None:
-                data = {"pages": []}
-                for page_el in pages_el.findall("page"):
-                    # Document order is the z-order (group boxes stay behind their contents).
-                    widgets = [parse_widget(elem) for elem in page_el.iter() if elem.tag in WIDGET_GROUPS]
-                    data["pages"].append({"name": page_el.get("name", "Page"), "widgets": widgets})
-                self.canvas.load_from_data(data)
-            else:
-                data = {tag: [] for tag in ["buttons", "values", "checkboxes", "sliders", "labels"]}
-                for tag in data:
-                    for elem in root.findall(".//" + {"checkboxes": "checkbox"}.get(tag, tag[:-1])):
-                        data[tag].append(parse_widget(elem))
-                self.canvas.load_from_data(data)
+            self.canvas.load_from_data(pages)
             self.properties.clear()
             self._load_script()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load: {e}")
+            name = Path(path).name
+            problems = check_panel_file(path)
+            if not any(problem.is_error for problem in problems):
+                problems.insert(0, Problem(ERROR, str(e), FORM, path))
+            self.show_problems(problems, f"{name} cannot be opened",
+                               "Put these errors right in the file - with a text editor - and open it again. "
+                               "Nothing was changed.")
+            self.status.showMessage(f"{name} cannot be opened: {e}", 10000)
             return False
         self._loaded_id = self.db_id
         self._mark_clean()
         self.status.showMessage(f"Opened {path}", 5000)
+        problems = check_panel_file(path, dbc=self.symbol_list.dbc)
+        if problems:
+            self.show_problems(problems, f"{Path(path).name}: {summary(problems)}",
+                               "It is open: put them right here and save. Double-click one to go to it.")
         return True
+
+    @staticmethod
+    def _read_pages(root) -> dict:
+        """The pages of a database's XML and their controls, as the canvas takes them."""
+        pages_el = root.find("pages")
+        if pages_el is not None:
+            data = {"pages": []}
+            for page_el in pages_el.findall("page"):
+                # Document order is the z-order (group boxes stay behind their contents).
+                widgets = [parse_widget(elem) for elem in page_el.iter() if elem.tag in WIDGET_GROUPS]
+                data["pages"].append({"name": page_el.get("name", "Page"), "widgets": widgets})
+            return data
+        data = {tag: [] for tag in ["buttons", "values", "checkboxes", "sliders", "labels"]}
+        for tag in data:
+            for elem in root.findall(".//" + {"checkboxes": "checkbox"}.get(tag, tag[:-1])):
+                data[tag].append(parse_widget(elem))
+        return data
 
     def _build_root(self, db_name, description):
         data = self.canvas.get_data()
@@ -944,11 +976,80 @@ class FormDesigner(QDialog):
         self.db_id_edit.setText(name.strip())
         return self.save()
 
+    # --- checking --------------------------------------------------------------------------------------
+
+    def check_form(self) -> list:
+        """The panel as it is on screen - the form, its DBC bindings and its script - checked (check.py)."""
+        root = self._build_root(self.db_name_edit.text().strip() or self._current_id(),
+                                self.desc_edit.toPlainText().strip())
+        return check_panel(ET.tostring(root, encoding="utf-8"), "", self.code_editor.toPlainText(),
+                           str(self._script_path()), self.database_dir, dbc=self.symbol_list.dbc)
+
+    def show_check(self):
+        """Check panel (F6): what the check finds, or that it finds nothing."""
+        problems = self.check_form()
+        if problems:
+            self.status.showMessage(f"Check: {summary(problems)}", 10000)
+            return self.show_problems(problems, f"{self._current_id()}: {summary(problems)}",
+                                      "Errors stop the panel from loading or its script from starting; warnings are "
+                                      "what will not work as written. Double-click one to go to it.")
+        self.status.showMessage("Check: no problems found", 10000)
+        return self.show_problems([], f"{self._current_id()}: no problems found",
+                                  "The form, its DBC bindings and its script were checked.")
+
+    def show_problems(self, problems, heading, note=""):
+        """The problems window of this designer, filled and in front."""
+        if self.problems_dialog is None:
+            self.problems_dialog = ProblemsDialog(self)
+            self.problems_dialog.go_to.connect(self.go_to_problem)
+        return self.problems_dialog.show_problems(problems, heading, note)
+
+    def go_to_problem(self, problem):
+        """Show where a problem is: its line in the script, or its control on the form, selected."""
+        self.raise_()
+        self.activateWindow()
+        if problem.kind == SCRIPT:
+            if problem.line:
+                self.design_tabs.setCurrentWidget(self.code_page)
+                self.code_editor.go_to_line(problem.line, max(problem.column - 1, 0))
+            return
+        found = self._find_control(problem)
+        if found is not None:
+            page, index = found
+            self.design_tabs.setCurrentWidget(self.canvas)
+            if self.canvas.current_page_index != page:
+                self.canvas._switch_page(page)
+            self.canvas.set_selection([index])
+
+    def _find_control(self, problem):
+        """(page, index) of the control a problem is about: at its place when the name there matches, else the
+        first control of that name."""
+        pages = self.canvas.pages
+        if problem.position:
+            page, index = problem.position
+            if page < len(pages) and index < len(pages[page]["widgets"]) and \
+                    display_name(pages[page]["widgets"][index]) == problem.control:
+                return page, index
+        for page, form_page in enumerate(pages):
+            for index, data in enumerate(form_page["widgets"]):
+                if problem.control and display_name(data) == problem.control:
+                    return page, index
+        return None
+
     def test_panel(self, simulate_ecu=True):
-        """Run the form as it is now (no need to save) in a test window."""
-        if not self.check_syntax():
-            self.design_tabs.setCurrentWidget(self.code_page)
+        """Run the form as it is now (no need to save) in a test window - not while the check finds errors."""
+        self.check_syntax()
+        problems = self.check_form()
+        errors = [problem for problem in problems if problem.is_error]
+        if errors:
+            self.show_problems(problems, "The panel cannot be tested yet",
+                               "Put the errors right first - warnings do not stop a test. Double-click one to go "
+                               "to it.")
+            if errors[0].kind == SCRIPT:
+                self.go_to_problem(errors[0])
             return None
+        if problems:
+            self.status.showMessage(f"Testing with {summary(problems)}: Check panel (F6) lists them", 10000)
         try:
             root = self._build_root(self.db_name_edit.text().strip() or "Test", self.desc_edit.toPlainText().strip())
             temp = Path(tempfile.mkdtemp()) / "test_panel.xml"

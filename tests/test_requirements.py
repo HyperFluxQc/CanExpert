@@ -859,6 +859,54 @@ def ready(api):
         self.assertEqual(dialog.node_timeout_spin.value(), 2.0)
         self.assertEqual(dialog.heartbeat_spin.value(), 0.5)
 
+    def test_a_panel_with_typos_says_where_they_are_at_connect(self):
+        panel = self.databases / "panel_2026-09-18.xml"
+        panel.write_text(PANEL.replace('label="Status" binding_value="status" x="10" y="50"',
+                                       'label="Status" binding_value="status" x="10" y="5O"'))
+        self.window.on_connect_clicked()
+        self.assertIsNone(self.window.can_bus, "the panel cannot be loaded: no connection")
+        dialog = self.window.problems_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.heading.text(), "<b>The panel panel_2026-09-18.xml cannot be loaded</b>")
+        problem = dialog.problems[0]
+        self.assertEqual((problem.line, problem.message, problem.hint),
+                         (3, 'y="5O" is not a whole number', 'Did you mean "50"?'))
+        self.assertIn('y="5O" is not a whole number', self.window.debug_log.toPlainText())
+
+        panel.write_text(PANEL)                                 # the script's syntax stops Connect too, and says where
+        (self.databases / "panel_2026-09-18_script.py").write_text(SCRIPT.replace("(api):", "(api)"))
+        self.window.on_connect_clicked()
+        self.assertIsNone(self.window.can_bus)
+        problem = dialog.problems[0]
+        self.assertEqual((problem.kind, problem.line, problem.message),
+                         ("script", 1, "expected ':': the script cannot start"))
+        self.assertEqual(dialog.go_button.text(), "Open in Form Designer")
+        dialog.go_button.click()                                # the panel opened in the Form Designer, there
+        designer = self.window.form_designer
+        self.assertEqual(designer.db_id_edit.text(), "panel_2026-09-18")
+        self.assertIs(designer.design_tabs.currentWidget(), designer.code_page)
+        self.assertEqual(designer.code_editor.textCursor().blockNumber(), 0)
+        designer.close()
+
+    def test_a_panel_that_runs_with_warnings_says_so_once_for_each_version(self):
+        panel = self.databases / "panel_2026-09-18.xml"
+        panel.write_text(PANEL.replace("<checkbox ", "<chekbox "))
+        self.window.on_connect_clicked()
+        self.assertIsNotNone(self.window.can_bus, "warnings do not stop Connect")
+        dialog = self.window.problems_dialog
+        self.assertEqual(dialog.heading.text(), "<b>The panel panel_2026-09-18.xml has 2 warnings</b>")
+        self.assertEqual([problem.hint for problem in dialog.problems],
+                         ["Did you mean <checkbox>?", ""], "the checkbox is left out, and the script's use of it")
+        dialog.close()
+        self.window.on_disconnect_clicked()
+        self.window.on_connect_clicked()
+        self.assertFalse(dialog.isVisible(), "the same files: not every Connect")
+        self.window.on_disconnect_clicked()
+        stamp = panel.stat().st_mtime + 10
+        os.utime(panel, (stamp, stamp))                         # a new version
+        self.window.on_connect_clicked()
+        self.assertTrue(dialog.isVisible())
+
     def test_tool_windows_can_be_maximized(self):
         from PyQt5.QtCore import Qt
         from canexpert.can_logger import CANLoggerWindow

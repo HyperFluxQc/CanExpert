@@ -16,7 +16,7 @@ def parse_hex_bytes(text: str) -> list[int]:
     return [int(x, 16) for x in str(text).replace(",", " ").split()]
 
 
-def _parse_can_id(val: str) -> int:
+def parse_can_id(val: str) -> int:
     """Parse CAN ID from hex string (0x200) or decimal."""
     s = str(val).strip().lower()
     if s.startswith("0x"):
@@ -89,7 +89,7 @@ def parse_widget(elem):
     for key, default in (("scale", 1.0), ("offset", 0.0)):
         data[key] = float(data.get(key, default))
     if "can_id" in data and str(data["can_id"]).strip():
-        data["can_id"] = _parse_can_id(data["can_id"])
+        data["can_id"] = parse_can_id(data["can_id"])
         if not 0 <= data["can_id"] <= 0x1FFFFFFF:
             raise ValueError("CAN ID must be between 0 and 0x1FFFFFFF")
     else:

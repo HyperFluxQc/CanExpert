@@ -4,3 +4,4 @@ python-can>=3.3.0
 cantools>=39.0.0
 pyqtgraph>=0.13.0
 odxtools>=4.0.0
+pyflakes>=3.0

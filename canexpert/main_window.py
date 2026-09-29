@@ -157,6 +157,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.replay = None
         self.tool_panes = {}       # the tool windows opened so far (their panes are in _tool_slots from the start)
         self.form_designer = None  # the Form Designer while it is open: a window of its own (open_form_designer)
+        self.problems_dialog = None     # the Panel check window: what a check of the panel found at Connect
+        self._problems_path = None      # the panel database it is about
+        self._panels_reported = set()   # the versions of panel files whose problems were shown after a Connect
         self._diagnostic_answers = (None, False, None)   # response ID, extended, address byte of the session
         self._bus_state = "unknown"
 

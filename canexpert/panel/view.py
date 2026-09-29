@@ -11,6 +11,22 @@ from canexpert.panel.database import decode_value_from_can_data
 from canexpert.panel.page_window import DEFAULT_ZOOM, PanelPage, PanelWindow
 
 
+def control_key(definition, page_index, index, taken) -> str:
+    """The name a panel and its script know a control by: its script binding, else its label, else its ID - a
+    label or ID used before gets the control's place in front of it. ValueError for a script binding that
+    another control has already (taken: the names so far)."""
+    kind = definition.get("kind") or definition.get("type") or "label"
+    script_binding = definition.get("binding_type", "script") == "script"
+    explicit_name = (definition.get("binding_value") or definition.get("variable")) if script_binding else ""
+    key = explicit_name or definition.get("label") or definition.get("id")
+    key = key or f"{page_index}.{kind}.{index}"
+    if key in taken:
+        if explicit_name:
+            raise ValueError(f"Duplicate control name '{key}'; use unique script bindings")
+        key = f"{page_index}.{kind}.{index}.{key}"
+    return key
+
+
 class PanelView(QWidget):
     """Runs a panel: builds its controls, forwards user input to CAN/DBC/script, shows received values."""
     control_changed = pyqtSignal(str, object)
@@ -49,14 +65,7 @@ class PanelView(QWidget):
             definitions = page.get("widgets") or [w for group in WIDGET_GROUPS.values() for w in page.get(group, [])]
             for index, definition in enumerate(definitions):
                 kind = definition.get("kind") or definition.get("type") or "label"
-                script_binding = definition.get("binding_type", "script") == "script"
-                explicit_name = (definition.get("binding_value") or definition.get("variable")) if script_binding else ""
-                key = explicit_name or definition.get("label") or definition.get("id")
-                key = key or f"{page_index}.{kind}.{index}"
-                if key in self.widgets:
-                    if explicit_name:
-                        raise ValueError(f"Duplicate control name '{key}'; use unique script bindings")
-                    key = f"{page_index}.{kind}.{index}.{key}"
+                key = control_key(definition, page_index, index, self.widgets)
                 self._apply_dbc_metadata(kind, definition)
                 control, widget = build(kind, definition, {"base_dir": base_dir})
                 widget.setMinimumSize(1, 1)

@@ -1,4 +1,5 @@
-"""Form Designer: palette, signal drops, layout tools, undo/redo, clipboard, keys, resize, handlers, test mode."""
+"""Form Designer: palette, signal drops, layout tools, undo/redo, clipboard, keys, resize, handlers, the check of
+the panel, test mode."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
@@ -209,6 +210,69 @@ class FormDesignerTest(unittest.TestCase):
             self.assertTrue(hasattr(dialogs[0], "ecu"), "the Test panel has its simulated ECU")
         finally:
             dialogs[0].close()
+
+    def test_check_panel_finds_the_typos_and_goes_to_them(self):
+        from canexpert.panel.runtime import SCRIPT_TEMPLATE
+        button = next(item for item in self.designer.findChildren(QPushButton) if item.text() == "Check panel")
+        self.assertIn("(F6)", button.toolTip())
+        button.click()
+        dialog = self.designer.problems_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.heading.text(), f"<b>{self.designer._current_id()}: no problems found</b>")
+        self.assertTrue(dialog.splitter.isHidden(), "nothing to list")
+
+        start = self.canvas.add_widget_at("button", 10, 10, binding_value="start", handler="on_start_clicked")
+        self.designer.code_editor.setPlainText(SCRIPT_TEMPLATE + "\n\ndef on_start_clicked(api, value):\n"
+                                                                 "    RBDI(0xF190)\n")
+        button.click()
+        self.assertEqual([(p.message, p.hint) for p in dialog.problems],
+                         [("RBDI is not defined: this fails when it runs", "Did you mean RDBI?")])
+        self.assertFalse(dialog.splitter.isHidden())
+        self.assertIn("    RBDI(0xF190)\n    ^\n    Did you mean RDBI?", dialog.detail.toPlainText())
+        dialog.go_button.click()                                    # (or a double-click)
+        self.assertIs(self.designer.design_tabs.currentWidget(), self.designer.code_page)
+        self.assertEqual(self.designer.code_editor.textCursor().blockNumber() + 1, dialog.problems[0].line)
+
+        self.canvas.add_widget_at("led", 10, 60, binding_value="ready")
+        start["handler"] = "on_strat_clicked"                      # a control's problem: the control is selected
+        self.designer.show_check()
+        problem = dialog.problems[0]
+        self.assertEqual(problem.where(), "page Main, control start")
+        self.assertEqual(problem.hint, "Did you mean on_start_clicked()?")
+        self.canvas.set_selection([1])
+        dialog.go_button.click()
+        self.assertIs(self.designer.design_tabs.currentWidget(), self.canvas)
+        self.assertEqual(self.canvas.selection, [0])
+
+    def test_test_panel_waits_for_the_errors_to_be_put_right(self):
+        from canexpert.designer.form_designer import TestPanelDialog
+        self.designer.code_editor.setPlainText("def broken(api:\n    pass\n")
+        self.assertIsNone(self.designer.test_panel())
+        dialog = self.designer.problems_dialog
+        self.assertEqual(dialog.heading.text(), "<b>The panel cannot be tested yet</b>")
+        self.assertEqual((dialog.problems[0].severity, dialog.problems[0].line), ("error", 1))
+        self.assertIs(self.designer.design_tabs.currentWidget(), self.designer.code_page, "at the error")
+        self.assertEqual(self.designer.findChildren(TestPanelDialog), [])
+
+    def test_a_database_that_cannot_be_opened_says_why(self):
+        path = self.folder / "broken_2026-09-29.xml"
+        path.write_text('<application_database><pages><page name="Main">\n<button label="A" x="1O"/>\n'
+                        '</page></pages></application_database>', encoding="utf-8")
+        before = self.designer.db_id_edit.text()
+        self.assertFalse(self.designer.load(path))
+        dialog = self.designer.problems_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.heading.text(), "<b>broken_2026-09-29.xml cannot be opened</b>")
+        problem = dialog.problems[0]
+        self.assertEqual((problem.line, problem.column, problem.message, problem.hint),
+                         (2, 19, 'x="1O" is not a whole number', 'Did you mean "10"?'))
+        self.assertEqual(self.designer.db_id_edit.text(), before, "nothing changed")
+
+        path.write_text('<application_database><pages><page name="Main">\n<buton label="A"/>\n'
+                        '</page></pages></application_database>', encoding="utf-8")
+        self.assertTrue(self.designer.load(path), "a warning does not stop it...")
+        self.assertEqual(dialog.heading.text(), "<b>broken_2026-09-29.xml: 1 warning</b>", "...and is shown")
+        self.assertEqual(dialog.problems[0].hint, "Did you mean <button>?")
 
     def test_closing_the_designer_closes_its_test_panels(self):
         self.designer.show()

@@ -82,6 +82,12 @@ The matching database is loaded and its panel is built *before* the adapter is o
 never leaves you half-connected. The channel is then marked **[Connected]**, and CAN Expert sends
 TesterPresent at the configured interval.
 
+When the panel is why Connect fails — a typo in its XML, its DBC or its script — the **Panel check**
+window says where, as the Form Designer's check does (see *Checking a panel*). **Open in Form Designer**
+(or a double-click) opens the panel there at that place: put it right, save, and connect again. A panel
+that loads but has problems connects, and the window lists them — once for each version of its files,
+not at every Connect. Each problem is written to the Log as well.
+
 **Double-clicking** a receiver, an ECU under it, or the database offered under it connects straight away —
 the same as pressing Connect.
 
@@ -299,7 +305,7 @@ script's `@on_key` handlers only hear keys pressed in the main window.
 | **Arrange** | Align, make the same size, distribute, bring to front, send to back, and the grid. |
 | **Page** | Add, rename and remove pages. |
 | **Script** | **Check syntax** (F7), **Handler of the selected control** (F4). |
-| **Test** | **Test panel with the simulated ECU** (F5, also the **Test panel...** button at the right of the menu bar), or on an empty bus (Shift+F5). |
+| **Test** | **Check the panel** (F6, also the **Check panel** button at the right of the menu bar), **Test panel with the simulated ECU** (F5, also the **Test panel...** button), or on an empty bus (Shift+F5). |
 | **Help** | This section of the manual (F1). |
 
 New, Open and closing the window ask whether to save changes first.
@@ -343,6 +349,34 @@ documentation; double-click one to insert a call.
 - **Contents**: the pages with their controls, and handlers named on controls but missing from the script.
 - **Where it is used**: the configurations with this family, and whether a newer version in the folder is
   the one they actually load.
+
+**Checking a panel** — **Check panel** (F6) looks for the typos in the form, its DBC bindings and its
+script, and lists what it finds in the **Panel check** window: where each problem is, what is wrong, and
+what was probably meant. Select one to see it in full — its line, with a `^` under the place:
+
+```
+Warning - showcase_2026-09-18_script.py, line 25, column 11: RBDI is not defined: this fails when it runs
+    vin = RBDI(0xF190)
+          ^
+    Did you mean RDBI?
+```
+
+- **Errors** stop the panel: XML that cannot be read (a missing quote or `>`, a tag closed under another
+  name), a value it cannot take (`x="1O"` — the letter O for a zero), two controls of the same name, a DBC
+  that is not there, a script that does not compile or stops when it starts (a name that is not defined
+  outside a function, `@on_message("…")` naming a message the DBC does not have).
+- **Warnings** are what will not work as written: a control CAN Expert does not know (`<lde>` for
+  `<led>`), which is left out of the panel; a property with a typo, which is ignored; a choice, number,
+  colour or True/False it cannot read; a DBC signal that is not in the DBC; a handler the script does not
+  define; a control, signal or message the script names in quotes that is not there; a name inside a
+  function that is not defined (it fails when that function runs).
+
+Double-click a problem (or **Go to**) to go to it: the line in the script, or the control, selected on its
+page. **Copy all** puts every problem, in full, on the clipboard.
+
+The check also runs by itself. **Test panel** checks first, and does not start while there are errors;
+warnings do not stop it. **Open** says why a file cannot be opened — the line, the column and what was
+probably meant — and a file that opens with problems lists them, ready to put right and save.
 
 **Test panel...** runs the panel against a simulated ECU on a virtual bus, without touching your hardware.
 Its **Flashing...** opens the same dialog as the main window's Flashing button (see *Firmware flashing*):
@@ -1246,6 +1280,10 @@ rate** (*Channel setup*) whether the bit rate is right.
 
 **"No matching database"** — the configuration's *Database family* does not match any file in
 `Databases/`. Clear the field to load the newest panel, or build one in the Form Designer.
+
+**"Connection failed" with the Panel check window** — the panel has an error: the window says where, and
+**Open in Form Designer** takes you there. **Check panel** (F6) in the Form Designer finds the same
+problems before you connect.
 
 **The Trace shows identifiers but no names** — no symbol database describes those messages. Add the DBC
 under *Tools → Symbol databases...*.

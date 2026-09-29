@@ -24,7 +24,20 @@ from canexpert import features
 from canexpert.sysvars import SystemVariables
 from canexpert.j1939.pgn import TOOL_ADDRESS
 from canexpert.j1939.transport import J1939Assembler, J1939Link
-from canexpert.uds.client import UdsFunctions, uds_request, unsolicited_kind
+from canexpert.uds.client import FUNCTIONS, UdsFunctions, uds_request, unsolicited_kind
+
+# The CAPL-style event decorators a script's globals hold (ScriptRuntime._namespace).
+EVENT_DECORATORS = ("on_start", "on_stop", "on_timer", "on_message", "on_signal", "on_control", "on_key",
+                    "on_error_frame", "on_bus_state", "on_periodic_data", "on_response_event", "on_pgn")
+
+
+def script_globals() -> set[str]:
+    """The names CAN Expert puts in a panel script's globals: the event decorators, j1939 and the ISO 14229
+    service functions (RDBI, WDBI, ...) - what a check of the script takes as defined."""
+    names = {*EVENT_DECORATORS, "j1939", "__file__", "__name__", *(entry.name for entry in FUNCTIONS)}
+    if features.SYSTEM_VARIABLES:
+        names.add("on_sysvar")
+    return names
 
 
 # -----------------------------------------------------------------------------

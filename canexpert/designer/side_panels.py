@@ -167,6 +167,11 @@ class SymbolListPanel(QGroupBox):
         if path:
             self.load_dbc_path(path)
 
+    @property
+    def dbc(self):
+        """The DBC loaded (cantools), else None."""
+        return self._dbc_db
+
     def load_dbc_path(self, path: str):
         if not HAS_CANTOOLS:
             return
