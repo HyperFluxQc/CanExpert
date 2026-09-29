@@ -156,6 +156,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.recorder = None
         self.replay = None
         self.tool_panes = {}       # the tool windows opened so far (their panes are in _tool_slots from the start)
+        self.form_designer = None  # the Form Designer while it is open: a window of its own (open_form_designer)
         self._diagnostic_answers = (None, False, None)   # response ID, extended, address byte of the session
         self._bus_state = "unknown"
 
@@ -825,6 +826,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         report_result(self, ok, text)
 
     def closeEvent(self, event):
+        if not self.close_form_designer():
+            event.ignore()          # Cancel, asked about the Form Designer's unsaved changes: nothing closes
+            return
         self._watch_keys(False)
         self.save_layout()          # before the panes go away, so they come back where they were
         self.node_timer.stop()

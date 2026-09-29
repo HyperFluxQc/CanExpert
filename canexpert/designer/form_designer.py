@@ -39,7 +39,7 @@ from canexpert.panel.database import (DATABASES_DIR, parse_application_database,
                                       split_database_id)
 from canexpert.panel.runtime import SCRIPT_TEMPLATE
 from canexpert.paths import CONFIG_DIR, EXAMPLE_FIRMWARE_DIR
-from canexpert.ui_common import SplitterPanel, enable_maximize
+from canexpert.ui_common import SplitterPanel, enable_maximize, make_main_window
 
 def portable_dbc_path(dbc_path: str, database_dir) -> str:
     """The DBC path as the panel file keeps it. Near the panel - in its folder, or anywhere under the folder
@@ -243,13 +243,16 @@ class TestPanelDialog(QDialog):
 # -----------------------------------------------------------------------------
 
 class FormDesigner(QDialog):
-    """Main form designer dialog: a menu bar, the Form, Python script and Database tabs, a status line."""
+    """Main form designer window: a menu bar, the Form, Python script and Database tabs, a status line.
+
+    A window of its own (minimize, maximize, close): the main window opens it without a parent, so it has a
+    taskbar button of its own and the main window stays usable beside it (MainWindow.open_form_designer)."""
     saved = pyqtSignal(str)
 
     def __init__(self, parent=None, db_id: str = "", db_name: str = "", description: str = ""):
         super().__init__(parent)
-        enable_maximize(self)
-        self.setMinimumSize(900, 600)
+        make_main_window(self)
+        self.setMinimumSize(720, 480)       # small enough to maximize on a small screen at 125 or 150 %
         self.resize(1200, 780)
         self.database_dir = DATABASES_DIR
         self.db_id = db_id or f"new_{date.today().isoformat()}"
@@ -665,6 +668,10 @@ class FormDesigner(QDialog):
         that is not on screen asks nobody."""
         if not self._dirty or not self.isVisible():
             return True
+        if self.isMinimized():      # closed from its taskbar button or with CAN Expert: the question must be seen
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        self.raise_()
+        self.activateWindow()
         answer = QMessageBox.question(self, "Form Designer", f"Save the changes to {self._current_id()}?",
                                       QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
                                       QMessageBox.Save)
@@ -676,6 +683,12 @@ class FormDesigner(QDialog):
         """Esc, the window's close button and Close: not without asking about unsaved changes."""
         if self._confirm_discard():
             super().reject()
+
+    def done(self, result):
+        """Closing: the test panels of this form close with it, and their virtual buses and simulated ECUs stop."""
+        for dialog in self.findChildren(TestPanelDialog):
+            dialog.close()
+        super().done(result)
 
     # --- script -------------------------------------------------------------------------
 

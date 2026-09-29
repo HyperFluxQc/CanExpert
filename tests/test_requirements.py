@@ -740,6 +740,19 @@ def key(api, key):
         APP.processEvents()
         QApplication.sendEvent(self.window.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
         self.assertTrue(spin_until(lambda: any("key k" in line for line in write.lines())), write.lines())
+        # A key for the Form Designer, open beside the main window, is not the panel's.
+        designer = self.window.open_form_designer()
+        designer.canvas.graphics_view.setFocus()
+        self.assertTrue(spin_until(lambda: APP.activeWindow() is designer))
+        QApplication.sendEvent(designer.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
+        designer.close()
+        self.window.activateWindow()
+        self.assertTrue(spin_until(lambda: APP.activeWindow() is self.window))
+        QApplication.sendEvent(self.window.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
+        keys = lambda: sum("key k" in line for line in write.lines())    # noqa: E731
+        self.assertTrue(spin_until(lambda: keys() == 2), write.lines())
+        spin_until(lambda: keys() > 2, 0.3)
+        self.assertEqual(keys(), 2, "the main window's two, in order: not the one for the designer between them")
         self.window.on_disconnect_clicked()
         self.assertFalse(self.window._keys_watched)
 
@@ -856,6 +869,45 @@ def ready(api):
             self.assertTrue(flags & Qt.WindowCloseButtonHint, type(window).__name__)
             self.assertFalse(flags & Qt.WindowContextHelpButtonHint, type(window).__name__)
             window.close()
+
+    def test_the_form_designer_is_a_window_of_its_own(self):
+        from PyQt5 import sip
+        from PyQt5.QtCore import QEvent, QSize, Qt
+        designer = self.window.open_form_designer()
+        self.assertIsNone(designer.parent(), "not owned by the main window: a taskbar button of its own")
+        self.assertFalse(designer.isModal(), "the main window stays usable beside it")
+        self.assertIsNone(APP.activeModalWidget())
+        for hint in (Qt.WindowMinimizeButtonHint, Qt.WindowMaximizeButtonHint, Qt.WindowCloseButtonHint):
+            self.assertTrue(designer.windowFlags() & hint, hint)
+        designer.showMaximized()
+        designer.showMinimized()
+        self.assertTrue(designer.isMinimized())
+        self.assertIs(self.window.open_form_designer(), designer, "opened again: the one that is open")
+        self.assertFalse(designer.isMinimized(), "restored...")
+        self.assertTrue(designer.isMaximized(), "...as it was: maximized")
+        designer.showNormal()
+        designer.resize(740, 500)
+        self.assertTrue(designer.close(), "nothing unsaved: it closes without asking")
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.assertTrue(sip.isdeleted(designer), "closed, it is gone...")
+        designer = self.window.open_form_designer()
+        self.assertEqual(designer.size(), QSize(740, 500), "...and the next one opens as the last one was left")
+        designer.showMaximized()
+        designer.close()
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)
+        designer = self.window.open_form_designer()
+        self.assertTrue(designer.isMaximized(), "maximized too")
+        # Closing CAN Expert closes it - not without asking about what is not saved, shown to ask.
+        designer.canvas.add_widget_at("button", 100, 100)
+        designer.showMinimized()
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Cancel) as asked:
+            self.assertFalse(self.window.close(), "Cancel: neither window closes")
+        asked.assert_called_once()
+        self.assertTrue(designer.isVisible())
+        self.assertFalse(designer.isMinimized(), "the question is not asked from the taskbar")
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Discard):
+            self.assertTrue(self.window.close())
+        self.assertFalse(designer.isVisible())
 
     def test_designer_widgets_reach_top_left_corner(self):
         from PyQt5.QtCore import QEvent, QPoint, Qt

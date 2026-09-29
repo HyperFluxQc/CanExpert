@@ -285,6 +285,13 @@ The window has a menu bar, the **Symbols & controls** panel on the left, the **F
 **Database** tabs in the middle and **Properties** on the right. The title shows the database ID, with a
 **\*** while there are unsaved changes.
 
+It is a window of its own, with its own taskbar button: minimize it to the taskbar, maximize it (or
+double-click its title bar), and keep using the main window beside it — reconnect to try a panel you just
+saved, for example. **Form Designer** again brings the open one to the front, restored if it was minimized.
+It opens as it was last left — size, place, maximized — and closes with CAN Expert, asking first when there
+are unsaved changes (Cancel keeps both open). While it has the keyboard, keys are the designer's: a panel
+script's `@on_key` handlers only hear keys pressed in the main window.
+
 | Menu | What it holds |
 |---|---|
 | **File** | **New** (Ctrl+N), **Open...** (Ctrl+O), **Open from the Databases folder** (each family's newest version first), **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S, offering today's version of the family), **Close**. |

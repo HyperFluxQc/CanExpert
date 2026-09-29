@@ -4,7 +4,7 @@ tree's rows as CSV."""
 import csv
 
 from PyQt5.QtCore import QByteArray, QEvent, QPointF, QRectF, QSettings, QSize, Qt
-from PyQt5.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
+from PyQt5.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
 from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import (
     QFrame,
@@ -39,9 +39,40 @@ def is_dark_theme(widget) -> bool:
 
 def enable_maximize(dialog):
     """Show the title-bar maximize button on a dialog (Windows gives dialogs only close and '?').
-    Minimize stays off: an owned dialog has no taskbar entry to restore it from."""
+    Minimize stays off: an owned dialog has no taskbar entry to restore it from (a window of its own,
+    as the Form Designer is, has both - see make_main_window)."""
     flags = dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint
     dialog.setWindowFlags(flags | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+
+
+def make_main_window(window):
+    """A window of its own, as an application's main window is: minimize, maximize and close buttons. Shown
+    without a parent it has no owner either, so Windows gives it a taskbar button to minimize to and to
+    restore it from, and it can go behind the window it was opened from."""
+    window.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint |
+                          Qt.WindowCloseButtonHint)
+
+
+FRAME_ROOM = (16, 40)       # what a title bar and the edges add to a window's width and height
+
+
+def fit_new_window(window, anchor=None):
+    """Before a new window is shown the first time: no bigger than the screen it opens on - its title bar and
+    edges included - and centred over anchor, the window it was opened from (else on the main screen)."""
+    frame = anchor.frameGeometry() if anchor is not None else None
+    screen = QGuiApplication.screenAt(frame.center()) if frame is not None else None
+    screen = screen or QGuiApplication.primaryScreen()
+    if screen is None:
+        return
+    room = screen.availableGeometry()
+    width = max(min(window.width(), room.width() - FRAME_ROOM[0]), window.minimumWidth())
+    height = max(min(window.height(), room.height() - FRAME_ROOM[1]), window.minimumHeight())
+    window.resize(width, height)
+    centre = frame.center() if frame is not None else room.center()
+    width, height = width + FRAME_ROOM[0], height + FRAME_ROOM[1]
+    x = max(min(centre.x() - width // 2, room.right() + 1 - width), room.left())
+    y = max(min(centre.y() - height // 2, room.bottom() + 1 - height), room.top())
+    window.move(x, y)
 
 
 # -----------------------------------------------------------------------------

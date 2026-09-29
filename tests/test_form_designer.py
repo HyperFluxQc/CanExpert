@@ -210,6 +210,15 @@ class FormDesignerTest(unittest.TestCase):
         finally:
             dialogs[0].close()
 
+    def test_closing_the_designer_closes_its_test_panels(self):
+        self.designer.show()
+        dialog = self.designer.test_panel()
+        self.assertTrue(dialog.isVisible())
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Discard):
+            self.designer.close()
+        self.assertFalse(dialog.isVisible(), "the test panel closes with the form it tests...")
+        self.assertTrue(dialog._stop.is_set(), "...and its virtual bus and simulated ECU stop")
+
     def test_test_panel_flashes_firmware_into_the_simulated_ecu(self):
         from canexpert.flashing import load_firmware
         example = Path(__file__).resolve().parent.parent / "examples"
