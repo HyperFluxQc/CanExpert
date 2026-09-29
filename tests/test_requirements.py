@@ -272,7 +272,14 @@ class RequirementsTest(unittest.TestCase):
         self.assertIsNotNone(self.window.can_bus, self.window.status_label.text())
         self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-09-18.xml"))
         self.assertIsNone(self.window.ecu_monitor, "the session takes the channel over")
-        self.assertTrue(spin_until(lambda: "loaded" in self.window.database_items[key].text(0)))
+
+        def loaded():
+            # The ECU goes on answering the session's TesterPresent: without an answer for its timeout (0.2 s
+            # here) it is lost, and its database is no longer offered - which a slow machine got to first.
+            self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))
+            item = self.window.database_items.get(key)
+            return item is not None and "loaded" in item.text(0)
+        self.assertTrue(spin_until(loaded))
         self.assertIs(self.window.database_items[key].parent(), self.window.channel_items[key])  # the tree was rebuilt
 
     def test_the_manual_button_opens_the_user_manual(self):
