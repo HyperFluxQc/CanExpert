@@ -113,10 +113,49 @@ def _same_value(state_value, value):
         return str(state_value).strip().lower() == str(value).strip().lower()
 
 
+def value_bytes(value, byte_order="big") -> bytes | None:
+    """The bytes a value stands for: bytes themselves, a UDS answer's data, a list of byte values, or a whole
+    number written in byte_order ("big" or "little": its signal's) in as few bytes as it needs. None for
+    anything else (text, a negative or fractional number)."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value)
+    if isinstance(value, bool) or isinstance(value, str):
+        return None
+    if isinstance(getattr(value, "data", None), (bytes, bytearray)):          # a UdsResult: RDBI(0xF190)
+        return bytes(value.data)
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if isinstance(value, int):
+        if value < 0:
+            return None
+        return value.to_bytes(max(1, (value.bit_length() + 7) // 8), "little" if byte_order == "little" else "big")
+    if isinstance(value, (list, tuple)) and value and \
+            all(isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 0xFF for item in value):
+        return bytes(value)
+    return None
+
+
+def ascii_text(value, byte_order="big") -> str:
+    """The characters a value's bytes spell: 0x31 0x30 -> "10". Padding at the end (00, FF) is left out, and a
+    byte that is no printable character shows as "."; text is shown as it is."""
+    data = value_bytes(value, byte_order)
+    if data is None:
+        return str(value)
+    return "".join(chr(byte) if 0x20 <= byte < 0x7F else "." for byte in data.rstrip(b"\x00\xff"))
+
+
 def format_value(value, data):
-    """Value text for displays: DBC value-table text, number format, decimals and unit."""
+    """Value text for displays: DBC value-table text, number format, decimals and unit - or, in the ascii
+    format, the characters the value's bytes spell. Bytes are otherwise shown in hex: 31 30."""
     if value is None:
         return ""
+    fmt = str(data.get("format", "auto") or "auto")
+    if fmt == "ascii":
+        return ascii_text(value, str(data.get("_byte_order", "big")))
+    if isinstance(value, (bytes, bytearray, memoryview, list, tuple)) and value_bytes(value) is not None:
+        return bytes(value_bytes(value)).hex(" ").upper()
     numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
     choices = data.get("_choices")
     if numeric and choices and flag(data, "value_table", True):
@@ -125,7 +164,6 @@ def format_value(value, data):
                 return str(label)
     if not numeric:
         return str(value)
-    fmt = str(data.get("format", "auto") or "auto")
     decimals = optional_num(data, "decimals")
     if fmt == "hex":
         text = f"0x{int(value):X}"
@@ -604,6 +642,9 @@ APPEARANCE = (
 READ_ONLY = Prop("read_only", "Read-only", "bool", False)
 NUMBER_FORMAT = (Prop("format", "Number format", "choice", "auto", ("auto", "decimal", "hex", "binary")),
                  Prop("decimals", "Decimals (blank = auto)", "optional_float", ""))
+# ascii: the characters the value's bytes spell (0x31 0x30 -> "10"); what is typed goes out as its bytes.
+TEXT_FORMAT = (Prop("format", "Format", "choice", "auto", ("auto", "decimal", "hex", "binary", "ascii")),
+               NUMBER_FORMAT[1])
 
 
 class Control:
@@ -799,7 +840,7 @@ class Spin(Control):
 class IoBox(Control):
     kind, label, category, group, interactive = "io_box", "I/O Box", "Input", "io_boxes", True
     props = (Prop("unit", "Unit"), Prop("value_type", "Value type", "choice", "float", ("float", "integer", "string")),
-             *NUMBER_FORMAT)
+             *TEXT_FORMAT)
 
     def create(self, data, ctx):
         widget = QLineEdit()
@@ -818,7 +859,7 @@ class TextInput(IoBox):
 class Value(Control):
     kind, label, group = "value", "Value Display", "values"
     props = (Prop("unit", "Unit"), Prop("value_type", "Display type", "choice", "float", ("float", "integer")),
-             *NUMBER_FORMAT, Prop("value_table", "Show DBC value-table text", "bool", True))
+             *TEXT_FORMAT, Prop("value_table", "Show DBC value-table text", "bool", True))
 
     def create(self, data, ctx):
         widget = QLabel("--")

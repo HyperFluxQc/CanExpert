@@ -1,4 +1,5 @@
-"""Panel control registry: every control builds, shows and reports values; formats, value tables, order."""
+"""Panel control registry: every control builds, shows and reports values; formats (ASCII too), value tables,
+order."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
@@ -9,10 +10,19 @@ from PyQt5.QtWidgets import QApplication
 
 from canexpert.panel.database import parse_application_database
 from canexpert.panel.view import PanelView
-from canexpert.panel.controls import CONTROLS, build, format_value, parse_states, states_from_choices
+from canexpert.panel.controls import CONTROLS, ascii_text, build, format_value, parse_states, states_from_choices
+from canexpert.uds.client import UdsResult
 
 APP = QApplication.instance() or QApplication([])
 DBC = Path(__file__).resolve().parent.parent / "DBC" / "dummy_ecu.dbc"
+# Two 16-bit signals carrying two characters each: Motorola (big-endian) in bytes 0-1, Intel in bytes 2-3.
+TEXT_DBC = """VERSION ""
+BS_:
+BU_: ECU
+BO_ 1280 Text: 8 ECU
+ SG_ Big : 7|16@0+ (1,0) [0|65535] "" Vector__XXX
+ SG_ Little : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
+"""
 
 SAMPLES = {"button": None, "switch": True, "checkbox": True, "radio": "Option 2", "combo": "Two", "slider": 42,
            "knob": 42, "spin": 42, "io_box": 42, "text_input": "hello", "value": 42, "display": 42, "gauge": 42,
@@ -76,6 +86,53 @@ class PanelControlsTest(unittest.TestCase):
         self.assertEqual(indicator.text(), "On")
         CONTROLS["indicator"].set_value(indicator, {}, 7)
         self.assertEqual(indicator.text(), "7")                                  # unknown value shown as is
+
+    def test_ascii(self):
+        ascii_box = {"format": "ascii"}
+        self.assertEqual(format_value(b"\x31\x30", ascii_box), "10", "the bytes 0x31 0x30 spell 10")
+        self.assertEqual(format_value(bytearray(b"10"), ascii_box), "10")
+        self.assertEqual(format_value([0x31, 0x30], ascii_box), "10")
+        self.assertEqual(format_value(0x3130, ascii_box), "10", "a number: its bytes, big-endian")
+        self.assertEqual(format_value(0x3031, dict(ascii_box, _byte_order="little")), "10", "an Intel signal's")
+        self.assertEqual(format_value(12592.0, ascii_box), "10")
+        vin = UdsResult(b"\x22\xf1\x90", b"\x62\xf1\x90WVWZZZ1KZAW000001\x00\x00", 2)
+        self.assertEqual(format_value(vin, ascii_box), "WVWZZZ1KZAW000001", "a UDS answer's data, padding left out")
+        self.assertEqual(format_value(b"A\x01B\xff\xff", ascii_box), "A.B", "no printable character: a dot")
+        self.assertEqual(format_value("ready", ascii_box), "ready", "text as it is")
+        self.assertEqual((ascii_text(-5), ascii_text(1.5), ascii_text(True)), ("-5", "1.5", "True"))
+        self.assertEqual(format_value(b"\x31\x30", {}), "31 30", "bytes in the other formats: hex")
+        self.assertIn("ascii", dict((prop.key, prop.options) for prop in CONTROLS["io_box"].props)["format"])
+        self.assertIn("ascii", dict((prop.key, prop.options) for prop in CONTROLS["value"].props)["format"])
+
+    def test_an_ascii_io_box_on_the_panel(self):
+        folder = Path(tempfile.mkdtemp())
+        (folder / "text.dbc").write_text(TEXT_DBC, encoding="utf-8")
+        path = folder / "panel.xml"
+        path.write_text('''<application_database dbc_path="text.dbc"><pages><page>
+<io_box label="serial" binding_type="script" binding_value="serial" format="ascii" value_type="string"/>
+<io_box label="big" binding_type="dbc" binding_value="Text.Big" format="ascii"/>
+<value label="little" binding_type="dbc" binding_value="Text.Little" format="ascii"/>
+<io_box label="number" binding_type="script" binding_value="number" value_type="integer"/>
+</page></pages></application_database>''', encoding="utf-8")
+        database = parse_application_database(path)
+        sent, changed = [], []
+        panel = PanelView(database, lambda *args: sent.append(args), self.fail)
+        panel.control_changed.connect(lambda name, value: changed.append((name, value)))
+        panel.set_value("serial", b"\x31\x30")
+        self.assertEqual(panel.widgets["serial"].text(), "10")
+        panel.on_message(0x500, bytes([0x31, 0x30, 0x31, 0x30, 0, 0, 0, 0]))
+        self.assertEqual(panel.widgets["big"].text(), "10", "Text.Big: raw 0x3130")
+        self.assertEqual(panel.widgets["little"].text(), "10", "Text.Little: raw 0x3031, little-endian")
+        panel.widgets["serial"].setText("42")
+        panel.widgets["serial"].editingFinished.emit()
+        self.assertEqual(changed[-1], ("serial", b"42"), "typed text goes to the script as its bytes")
+        panel.widgets["big"].setText("AB")
+        panel.widgets["big"].editingFinished.emit()
+        self.assertEqual(sent[-1][0], 0x500)
+        self.assertEqual(bytes(sent[-1][1])[:2], b"AB", "and into the signal as they read")
+        panel.widgets["number"].setText("0x10")
+        panel.widgets["number"].editingFinished.emit()
+        self.assertEqual(changed[-1], ("number", 16), "the other formats as before")
 
     def test_panel_uses_dbc_metadata_order_and_raw_mappings(self):
         folder = Path(tempfile.mkdtemp())

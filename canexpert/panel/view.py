@@ -84,6 +84,7 @@ class PanelView(QWidget):
             return
         if signal.unit and not definition.get("unit"):
             definition["unit"] = signal.unit
+        definition["_byte_order"] = "little" if signal.byte_order == "little_endian" else "big"   # for ascii
         if signal.choices:
             choices = {int(value): str(label) for value, label in signal.choices.items()}
             definition["_choices"] = choices
@@ -115,7 +116,11 @@ class PanelView(QWidget):
         definition = self.definitions[name]
         try:
             kind = definition["kind"]
-            if kind in ("io_box", "text_input"):
+            if kind in ("io_box", "text_input") and definition.get("format") == "ascii":
+                value = str(value).encode("ascii", errors="replace")     # "10" -> 31 30, as the display reads it
+                if definition.get("binding_type") == "dbc":
+                    value = int.from_bytes(value, definition.get("_byte_order", "big"))
+            elif kind in ("io_box", "text_input"):
                 typ = definition.get("value_type", "string")
                 if typ == "integer":
                     value = int(value, 0)

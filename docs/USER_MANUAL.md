@@ -307,6 +307,13 @@ New, Open and closing the window ask whether to save changes first.
   size, change the stacking order, undo and redo. The last selected control is the reference for aligning.
   The grid button snaps to the grid.
 - **Properties** edits the selected control: its binding, name, label, position, size and appearance.
+- **Format** shows a value in decimal, hex or binary — or, on an I/O box and a value display, as **ascii**:
+  the characters its bytes spell. The bytes 0x31 0x30 read from the ECU show as `10`; so do a UDS answer
+  (`api.ui.set_value("serial", RDBI(0xF18C))`), a list of byte values, and a DBC signal carrying text (its
+  bytes in the signal's byte order, 0x3130 for a big-endian one). Padding at the end (00, FF) is left out and
+  a byte that is no printable character shows as a dot. What is typed into an ascii I/O box goes out as its
+  bytes: to the script's handler as `b"10"`, into a DBC signal as the number those bytes make. Bytes shown in
+  the other formats appear in hex: `31 30`.
 - **+ Add page** adds a page; panels can have several.
 
 **Connecting a control to code** — give it a *Handler function* in Properties, or double-click the control:
