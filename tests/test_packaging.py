@@ -76,6 +76,7 @@ class PackagingTest(unittest.TestCase):
         for name in ("CanExpert", "DummyECU", "TestExpert"):
             self.assertIn(f'"{name}"', spec)
         self.assertIn('contents_directory="."', spec, "the data folders sit beside the programs")
+        self.assertIn('"docs/images"', spec, "the manual's pictures go with it")
         build = (ROOT / "tools" / "build_windows.py").read_text(encoding="utf-8")
         self.assertIn('"CanExpert.exe", "DummyECU.exe", "TestExpert.exe"', build)
 

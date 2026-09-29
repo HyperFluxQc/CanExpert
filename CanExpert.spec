@@ -15,10 +15,11 @@ from canexpert import __version__  # noqa: E402
 
 DATA = [(str(ROOT / folder), folder) for folder in ("Configurations", "Databases", "DBC", "ODX", "examples", "TestModules")
         if (ROOT / folder).exists()]
-DATA += [(str(ROOT / "docs" / "USER_MANUAL.md"), "docs"), (str(ROOT / "canexpert" / "resources"), "canexpert/resources")]
+DATA += [(str(ROOT / "docs" / "USER_MANUAL.md"), "docs"), (str(ROOT / "docs" / "images"), "docs/images"),
+         (str(ROOT / "canexpert" / "resources"), "canexpert/resources")]
 DATA += collect_data_files("odxtools") + collect_data_files("cantools")
 # The About box reads the libraries' versions from their metadata.
-for _distribution in ("python-can", "cantools", "odxtools", "pyqtgraph", "PyQtAds"):
+for _distribution in ("python-can", "cantools", "odxtools", "pyqtgraph", "PyQtAds", "pyflakes"):
     DATA += copy_metadata(_distribution)
 # python-can opens its interfaces by name at run time, so the analysis cannot see them.
 HIDDEN = collect_submodules("can.interfaces")

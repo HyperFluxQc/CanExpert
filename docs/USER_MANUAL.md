@@ -6,7 +6,159 @@ DBC signals, a Transmit window to send messages and simulate nodes, a UDS Consol
 services, ODX services and fault memory, a Form Designer to build panels, recording and offline replay,
 firmware flashing over UDS, and a simulated ECU so you can try everything without a vehicle.
 
-Press the **?** button at the top right of the main window to open this manual at any time.
+Press the **?** button at the top right of the main window to open this manual at any time. Click a
+picture to see it full size.
+
+[![CAN Expert connected to the Dummy ECU](images/main_window.png)](images/main_window.png)
+
+*CAN Expert connected to the Dummy ECU, running the showcase panel: the engine warms up on the gauge and
+the trend, the session indicator shows the extended session, and the output box logs what the script does.*
+
+## How to...
+
+The things done most often, step by step. Each one ends with the section that tells the rest.
+
+### ...try CAN Expert without a vehicle
+
+1. Start the Dummy ECU: double-click `dummy_ecu.py` (or **DummyECU.exe** beside CAN Expert).
+2. Choose its interface and channel — **Detect** lists them; with the Kvaser virtual driver, `kvaser`
+   channel `1` — and press **Connect**.
+3. In CAN Expert, pick the **Dummy ECU** configuration, select `[kvaser] Ch 0` in **CAN Channels** and
+   press **Connect**. The showcase panel opens: flip **Run** and the engine warms up.
+
+[![The Dummy ECU window](images/dummy_ecu.png)](images/dummy_ecu.png)
+
+*The Dummy ECU: every tab sets what it does, the right side shows its state.*
+
+Without the Kvaser virtual driver, the Form Designer's **Test panel...** runs a panel against the simulated
+ECU on a private virtual bus, with nothing installed (see *...build a panel*). More in *Trying it without a
+vehicle*.
+
+### ...watch what is on the bus
+
+1. Connect — or start the ECU check, or replay a recorded file.
+2. Press **Trace** on the toolbar. Each frame is a row: its time, direction, identifier and, when a symbol
+   database describes it, its name. Open a row's arrow to see its signals.
+3. Type identifiers, ranges or names in **Filter** (`7E0, 300-3FF, EngineData`) to see only those.
+   **Pause** freezes the list while the recording goes on.
+
+[![The Trace window](images/trace.png)](images/trace.png)
+
+*The Trace: the Dummy ECU's frames, named from its DBC, and TesterPresent going out on 7E0.*
+
+More in *Trace window*.
+
+### ...send a message every 10 ms
+
+1. Connect, then press **Transmit**.
+2. **Add** a row — or **Add from database...** a message of a DBC — and type its **ID (hex)**, its
+   **Data (hex)** and its **Cycle (ms)**.
+3. Tick its **On** box. It goes out every cycle until you untick it, press **All off**, or close the window.
+   **Measured (ms)** shows how often it really went: `10.0 (9.3-10.7)` is every 10 ms on average, never
+   less than 9.3 nor more than 10.7.
+
+[![The Transmit window](images/transmit.png)](images/transmit.png)
+
+*Two messages sent cyclically, every 10 ms and every 100 ms, and one sent only with Send now.*
+
+More in *Transmit window*.
+
+### ...read a value from the ECU
+
+1. Connect, then press **UDS Console**.
+2. Pick the service in the list — **RDBI (0x22) – ReadDataByIdentifier** to read a DID — fill in its form
+   (`0xF190`, the VIN) and press **Send**. Or type the bytes after **or raw:** (`22 F1 90`) and press
+   **Send raw**.
+3. The answer is written below the tabs: its bytes, its data as a number and as text.
+
+[![The UDS Console](images/uds_console.png)](images/uds_console.png)
+
+*A raw request for the extended session, the VIN read with RDBI's form, and the fault memory read raw.*
+
+More in *UDS Console*.
+
+### ...plot signals
+
+1. Press **CAN Logger** and **Load DBC...** — or add the DBC once for every window under **Tools → Symbol
+   databases...**.
+2. Tick the signals to plot. Each gets a graph, all on one time axis; right-click a signal and pick
+   *Draw together with ...* to share another one's graph.
+3. The graphs follow the bus while you are connected. **Cursors** measures between two times, and
+   **Export...** writes the data to a file.
+
+[![The CAN Logger](images/can_logger.png)](images/can_logger.png)
+
+*The Dummy ECU's temperature rising after Run was switched on, and its pressure.*
+
+More in *CAN Logger*.
+
+### ...build a panel
+
+1. Press **Form Designer**. It is a window of its own, with its own taskbar button: minimize it, maximize
+   it, and keep using the main window beside it.
+2. On the **Database** tab, give the panel its **Database ID** (`engine_2026-09-29`) and its **DBC**.
+3. Drag signals from **Symbols** onto the form — each becomes a control bound to it — and controls from the
+   palette below. Select one to set its properties on the right.
+4. Double-click a button (or any input) to write its handler: the **Python script** tab opens at the function,
+   created for you.
+5. Press **Check panel** (F6) to find the typos, then **Test panel...** (F5) to run the panel and its script
+   against the simulated ECU.
+6. **File → Save** (Ctrl+S). A configuration whose *Database family* is `engine` loads it at the next
+   Connect.
+
+[![The Form Designer](images/form_designer.png)](images/form_designer.png)
+
+*The Form Designer with the showcase panel: the gauge selected, its properties on the right.*
+
+[![Test panel](images/test_panel.png)](images/test_panel.png)
+
+*Test panel: the panel and its script against the simulated ECU, with what the ECU does below.*
+
+More in *Form Designer* and *Writing panel scripts*.
+
+### ...find a typo in a panel
+
+1. In the Form Designer, press **Check panel** (F6). Opening a panel checks it too, and so does Connect:
+   when the panel is why Connect fails, the **Panel check** window opens by itself.
+2. Each problem says where it is, what is wrong and what was probably meant — `<lde>`: *Did you mean
+   `<led>`?* Select one to see its line, with a `^` under the place.
+3. Double-click it: the Form Designer goes to the line in the script, or selects the control on the form.
+   From the main window, **Open in Form Designer** opens the panel there first. Put it right, save, and
+   connect again.
+
+[![The Panel check window in the Form Designer](images/panel_check.png)](images/panel_check.png)
+
+*A panel opened with three problems: a control that is not one, a service name mistyped in the script, and
+what the script says to the control left out.*
+
+[![The Panel check window after Connect](images/connect_problem.png)](images/connect_problem.png)
+
+*Connect stopped by a typo: the letter O for a zero.*
+
+More in *Checking a panel*, under *Form Designer*.
+
+### ...show the text an ECU sends
+
+1. In the Form Designer, select the I/O box or value display, and set its **Format** to **ascii**.
+2. The bytes it gets are shown as the characters they spell: `31 30` shows as `10`. A UDS answer too —
+   `api.ui.set_value("serial", RDBI(0xF18C))` shows the serial number — and a DBC signal carrying text.
+3. What is typed into an ascii I/O box goes out as its bytes.
+
+More in *Building a form*, under *Form Designer*.
+
+### ...test an ECU against ISO 14229
+
+1. Start **TestExpert** (`test_expert.py`, or **TestExpert.exe** beside CAN Expert).
+2. **Description**: open the ECU's CDD, ODX or PDX file — or press **Dummy ECU** to try it on the Dummy ECU.
+   The tests the description calls for are listed on the right.
+3. On the **ECU** tab, choose the interface, channel and bit rate and the identifiers, and press **Connect**.
+4. Tick the tests and press **Run** (F5). Each gets its verdict; **Report** opens the HTML report.
+
+[![TestExpert](images/test_expert.png)](images/test_expert.png)
+
+*TestExpert after a run against the Dummy ECU: the description on the left, the verdicts on the right.*
+
+More in *TestExpert*.
 
 ## Starting up
 

@@ -51,7 +51,10 @@ class ProblemsDialog(QDialog):
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
         self.detail.setLineWrapMode(QPlainTextEdit.NoWrap)        # the ^ stays under its place
-        self.detail.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        if "Consolas" in QFontDatabase().families():         # tells 0 from O, as a typo may need
+            font.setFamily("Consolas")
+        self.detail.setFont(font)
         self.splitter = QSplitter(Qt.Vertical)
         self.splitter.addWidget(self.tree)
         self.splitter.addWidget(self.detail)
