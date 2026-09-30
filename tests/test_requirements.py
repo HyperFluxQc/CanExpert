@@ -851,6 +851,40 @@ def ready(api):
         self.addCleanup(configuration.close)
         self.assertEqual((configuration.server_id_edit.text(), configuration.ecu_id_edit.text()), ("7E0", "7E8"))
 
+    def test_the_toolbar_buttons_can_be_shown_or_hidden(self):
+        from PyQt5.QtCore import Qt
+        buttons = self.window.toolbar_buttons
+        self.assertEqual(self.window.findChild(main.QToolBar).contextMenuPolicy(), Qt.CustomContextMenu,
+                         "right-click: the ticks")
+        ticks = {action.text(): action for action in buttons.menu().actions() if action.isCheckable()}
+        self.assertEqual(list(ticks), [label for label, _item in buttons.items.values()], "every button, in order")
+        self.assertTrue(all(action.isChecked() for action in ticks.values()))
+        trace = buttons.items["trace"][1]
+        ticks["Trace"].setChecked(False)
+        self.assertFalse(trace.isVisible())
+        self.assertTrue(self.window._toolbar_actions["trace"].isEnabled(), "still in the Tools menu, with its key")
+        self.assertEqual(json.loads(self.settings.value("toolbar/hidden")), ["trace"])
+        again = main.MainWindow()                                   # kept for the next start
+        self.addCleanup(again.close)
+        self.assertFalse(again.toolbar_buttons.items["trace"][1].isVisible())
+        flashing = buttons.items["flashing"][1]                     # Flashing: connected, and ticked
+        buttons.set_shown("flashing", False)
+        self.window.on_connect_clicked()
+        self.assertFalse(flashing.isVisible(), "unticked: not even while connected")
+        buttons.set_shown("flashing", True)
+        self.assertTrue(flashing.isVisible())
+        self.window.on_disconnect_clicked()
+        self.assertFalse(flashing.isVisible())
+        separators = [action for action in self.window.findChild(main.QToolBar).actions() if action.isSeparator()]
+        self.assertTrue(separators[0].isVisible())
+        buttons.set_shown("connect", False)
+        buttons.set_shown("disconnect", False)
+        self.assertFalse(separators[0].isVisible(), "no separator with nothing before it")
+        buttons.show_all()
+        self.assertTrue(trace.isVisible() and separators[0].isVisible())
+        view = next(action.menu() for action in self.window.menuBar().actions() if action.text() == "View")
+        self.assertIn("Toolbar buttons", [action.text() for action in view.actions()])
+
     def test_the_selected_configuration_has_an_edit_button(self):
         self.assertEqual(self.window.edit_config_btn.text(), "Edit")
         self.window.edit_config_btn.click()

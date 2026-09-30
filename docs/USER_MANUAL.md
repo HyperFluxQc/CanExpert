@@ -181,6 +181,11 @@ window is open, pressing it again closes the window, and closing the window with
 button go. A window that is closed keeps what it had, so reopening it shows everything recorded
 meanwhile.
 
+**Choosing the toolbar's buttons** — right-click the toolbar (or *View → Toolbar buttons*) and untick the
+buttons you do not use; tick them again, or **Show all**, to bring them back. The choice is kept for the
+next start. A hidden button's command is still in the menus, with its key. **Flashing** shows only while
+connected — and only if it is ticked.
+
 Configuration, CAN Channels and Log are fixed panels around the workspace. Each has a **–** button to
 shrink it to a strip and **×** to close it; the *File* menu brings a closed one back. While a database
 is loaded, they shrink automatically to leave the workspace room.
@@ -950,7 +955,8 @@ on CAN Expert's bus access, UDS client and reports; CAN Expert's window stays as
 The **toolbar** holds what you use most, as CAN Expert's does: **Description** (open one), **Open plan**,
 **Save plan**, **Connect**/**Disconnect**, **Run**, **Stop**, **Run failed** (the tests that did not pass in
 the last run, again), **Discover**, **Compare** (two runs), **Report** (the last run's) and **Manual**. The
-**Run** menu has the same actions; each button's tooltip says its key.
+**Run** menu has the same actions; each button's tooltip says its key. Right-click the toolbar (or *View →
+Toolbar buttons*) to choose the buttons it shows, as in CAN Expert.
 
 | Key | Does |
 |---|---|

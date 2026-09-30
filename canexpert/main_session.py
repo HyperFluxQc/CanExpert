@@ -99,7 +99,7 @@ class Session:
             self._toolbar_actions["disconnect"].setEnabled(True)
             self.status_strip.connected()
             self._set_flashing_available(False)
-            self.flashing_toolbar_item.setVisible(True)
+            self.toolbar_buttons.set_available("flashing", True)
             self.config_list.setEnabled(False)
             self.edit_config_btn.setEnabled(False)          # the configuration in use stays as it is
             self.database_pane.toggleView(True)
@@ -183,7 +183,7 @@ class Session:
         if tests is not None:
             tests.stop()                    # the running test case ends; its mailboxes close with the worker
         self._close_flash_dialog()
-        self.flashing_toolbar_item.setVisible(False)
+        self.toolbar_buttons.set_available("flashing", False)
         if self.script_runtime:
             self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
             self.script_runtime = None

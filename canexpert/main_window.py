@@ -58,7 +58,7 @@ from canexpert import features
 from canexpert.sysvars import SystemVariables
 from canexpert.about import AboutDialog
 from canexpert.status_strip import StatusStrip
-from canexpert.ui_common import DockTitleBar, app_icon, app_settings, line_icon, toolbar_icon
+from canexpert.ui_common import DockTitleBar, ToolbarButtons, app_icon, app_settings, line_icon, toolbar_icon
 from canexpert.workspace import add_pane, create_workspace, fit_on_screen, make_pane, set_content
 from canexpert.main_layouts import TOOL_AREAS
 from canexpert.main_tools import ToolWindows
@@ -70,6 +70,7 @@ from canexpert.main_session import MARKER_HISTORY, Session
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window and the console
+TOOLBAR_HIDDEN = "toolbar/hidden"    # settings: the toolbar buttons unticked (a JSON list)
 PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
@@ -191,6 +192,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
 
         toolbar = QToolBar("Main actions", self)
         toolbar.setMovable(False)
+        # Right-click it (or View > Toolbar buttons) to choose the buttons it shows.
+        self.toolbar_buttons = ToolbarButtons(toolbar, self._settings, TOOLBAR_HIDDEN)
         toolbar.setIconSize(QSize(28, 28))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         # A checked button keeps a pressed-in background with an accent line: a style sheet that names
@@ -259,10 +262,11 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             button.setAccessibleName(label)
             toolbar_item = toolbar.addWidget(button)
             self._toolbar_actions[name] = action
+            self.toolbar_buttons.add(name, label, toolbar_item)
             if name == "flashing":
                 # Shown only while connected to a database.
                 self.flashing_toolbar_item = toolbar_item
-                toolbar_item.setVisible(False)
+                self.toolbar_buttons.set_available("flashing", False)
             if name == "connect":
                 self.connect_btn = button
             elif name == "disconnect":
@@ -506,6 +510,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             action.triggered.connect(lambda _checked, d=display: self.set_time_display(d))
             time_group.addAction(action)
             self._time_display_actions.append(action)
+        view_menu.addSeparator()
+        buttons_menu = view_menu.addMenu('Toolbar buttons')
+        buttons_menu.aboutToShow.connect(lambda: self.toolbar_buttons.fill(buttons_menu))
         view_menu.addSeparator()
         self._desktop_menu = view_menu.addMenu('Desktops')
         view_menu.addAction('Save desktop as...').triggered.connect(lambda: self.save_desktop())

@@ -1,7 +1,8 @@
-"""Shared Qt helpers: persistent settings, toolbar icons, the small tool buttons of the analysis windows,
-Windows 11-style caption buttons, the collapsible SplitterPanel, the main window's DockTitleBar, and a
-tree's rows as CSV."""
+"""Shared Qt helpers: persistent settings, toolbar icons, the buttons a toolbar shows (ToolbarButtons), the small
+tool buttons of the analysis windows, Windows 11-style caption buttons, the collapsible SplitterPanel, the main
+window's DockTitleBar, and a tree's rows as CSV."""
 import csv
+import json
 
 from PyQt5.QtCore import QByteArray, QEvent, QPointF, QRectF, QSettings, QSize, Qt
 from PyQt5.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
@@ -10,6 +11,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QSplitter,
     QToolButton,
     QVBoxLayout,
@@ -73,6 +75,86 @@ def fit_new_window(window, anchor=None):
     x = max(min(centre.x() - width // 2, room.right() + 1 - width), room.left())
     y = max(min(centre.y() - height // 2, room.bottom() + 1 - height), room.top())
     window.move(x, y)
+
+
+class ToolbarButtons:
+    """Which buttons a toolbar shows: every one unless it was unticked - right-click the toolbar, or the window's
+    View menu - and kept so in the settings (key: a JSON list of the hidden ones). A window can also take a button
+    away for a while (set_available: Flashing while nothing is connected); it shows again only if it is ticked.
+    Separators with nothing shown on one side go too. A hidden button's action still works from the menus and
+    its key."""
+
+    def __init__(self, toolbar, settings, key):
+        self.toolbar, self.settings, self.key = toolbar, settings, key
+        self.items = {}                         # name -> (label, the toolbar's action for the button)
+        self.available = {}
+        try:
+            hidden = json.loads(str(settings.value(key, "") or "[]"))
+            self.hidden = {str(name) for name in hidden} if isinstance(hidden, list) else set()
+        except ValueError:
+            self.hidden = set()
+        toolbar.setContextMenuPolicy(Qt.CustomContextMenu)
+        toolbar.customContextMenuRequested.connect(lambda pos: self.menu().exec_(toolbar.mapToGlobal(pos)))
+
+    def add(self, name, label, item):
+        """A button of the toolbar: item is what QToolBar.addWidget() returned for it."""
+        self.items[name] = (label, item)
+        self.available.setdefault(name, True)
+        self._apply()
+
+    def set_available(self, name, available):
+        self.available[name] = bool(available)
+        self._apply()
+
+    def is_shown(self, name) -> bool:
+        """Ticked: shown whenever the window has it to offer."""
+        return name not in self.hidden
+
+    def set_shown(self, name, shown):
+        if shown:
+            self.hidden.discard(name)
+        else:
+            self.hidden.add(name)
+        self.settings.setValue(self.key, json.dumps(sorted(self.hidden)))
+        self._apply()
+
+    def show_all(self):
+        for name in list(self.hidden):
+            self.set_shown(name, True)
+
+    def fill(self, menu):
+        """The buttons as ticks, and Show all, in a menu."""
+        menu.clear()
+        for name, (label, _item) in self.items.items():
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self.is_shown(name))
+            action.toggled.connect(lambda shown, n=name: self.set_shown(n, shown))
+        menu.addSeparator()
+        every = menu.addAction("Show all")
+        every.setEnabled(bool(self.hidden))
+        every.triggered.connect(self.show_all)
+        return menu
+
+    def menu(self):
+        return self.fill(QMenu("Toolbar buttons", self.toolbar))
+
+    def _apply(self):
+        for name, (_label, item) in self.items.items():
+            item.setVisible(self.available[name] and self.is_shown(name))
+        # A separator stays only between two groups that both show something.
+        actions = self.toolbar.actions()
+        shown_after, later = [False] * len(actions), False
+        for index in range(len(actions) - 1, -1, -1):
+            shown_after[index] = later
+            later = later or (not actions[index].isSeparator() and actions[index].isVisible())
+        before = False
+        for index, action in enumerate(actions):
+            if action.isSeparator():
+                action.setVisible(before and shown_after[index])
+                before = before and not action.isVisible()
+            elif action.isVisible():
+                before = True
 
 
 # -----------------------------------------------------------------------------
