@@ -24,7 +24,22 @@ from canexpert import features
 from canexpert.sysvars import SystemVariables
 from canexpert.j1939.pgn import TOOL_ADDRESS
 from canexpert.j1939.transport import J1939Assembler, J1939Link
-from canexpert.uds.client import UdsFunctions, uds_request, unsolicited_kind
+from canexpert.panel.variables import Variable, suggest
+from canexpert.uds.client import FUNCTIONS, UdsFunctions, uds_request, unsolicited_kind
+
+# The CAPL-style event decorators a script's globals hold (ScriptRuntime._namespace).
+EVENT_DECORATORS = ("on_start", "on_stop", "on_timer", "on_message", "on_signal", "on_control", "on_key",
+                    "on_error_frame", "on_bus_state", "on_periodic_data", "on_response_event", "on_pgn",
+                    "on_variable")
+
+
+def script_globals() -> set[str]:
+    """The names CAN Expert puts in a panel script's globals: the event decorators, j1939 and the ISO 14229
+    service functions (RDBI, WDBI, ...) - what a check of the script takes as defined."""
+    names = {*EVENT_DECORATORS, "j1939", "__file__", "__name__", *(entry.name for entry in FUNCTIONS)}
+    if features.SYSTEM_VARIABLES:
+        names.add("on_sysvar")
+    return names
 
 
 # -----------------------------------------------------------------------------
@@ -161,6 +176,15 @@ class DatabaseAPI:
         and in the recording."""
         if self._runtime is not None:
             self._runtime.marker_requested.emit(time.time(), str(comment))
+
+    def var(self, name: str) -> Variable:
+        """A structured variable of the panel (Form Designer, Variables tab): api.var("Calib Data").temperature,
+        .FOC[3], .read(), .write(). KeyError for one the panel does not have."""
+        variables = self._runtime.variables if self._runtime is not None else {}
+        if name not in variables:
+            raise KeyError(f"The panel has no variable {name!r}.{suggest(name, list(variables))}"
+                           f" Its variables: {', '.join(variables) or 'none'}")
+        return variables[name]
 
 
 class _SysVarApi:
@@ -356,11 +380,13 @@ Form Designer to create one). Decorators work like CAPL "on" procedures:
     @on_message(0x300) or ("EngineData")    a received frame: frame.id, frame.data, frame.signals
     @on_signal("EngineData.Temperature")    a DBC signal changed: value
     @on_control("start")                    a control named "start" was used: value
+    @on_variable("Calib Data")              a field of that variable was changed on the panel: variable, field
 UDS services are plain functions: RDBI(0xF190) sends 22 F1 90 and returns a result (true when
 positive; .data, .text, .int, .error). See the UDS functions panel beside the editor.
 Name a function's first parameter api to receive the script API: api.signal("Msg.Sig"),
 api.set_signal("Msg.Sig", value), api.send_message("Msg", Sig=value), api.can.send(id, data),
-api.ui.set_value(name, value), api.log(text) - the Write window.
+api.ui.set_value(name, value), api.log(text) - the Write window. The variables of the Variables tab:
+api.var("Calib Data").temperature, .FOC[3], .read() and .write() with the ECU.
 Callbacks run one at a time on a background thread and stop on disconnect.
 """
 
@@ -444,6 +470,8 @@ class ScriptRuntime(QObject):
         self.pgn_handlers = {}          # J1939 PGN (or "*") -> [handler]
         self._j1939 = J1939Assembler()  # 29-bit frames back into J1939 messages, for @on_pgn
         self.event_handlers = {}        # service answered by the event (or "*") -> [handler]
+        self.variables = {}             # the panel's structured variables: name -> Variable (set_variables)
+        self.variable_handlers = {}     # variable name (or "*") -> [handler], for @on_variable
         self.namespace = {}             # the script's globals, for the Write window's watch
         self.hidden_names = set()       # the names CAN Expert put there
         self._messages = None
@@ -460,6 +488,35 @@ class ScriptRuntime(QObject):
         self.j1939 = J1939Link(bus, TOOL_ADDRESS)      # j1939.request(), j1939.send() in scripts
         self.api._runtime = self
         self.api._stop_event = self.stop_event
+
+    def set_variables(self, structures):
+        """The panel's structured variables (variables.py), as the script and the panel share them: a change
+        made by the script shows on the panel, and one made on the panel reaches the script."""
+        self.variables = {structure.name: Variable(structure, self.api.uds.functions,
+                                                   lambda name, value: self.value_changed.emit(name, value))
+                          for structure in structures}
+
+    def _variable_input(self, name, value):
+        """A value typed on the panel for a variable's field ("Calib Data.FOC[3]") - into the variable, shown
+        wherever it is, and to its @on_variable handlers - or a Variable List's Read or Write."""
+        variable_name, dot, path = str(name).partition(".")
+        variable = self.variables.get(variable_name)
+        if variable is None:
+            return
+        try:
+            if not dot:
+                if value in ("read", "write"):
+                    result = variable.read() if value == "read" else variable.write()
+                    done = "read from" if value == "read" else "written to"
+                    self.say("info" if result else "error", f"{variable.name} {done} the ECU" if result else
+                             f"{variable.name} could not be {done.split()[0]}: {result.error}")
+                return
+            variable.set(path, value)
+        except (AttributeError, IndexError, KeyError, ValueError) as exc:
+            self.say("error", f"{name}: {exc}")
+            return
+        for handler in list(self.variable_handlers.get(variable_name, ())) + list(self.variable_handlers.get("*", ())):
+            self._call(handler, variable, path)
 
     def start(self, path):
         path = Path(path)
@@ -569,6 +626,18 @@ class ScriptRuntime(QObject):
                 return fn
             return register
 
+        def on_variable(*names):
+            """@on_variable("Calib Data") def f(api, variable, field): ... - a field of the variable changed on
+            the panel (field: its name, "FOC[3]"); with no name, any variable."""
+            if len(names) == 1 and callable(names[0]):
+                return on_variable()(names[0])
+
+            def register(fn):
+                for name in names or ("*",):
+                    runtime.variable_handlers.setdefault(name, []).append(runtime._adapt(fn))
+                return fn
+            return register
+
         def on_error_frame(fn):
             """@on_error_frame def f(timestamp): ... - an error frame on the bus."""
             runtime.error_frame_handlers.append(runtime._adapt(fn))
@@ -621,7 +690,8 @@ class ScriptRuntime(QObject):
                      "on_stop": on_stop, "on_timer": on_timer, "on_message": on_message, "on_signal": on_signal,
                      "on_control": on_control, "on_key": on_key, "on_error_frame": on_error_frame,
                      "on_bus_state": on_bus_state, "on_periodic_data": on_periodic_data,
-                     "on_response_event": on_response_event, "on_pgn": on_pgn, "j1939": self.j1939,
+                     "on_response_event": on_response_event, "on_pgn": on_pgn, "on_variable": on_variable,
+                     "j1939": self.j1939,
                      **self.api.uds.functions.namespace()}
         if self.sysvars is not None:
             namespace["on_sysvar"] = on_sysvar
@@ -717,6 +787,7 @@ class ScriptRuntime(QObject):
                 try:
                     kind, name, value = self.events.get(timeout=0.02)
                     if kind == "control":
+                        self._variable_input(name, value)
                         for callback in list(self.callbacks.get(name, [])):
                             self._call(callback, value)
                     elif kind == "can":
@@ -797,9 +868,13 @@ class ScriptRuntime(QObject):
                 self.values[name] = value
             self.value_changed.emit(name, value)
 
-    def stop(self):
-        # @on_stop handlers run first, while the bus is still usable (bounded wait for a busy script).
-        if self.stop_handlers and self.thread is not None and self.thread.is_alive() and not self.stop_event.is_set():
+    def stop(self, run_stop_handlers=True):
+        """Stop the script. Its @on_stop handlers run first, while the bus is still usable (a bounded wait for a
+        busy script) - unless run_stop_handlers is False (the kill switch): then the bus is revoked at once."""
+        if not run_stop_handlers:
+            self.api.set_bus(None)
+        if run_stop_handlers and self.stop_handlers and self.thread is not None and self.thread.is_alive() and \
+                not self.stop_event.is_set():
             self._stop_done.clear()
             self.post("stop", None, None)
             self._stop_done.wait(1.0)

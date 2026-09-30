@@ -6,7 +6,183 @@ DBC signals, a Transmit window to send messages and simulate nodes, a UDS Consol
 services, ODX services and fault memory, a Form Designer to build panels, recording and offline replay,
 firmware flashing over UDS, and a simulated ECU so you can try everything without a vehicle.
 
-Press the **?** button at the top right of the main window to open this manual at any time.
+Press the **?** button at the top right of the main window to open this manual at any time. Click a
+picture to see it full size.
+
+[![CAN Expert connected to the Dummy ECU](images/main_window.png)](images/main_window.png)
+
+*CAN Expert connected to the Dummy ECU, running the showcase panel: the engine warms up on the gauge and
+the trend, the session indicator shows the extended session, and the output box logs what the script does.*
+
+## How to...
+
+The things done most often, step by step. Each one ends with the section that tells the rest.
+
+### ...try CAN Expert without a vehicle
+
+1. Start the Dummy ECU: double-click `dummy_ecu.py` (or **DummyECU.exe** beside CAN Expert).
+2. Choose its interface and channel — **Detect** lists them; with the Kvaser virtual driver, `kvaser`
+   channel `1` — and press **Connect**.
+3. In CAN Expert, pick the **Dummy ECU** configuration, select `[kvaser] Ch 0` in **CAN Channels** and
+   press **Connect**. The showcase panel opens: flip **Run** and the engine warms up.
+
+[![The Dummy ECU window](images/dummy_ecu.png)](images/dummy_ecu.png)
+
+*The Dummy ECU: every tab sets what it does, the right side shows its state.*
+
+Without the Kvaser virtual driver, the Form Designer's **Test panel...** runs a panel against the simulated
+ECU on a private virtual bus, with nothing installed (see *...build a panel*). More in *Trying it without a
+vehicle*.
+
+### ...watch what is on the bus
+
+1. Connect — or start the ECU check, or replay a recorded file.
+2. Press **Trace** on the toolbar. Each frame is a row: its time, direction, identifier and, when a symbol
+   database describes it, its name. Open a row's arrow to see its signals.
+3. Type identifiers, ranges or names in **Filter** (`7E0, 300-3FF, EngineData`) to see only those.
+   **Pause** freezes the list while the recording goes on.
+
+[![The Trace window](images/trace.png)](images/trace.png)
+
+*The Trace: the Dummy ECU's frames, named from its DBC, and TesterPresent going out on 7E0.*
+
+More in *Trace window*.
+
+### ...send a message every 10 ms
+
+1. Connect, then press **Transmit**.
+2. **Add** a row — or **Add from database...** a message of a DBC — and type its **ID (hex)**, its
+   **Data (hex)** and its **Cycle (ms)**.
+3. Tick its **On** box. It goes out every cycle until you untick it, press **All off**, or close the window.
+   **Measured (ms)** shows how often it really went: `10.0 (9.3-10.7)` is every 10 ms on average, never
+   less than 9.3 nor more than 10.7.
+
+[![The Transmit window](images/transmit.png)](images/transmit.png)
+
+*Two messages sent cyclically, every 10 ms and every 100 ms, and one sent only with Send now.*
+
+More in *Transmit window*.
+
+### ...read a value from the ECU
+
+1. Connect, then press **UDS Console**.
+2. Pick the service in the list — **RDBI (0x22) – ReadDataByIdentifier** to read a DID — fill in its form
+   (`0xF190`, the VIN) and press **Send**. Or type the bytes after **or raw:** (`22 F1 90`) and press
+   **Send raw**.
+3. The answer is written below the tabs: its bytes, its data as a number and as text.
+
+[![The UDS Console](images/uds_console.png)](images/uds_console.png)
+
+*A raw request for the extended session, the VIN read with RDBI's form, and the fault memory read raw.*
+
+More in *UDS Console*.
+
+### ...plot signals
+
+1. Press **CAN Logger** and **Load DBC...** — or add the DBC once for every window under **Tools → Symbol
+   databases...**.
+2. Tick the signals to plot. Each gets a graph, all on one time axis; right-click a signal and pick
+   *Draw together with ...* to share another one's graph.
+3. The graphs follow the bus while you are connected. **Cursors** measures between two times, and
+   **Export...** writes the data to a file.
+
+[![The CAN Logger](images/can_logger.png)](images/can_logger.png)
+
+*The Dummy ECU's temperature rising after Run was switched on, and its pressure.*
+
+More in *CAN Logger*.
+
+### ...build a panel
+
+1. Press **Form Designer**. It is a window of its own, with its own taskbar button: minimize it, maximize
+   it, and keep using the main window beside it.
+2. On the **Database** tab, give the panel its **Database ID** (`engine_2026-09-29`) and its **DBC**.
+3. Drag signals from **Symbols** onto the form — each becomes a control bound to it — and controls from the
+   palette below. Select one to set its properties on the right.
+4. Double-click a button (or any input) to write its handler: the **Python script** tab opens at the function,
+   created for you.
+5. Press **Check panel** (F6) to find the typos, then **Test panel...** (F5) to run the panel and its script
+   against the simulated ECU.
+6. **File → Save** (Ctrl+S). A configuration whose *Database family* is `engine` loads it at the next
+   Connect.
+
+[![The Form Designer](images/form_designer.png)](images/form_designer.png)
+
+*The Form Designer with the showcase panel: the gauge selected, its properties on the right.*
+
+[![Test panel](images/test_panel.png)](images/test_panel.png)
+
+*Test panel: the panel and its script against the simulated ECU, with what the ECU does below.*
+
+More in *Form Designer* and *Writing panel scripts*.
+
+### ...find a typo in a panel
+
+1. In the Form Designer, press **Check panel** (F6). Opening a panel checks it too, and so does Connect:
+   when the panel is why Connect fails, the **Panel check** window opens by itself.
+2. Each problem says where it is, what is wrong and what was probably meant — `<lde>`: *Did you mean
+   `<led>`?* Select one to see its line, with a `^` under the place.
+3. Double-click it: the Form Designer goes to the line in the script, or selects the control on the form.
+   From the main window, **Open in Form Designer** opens the panel there first. Put it right, save, and
+   connect again.
+
+[![The Panel check window in the Form Designer](images/panel_check.png)](images/panel_check.png)
+
+*A panel opened with three problems: a control that is not one, a service name mistyped in the script, and
+what the script says to the control left out.*
+
+[![The Panel check window after Connect](images/connect_problem.png)](images/connect_problem.png)
+
+*Connect stopped by a typo: the letter O for a zero.*
+
+More in *Checking a panel*, under *Form Designer*.
+
+### ...show the text an ECU sends
+
+1. In the Form Designer, select the I/O box or value display, and set its **Format** to **ascii**.
+2. The bytes it gets are shown as the characters they spell: `31 30` shows as `10`. A UDS answer too —
+   `api.ui.set_value("serial", RDBI(0xF18C))` shows the serial number — and a DBC signal carrying text.
+3. What is typed into an ascii I/O box goes out as its bytes.
+
+More in *Building a form*, under *Form Designer*.
+
+### ...read and write a block of calibration data
+
+1. In the Form Designer, on the **Variables** tab, write the data as the ECU keeps it — a name, where it lives
+   (`DID 0x0110` or `memory 0x20001000`), and a field a line: `* uint32 FOC[32]`.
+2. On the **Form** tab, drop a **Variable List** and choose the variable in Properties.
+3. **Test panel...** (or connect): **Read** fills the list; double-click a value to change it; **Write** sends
+   the variable back. Writing usually needs the extended session and, for memory, security access.
+
+[![A Variable List read from the Dummy ECU](images/variables.png)](images/variables.png)
+
+*The calibration example against the simulated ECU: Calib Data read from memory, the idle speed from its DID
+and on a gauge named after that field.*
+
+More in *The Variables tab*, under *Form Designer*.
+
+### ...leave the bus to another tool
+
+1. Press **Kill CAN** (Ctrl+F9). CAN Expert stops everything it sends — the session, TesterPresent, the
+   Transmit window, scans — and closes the adapter. The status bar says **Off the bus**.
+2. Let the other tool, or the other tester, work: CAN Expert does not touch the bus, even if you restart it.
+3. Press **Kill CAN** again to come back; then connect as usual.
+
+More in *Connecting*.
+
+### ...test an ECU against ISO 14229
+
+1. Start **TestExpert** (`test_expert.py`, or **TestExpert.exe** beside CAN Expert).
+2. **Description**: open the ECU's CDD, ODX or PDX file — or press **Dummy ECU** to try it on the Dummy ECU.
+   The tests the description calls for are listed on the right.
+3. On the **ECU** tab, choose the interface, channel and bit rate and the identifiers, and press **Connect**.
+4. Tick the tests and press **Run** (F5). Each gets its verdict; **Report** opens the HTML report.
+
+[![TestExpert](images/test_expert.png)](images/test_expert.png)
+
+*TestExpert after a run against the Dummy ECU: the description on the left, the verdicts on the right.*
+
+More in *TestExpert*.
 
 ## Starting up
 
@@ -29,6 +205,11 @@ window is open, pressing it again closes the window, and closing the window with
 button go. A window that is closed keeps what it had, so reopening it shows everything recorded
 meanwhile.
 
+**Choosing the toolbar's buttons** — right-click the toolbar (or *View → Toolbar buttons*) and untick the
+buttons you do not use; tick them again, or **Show all**, to bring them back. The choice is kept for the
+next start. A hidden button's command is still in the menus, with its key. **Flashing** shows only while
+connected — and only if it is ticked.
+
 Configuration, CAN Channels and Log are fixed panels around the workspace. Each has a **–** button to
 shrink it to a strip and **×** to close it; the *File* menu brings a closed one back. While a database
 is loaded, they shrink automatically to leave the workspace room.
@@ -37,12 +218,15 @@ Options inside the windows work the same way: a button that switches something o
 Trace window, the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for
 as long as that option is active, so you can see at a glance what is switched on.
 
-At startup CAN Expert selects the receiver you used last, shows every receiver you have connected to
-before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below).
+At startup CAN Expert selects the receiver you used last and starts asking its ECUs whether they are there
+(see *Checking ECUs* below) — unless it was closed off the bus (**Kill CAN**, see *Connecting*). The receiver
+CAN Expert is using — connected, or checking its ECUs — is in **bold**; one it used before is not, once it is
+no longer in use.
 
 ## Configurations
 
-A configuration describes how to talk to an ECU. Double-click one to edit it, or use **New**.
+A configuration describes how to talk to an ECU. Select one and press **Edit** (or double-click it) to
+change it, or use **New**. The one in use while connected cannot be edited: disconnect first.
 
 | Field | Meaning |
 |---|---|
@@ -82,10 +266,27 @@ The matching database is loaded and its panel is built *before* the adapter is o
 never leaves you half-connected. The channel is then marked **[Connected]**, and CAN Expert sends
 TesterPresent at the configured interval.
 
+When the panel is why Connect fails — a typo in its XML, its DBC or its script — the **Panel check**
+window says where, as the Form Designer's check does (see *Checking a panel*). **Open in Form Designer**
+(or a double-click) opens the panel there at that place: put it right, save, and connect again. A panel
+that loads but has problems connects, and the window lists them — once for each version of its files,
+not at every Connect. Each problem is written to the Log as well.
+
 **Double-clicking** a receiver, an ECU under it, or the database offered under it connects straight away —
 the same as pressing Connect.
 
-**Disconnect** stops the script and the traffic, and closes the adapter.
+**Disconnect** stops the script and the session's traffic. CAN Expert then goes on checking the ECUs with
+TesterPresent, so the CAN Channels tree still shows which ones answer (see *Checking ECUs*).
+
+**Kill CAN** (Ctrl+F9) is the kill switch: it takes CAN Expert off the bus at once, for another tool — or
+another tester — to have the bus and the ECU to itself. The session ends (its script stops without its
+`@on_stop` handlers, which could send), the ECU check, the Transmit window's messages and simulated nodes
+and any scan stop, and every adapter CAN Expert opened is closed: from then on it sends nothing and
+receives nothing. The button stays pressed in, the status bar says **Off the bus**, and nothing opens the
+adapter again — not Connect, not the ECU check, not a scan, not the bit rate search — until you press it
+again. CAN Expert remembers it: closed off the bus, it starts off the bus, without checking any ECU. Pressed
+again, it is back on the bus and checks the ECUs as at startup. What the ECU was asked to send by itself
+(periodic data, events) stops with its diagnostic session, a few seconds later, since nothing keeps it open.
 
 While you are connected, the **status bar** says how things stand:
 
@@ -281,9 +482,16 @@ keeps its zoom, also in a newer dated version of the database.
 **Tools → Form Designer** builds and edits panels. A panel is two files in `Databases/`: the layout
 `family_YYYY-MM-DD.xml` and its script `family_YYYY-MM-DD_script.py`.
 
-The window has a menu bar, the **Symbols & controls** panel on the left, the **Form**, **Python script** and
-**Database** tabs in the middle and **Properties** on the right. The title shows the database ID, with a
+The window has a menu bar, the **Symbols & controls** panel on the left, the **Form**, **Python script**,
+**Variables** and **Database** tabs in the middle and **Properties** on the right. The title shows the database ID, with a
 **\*** while there are unsaved changes.
+
+It is a window of its own, with its own taskbar button: minimize it to the taskbar, maximize it (or
+double-click its title bar), and keep using the main window beside it — reconnect to try a panel you just
+saved, for example. **Form Designer** again brings the open one to the front, restored if it was minimized.
+It opens as it was last left — size, place, maximized — and closes with CAN Expert, asking first when there
+are unsaved changes (Cancel keeps both open). While it has the keyboard, keys are the designer's: a panel
+script's `@on_key` handlers only hear keys pressed in the main window.
 
 | Menu | What it holds |
 |---|---|
@@ -292,7 +500,7 @@ The window has a menu bar, the **Symbols & controls** panel on the left, the **F
 | **Arrange** | Align, make the same size, distribute, bring to front, send to back, and the grid. |
 | **Page** | Add, rename and remove pages. |
 | **Script** | **Check syntax** (F7), **Handler of the selected control** (F4). |
-| **Test** | **Test panel with the simulated ECU** (F5, also the **Test panel...** button at the right of the menu bar), or on an empty bus (Shift+F5). |
+| **Test** | **Check the panel** (F6, also the **Check panel** button at the right of the menu bar), **Test panel with the simulated ECU** (F5, also the **Test panel...** button), or on an empty bus (Shift+F5). |
 | **Help** | This section of the manual (F1). |
 
 New, Open and closing the window ask whether to save changes first.
@@ -303,11 +511,67 @@ New, Open and closing the window ask whether to save changes first.
   indicator, trend, output box) and decorations (label, group box, picture).
 - Load a **DBC** to get the signal list, then drag a signal onto the page: the control is bound to it and
   takes its unit and value table.
+- **Move** a control by holding the left button anywhere on it and dragging — an I/O box too, and a
+  control inside a group box, whichever was put on the page first. A group box itself moves by its title or
+  its frame; pressing inside it, where nothing is, starts a selection rectangle. A **double-click** goes to
+  the control's handler; double-click and keep the button down to drag instead.
+- **Duplicate** (Ctrl+D) and **Copy**/**Paste** give each copy a name of its own, so the script, its
+  handlers and the running panel keep it apart from the original: a made-up label follows the copy's ID
+  (`I/O Box 3` → `I/O Box 5`), a script name goes on with a number (`speed` → `speed_2`, then `speed_3`), and
+  a control named by its caption keeps the caption and gets a script name after it (`Start_2`). A copy has
+  no handler until you double-click it — then it gets one of its own. A control bound to a DBC signal stays
+  bound to it. **Cut** and **Paste** move a control: it keeps its name and its handler.
 - Select controls (click, or rubber-band several), then use the toolbar to align, distribute, make the same
   size, change the stacking order, undo and redo. The last selected control is the reference for aligning.
   The grid button snaps to the grid.
 - **Properties** edits the selected control: its binding, name, label, position, size and appearance.
+- **Format** shows a value in decimal, hex or binary — or, on an I/O box and a value display, as **ascii**:
+  the characters its bytes spell. The bytes 0x31 0x30 read from the ECU show as `10`; so do a UDS answer
+  (`api.ui.set_value("serial", RDBI(0xF18C))`), a list of byte values, and a DBC signal carrying text (its
+  bytes in the signal's byte order, 0x3130 for a big-endian one). Padding at the end (00, FF) is left out and
+  a byte that is no printable character shows as a dot. What is typed into an ascii I/O box goes out as its
+  bytes: to the script's handler as `b"10"`, into a DBC signal as the number those bytes make. Bytes shown in
+  the other formats appear in hex: `31 30`.
 - **+ Add page** adds a page; panels can have several.
+
+**The Variables tab** — structured variables: a record of typed fields and arrays that the panel keeps,
+such as a block of calibration data the ECU holds. Write each one as you think of it — its name on a line,
+then its fields, one a line:
+
+```
+Calib Data (memory 0x20001000, little-endian)
+* uint32 temperature
+* uint32 Axis
+* uint32 FOC[32]
+
+Idle (DID 0x0110)
+* uint16 speed
+```
+
+- A field is *type name*, or *type name[count]* for an array. The types: `uint8` to `uint64`, `int8` to
+  `int64`, `float32`, `float64`, `bool` and `char` (`char name[16]` is a text of 16 bytes) — and their C
+  names (`uint32_t`, `unsigned int`, `float`, `double`...), so a `struct` pasted from a C header works too.
+  The `*` (or `-`) in front is optional; `//` and `#` start a comment.
+- In brackets after the name, where it lives in the ECU: **DID 0x0110** (read with ReadDataByIdentifier,
+  written with WriteDataByIdentifier) or **memory 0x20001000** (ReadMemoryByAddress, WriteMemoryByAddress,
+  4-byte address and size) — and **little-endian** when the ECU keeps it so; big-endian otherwise. Without
+  either, only the script fills the variable.
+- The fields are packed, one after the other: padding the ECU keeps is written as a field (`uint8 pad[3]`).
+  The line under the text says the size of each variable, or what is wrong — the line, and what was probably
+  meant (`uint23` → *Did you mean uint32?*). **Check panel** lists it too, and the panel cannot be tested or
+  connected until it is put right.
+
+[![The Variables tab](images/variables_tab.png)](images/variables_tab.png)
+
+*The Variables tab of the calibration example: two variables, and under them what they are.*
+
+On the form, a **Variable List** (under *Display*) shows a variable field by field — an array opens into its
+elements — in the *Format* chosen (decimal, hex...). **Double-click a value** to type a new one: it is checked
+against its type, and the script has it at once. **Read** and **Write** read the variable from the ECU and
+write it back. A control named after a field — *Name / signal* `Idle.speed`, or `Calib Data.FOC[3]` — shows
+that field too, and what is typed into it goes to the variable. The script reaches a variable as
+`api.var("Calib Data")` (see *Writing panel scripts*). `examples/calibration_2026-09-30.xml` is a panel of both
+kinds, against the Dummy ECU.
 
 **Connecting a control to code** — give it a *Handler function* in Properties, or double-click the control:
 the script tab opens with the function created for you.
@@ -329,6 +593,34 @@ documentation; double-click one to insert a call.
 - **Contents**: the pages with their controls, and handlers named on controls but missing from the script.
 - **Where it is used**: the configurations with this family, and whether a newer version in the folder is
   the one they actually load.
+
+**Checking a panel** — **Check panel** (F6) looks for the typos in the form, its DBC bindings and its
+script, and lists what it finds in the **Panel check** window: where each problem is, what is wrong, and
+what was probably meant. Select one to see it in full — its line, with a `^` under the place:
+
+```
+Warning - showcase_2026-09-18_script.py, line 25, column 11: RBDI is not defined: this fails when it runs
+    vin = RBDI(0xF190)
+          ^
+    Did you mean RDBI?
+```
+
+- **Errors** stop the panel: XML that cannot be read (a missing quote or `>`, a tag closed under another
+  name), a value it cannot take (`x="1O"` — the letter O for a zero), two controls of the same name, a DBC
+  that is not there, a script that does not compile or stops when it starts (a name that is not defined
+  outside a function, `@on_message("…")` naming a message the DBC does not have).
+- **Warnings** are what will not work as written: a control CAN Expert does not know (`<lde>` for
+  `<led>`), which is left out of the panel; a property with a typo, which is ignored; a choice, number,
+  colour or True/False it cannot read; a DBC signal that is not in the DBC; a handler the script does not
+  define; a control, signal or message the script names in quotes that is not there; a name inside a
+  function that is not defined (it fails when that function runs).
+
+Double-click a problem (or **Go to**) to go to it: the line in the script, or the control, selected on its
+page. **Copy all** puts every problem, in full, on the clipboard.
+
+The check also runs by itself. **Test panel** checks first, and does not start while there are errors;
+warnings do not stop it. **Open** says why a file cannot be opened — the line, the column and what was
+probably meant — and a file that opens with problems lists them, ready to put right and save.
 
 **Test panel...** runs the panel against a simulated ECU on a virtual bus, without touching your hardware.
 Its **Flashing...** opens the same dialog as the main window's Flashing button (see *Firmware flashing*):
@@ -385,6 +677,24 @@ j1939.send(0xEF00, [1, 2, 3], 0x00)        # send a PGN; more than 8 bytes go as
 ```
 
 Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
+
+The structured variables of the panel (the Form Designer's **Variables** tab) are the script's too:
+
+```python
+calib = api.var("Calib Data")
+if calib.read():                           # ReadMemoryByAddress (or RDBI): true when the ECU answered
+    api.log(f"{calib.temperature} degC, FOC[3] = {calib.FOC[3]}")
+calib.Axis = 2                             # the Variable List and a control named Calib Data.Axis show it
+calib.FOC[3] = 0x10
+calib.write()                              # WriteMemoryByAddress (or WDBI), from the values it holds
+data = calib.bytes()                       # as the ECU keeps it; calib.decode(data) the other way
+
+@on_variable("Calib Data")                 # a field typed on the panel ("*" or nothing: any variable)
+def typed(api, variable, field):           # field: "Axis", "FOC[3]"
+    api.log(f"{variable.name}.{field} = {variable[field]}")
+```
+
+A value that does not fit its type (`calib.Axis = -1` for a `uint32`) raises an error that says so.
 
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.
@@ -739,7 +1049,8 @@ on CAN Expert's bus access, UDS client and reports; CAN Expert's window stays as
 The **toolbar** holds what you use most, as CAN Expert's does: **Description** (open one), **Open plan**,
 **Save plan**, **Connect**/**Disconnect**, **Run**, **Stop**, **Run failed** (the tests that did not pass in
 the last run, again), **Discover**, **Compare** (two runs), **Report** (the last run's) and **Manual**. The
-**Run** menu has the same actions; each button's tooltip says its key.
+**Run** menu has the same actions; each button's tooltip says its key. Right-click the toolbar (or *View →
+Toolbar buttons*) to choose the buttons it shows, as in CAN Expert.
 
 | Key | Does |
 |---|---|
@@ -1188,6 +1499,7 @@ them break security access and flashing.
 | Key | Does |
 |---|---|
 | **F9** / **Shift+F9** | Connect / Disconnect |
+| **Ctrl+F9** | Kill CAN: off the bus at once — pressed again, back on |
 | **Ctrl+1** ... **Ctrl+9** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test, J1939 — the toolbar's order; pressed again, the window closes |
 | **Ctrl+E** | Form Designer |
 | **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
@@ -1232,6 +1544,10 @@ rate** (*Channel setup*) whether the bit rate is right.
 
 **"No matching database"** — the configuration's *Database family* does not match any file in
 `Databases/`. Clear the field to load the newest panel, or build one in the Form Designer.
+
+**"Connection failed" with the Panel check window** — the panel has an error: the window says where, and
+**Open in Form Designer** takes you there. **Check panel** (F6) in the Form Designer finds the same
+problems before you connect.
 
 **The Trace shows identifiers but no names** — no symbol database describes those messages. Add the DBC
 under *Tools → Symbol databases...*.

@@ -1,4 +1,5 @@
-"""Form Designer: palette, signal drops, layout tools, undo/redo, clipboard, keys, resize, handlers, test mode."""
+"""Form Designer: palette, signal drops, layout tools, undo/redo, clipboard, keys, resize, handlers, the check of
+the panel, test mode."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
@@ -7,12 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt5.QtCore import QEvent, QRectF, Qt
-from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtCore import QEvent, QPoint, QRectF, Qt
+from PyQt5.QtGui import QKeyEvent, QMouseEvent
 from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from canexpert.designer.form_designer import FormDesigner
-from canexpert.designer.side_panels import DraggablePaletteItem, default_handler_name
+from canexpert.designer.side_panels import DraggablePaletteItem, control_name, default_handler_name
 from canexpert.panel.database import parse_application_database
 from canexpert.panel.controls import CONTROLS
 
@@ -28,6 +29,23 @@ def spin_until(predicate, timeout=3.0):
             return True
         time.sleep(0.005)
     return False
+
+
+def mouse(view, kind, pos, buttons=Qt.LeftButton):
+    """A mouse event on the canvas's viewport, as the mouse sends it."""
+    viewport = view.viewport()
+    APP.sendEvent(viewport, QMouseEvent(kind, pos, viewport.mapToGlobal(pos), Qt.LeftButton, buttons, Qt.NoModifier))
+
+
+def drag(view, start, end, double=False):
+    """Press (the second press of a double-click, with double), move in steps and release."""
+    if double:
+        mouse(view, QEvent.MouseButtonPress, start)
+        mouse(view, QEvent.MouseButtonRelease, start, Qt.NoButton)
+    mouse(view, QEvent.MouseButtonDblClick if double else QEvent.MouseButtonPress, start)
+    for step in range(1, 11):
+        mouse(view, QEvent.MouseMove, start + (end - start) * step / 10)
+    mouse(view, QEvent.MouseButtonRelease, end, Qt.NoButton)
 
 
 class CompletionTest(unittest.TestCase):
@@ -55,6 +73,7 @@ class FormDesignerTest(unittest.TestCase):
         self.widgets = self.canvas._current_widgets
 
     def tearDown(self):
+        self.designer._mark_clean()             # shown and changed by a test: closed without a question
         self.designer.close()
 
     def key(self, key, modifiers=Qt.NoModifier):
@@ -66,6 +85,49 @@ class FormDesignerTest(unittest.TestCase):
         for kind in kinds:
             data = self.canvas.add_widget_at(kind, 20, 20)
             self.assertEqual((data["width"], data["height"]), CONTROLS[kind].size)
+
+    def test_every_control_is_dragged_by_holding_the_left_button(self):
+        self.designer.resize(1200, 800)
+        self.designer.show()
+        view = self.canvas.graphics_view
+        for kind in (kind for kind, control in CONTROLS.items() if control.in_palette and kind != "group_box"):
+            for boxed in (False, True):
+                self.canvas.load_from_data({})
+                data = self.canvas.add_widget_at(kind, 200, 200)
+                if boxed:                               # a group box put around it afterwards lies above it
+                    box = self.canvas.add_widget_at("group_box", 160, 160)
+                    box["width"], box["height"] = 420, 280
+                    self.canvas._rebuild()
+                APP.processEvents()
+                item = self.canvas._items[0]
+                self.assertEqual(item.cursor().shape(), Qt.SizeAllCursor, f"{kind}: the move cursor, not a text one")
+                grab = view.mapFromScene(200 + int(data["width"]) // 2, 200 + int(data["height"]) // 2)
+                drag(view, grab, grab + QPoint(100, 60))
+                self.assertEqual((data["x"], data["y"]), (300, 260), f"{kind}{' in a group box' if boxed else ''}")
+        box = self.canvas._current_widgets()[1]                    # the group box: by its title, not its inside
+        drag(view, view.mapFromScene(box["x"] + 60, box["y"] + 8), view.mapFromScene(box["x"] + 80, box["y"] + 28))
+        self.assertEqual((box["x"], box["y"]), (180, 180))
+        empty = view.mapFromScene(box["x"] + 20, box["y"] + 250)  # its empty inside: a rubber band
+        drag(view, empty, empty + QPoint(150, 20))
+        self.assertEqual(self.canvas.selection, [], "nothing lies wholly in the band")
+        self.assertEqual((box["x"], box["y"]), (180, 180))
+
+    def test_a_double_click_goes_to_the_handler_and_a_held_one_drags(self):
+        self.designer.resize(1200, 800)
+        self.designer.show()
+        view = self.canvas.graphics_view
+        data = self.canvas.add_widget_at("io_box", 200, 200, binding_value="speed")
+        APP.processEvents()
+        requested = []
+        self.canvas.handler_requested.connect(requested.append)
+        grab = view.mapFromScene(250, 215)
+        drag(view, grab, grab + QPoint(100, 60), double=True)      # double-click, held, moved: a drag
+        self.assertEqual((data["x"], data["y"]), (300, 260))
+        self.assertEqual(requested, [])
+        grab = view.mapFromScene(350, 275)
+        drag(view, grab, grab, double=True)                         # a double-click: the handler
+        self.assertEqual(requested, [0])
+        self.assertEqual((data["x"], data["y"]), (300, 260))
 
     def test_dropped_signals_become_bound_controls(self):
         self.designer.symbol_list.load_dbc_path(str(DBC))
@@ -138,6 +200,30 @@ class FormDesignerTest(unittest.TestCase):
         self.canvas.select_in_rect(QRectF(0, 0, 25, 25))
         self.assertEqual(self.canvas.selection, [0])
 
+    def test_a_copy_gets_a_name_of_its_own(self):
+        io_box = self.canvas.add_widget_at("io_box", 10, 10)            # named by its made-up label: I/O Box 1
+        self.canvas.add_widget_at("button", 10, 60, label="Start", handler="on_start_clicked")
+        self.canvas.add_widget_at("spin", 10, 110, binding_value="speed", variable="speed", handler="on_speed_changed")
+        self.canvas.add_widget_at("value", 10, 160, binding_type="dbc", binding_value="EngineData.Temperature",
+                                  label="Temperature")
+        self.canvas.select_all()
+        self.canvas.duplicate_selection()
+        copies = self.widgets()[4:]
+        self.assertEqual([control_name(data) for data in copies], ["I/O Box 5", "Start_2", "speed_2", "Temperature"])
+        self.assertEqual((copies[0]["label"], copies[1]["label"]), ("I/O Box 5", "Start"), "a caption stays")
+        self.assertEqual(copies[3]["binding_value"], "EngineData.Temperature", "a DBC signal stays")
+        self.assertTrue(all("handler" not in data for data in copies), "no handler: the original's is not shared")
+        self.assertNotEqual(default_handler_name(copies[0]), default_handler_name(io_box))
+        self.canvas.set_selection([6])
+        self.canvas.duplicate_selection()
+        self.assertEqual(self.widgets()[-1]["binding_value"], "speed_3", "the next number, not speed_2_2")
+        self.assertFalse([problem for problem in self.designer.check_form() if "Two controls" in problem.message])
+        self.canvas.set_selection([2])                                    # cut and pasted: the same control, moved
+        self.canvas.cut_selection()
+        self.canvas.paste_at(300, 300)
+        moved = self.widgets()[-1]
+        self.assertEqual((moved["binding_value"], moved["handler"], moved["x"]), ("speed", "on_speed_changed", 300))
+
     def test_resize_handle_snaps_to_grid(self):
         data = self.canvas.add_widget_at("gauge", 20, 20)
         self.canvas.resize_started()
@@ -209,6 +295,107 @@ class FormDesignerTest(unittest.TestCase):
             self.assertTrue(hasattr(dialogs[0], "ecu"), "the Test panel has its simulated ECU")
         finally:
             dialogs[0].close()
+
+    def test_check_panel_finds_the_typos_and_goes_to_them(self):
+        from canexpert.panel.runtime import SCRIPT_TEMPLATE
+        button = next(item for item in self.designer.findChildren(QPushButton) if item.text() == "Check panel")
+        self.assertIn("(F6)", button.toolTip())
+        button.click()
+        dialog = self.designer.problems_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.heading.text(), f"<b>{self.designer._current_id()}: no problems found</b>")
+        self.assertTrue(dialog.splitter.isHidden(), "nothing to list")
+
+        start = self.canvas.add_widget_at("button", 10, 10, binding_value="start", handler="on_start_clicked")
+        self.designer.code_editor.setPlainText(SCRIPT_TEMPLATE + "\n\ndef on_start_clicked(api, value):\n"
+                                                                 "    RBDI(0xF190)\n")
+        button.click()
+        self.assertEqual([(p.message, p.hint) for p in dialog.problems],
+                         [("RBDI is not defined: this fails when it runs", "Did you mean RDBI?")])
+        self.assertFalse(dialog.splitter.isHidden())
+        self.assertIn("    RBDI(0xF190)\n    ^\n    Did you mean RDBI?", dialog.detail.toPlainText())
+        dialog.go_button.click()                                    # (or a double-click)
+        self.assertIs(self.designer.design_tabs.currentWidget(), self.designer.code_page)
+        self.assertEqual(self.designer.code_editor.textCursor().blockNumber() + 1, dialog.problems[0].line)
+
+        self.canvas.add_widget_at("led", 10, 60, binding_value="ready")
+        start["handler"] = "on_strat_clicked"                      # a control's problem: the control is selected
+        self.designer.show_check()
+        problem = dialog.problems[0]
+        self.assertEqual(problem.where(), "page Main, control start")
+        self.assertEqual(problem.hint, "Did you mean on_start_clicked()?")
+        self.canvas.set_selection([1])
+        dialog.go_button.click()
+        self.assertIs(self.designer.design_tabs.currentWidget(), self.canvas)
+        self.assertEqual(self.canvas.selection, [0])
+
+    def test_test_panel_waits_for_the_errors_to_be_put_right(self):
+        from canexpert.designer.form_designer import TestPanelDialog
+        self.designer.code_editor.setPlainText("def broken(api:\n    pass\n")
+        self.assertIsNone(self.designer.test_panel())
+        dialog = self.designer.problems_dialog
+        self.assertEqual(dialog.heading.text(), "<b>The panel cannot be tested yet</b>")
+        self.assertEqual((dialog.problems[0].severity, dialog.problems[0].line), ("error", 1))
+        self.assertIs(self.designer.design_tabs.currentWidget(), self.designer.code_page, "at the error")
+        self.assertEqual(self.designer.findChildren(TestPanelDialog), [])
+
+    def test_a_database_that_cannot_be_opened_says_why(self):
+        path = self.folder / "broken_2026-09-29.xml"
+        path.write_text('<application_database><pages><page name="Main">\n<button label="A" x="1O"/>\n'
+                        '</page></pages></application_database>', encoding="utf-8")
+        before = self.designer.db_id_edit.text()
+        self.assertFalse(self.designer.load(path))
+        dialog = self.designer.problems_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.heading.text(), "<b>broken_2026-09-29.xml cannot be opened</b>")
+        problem = dialog.problems[0]
+        self.assertEqual((problem.line, problem.column, problem.message, problem.hint),
+                         (2, 19, 'x="1O" is not a whole number', 'Did you mean "10"?'))
+        self.assertEqual(self.designer.db_id_edit.text(), before, "nothing changed")
+
+        path.write_text('<application_database><pages><page name="Main">\n<buton label="A"/>\n'
+                        '</page></pages></application_database>', encoding="utf-8")
+        self.assertTrue(self.designer.load(path), "a warning does not stop it...")
+        self.assertEqual(dialog.heading.text(), "<b>broken_2026-09-29.xml: 1 warning</b>", "...and is shown")
+        self.assertEqual(dialog.problems[0].hint, "Did you mean <button>?")
+
+    def test_the_variables_tab(self):
+        tabs = self.designer.design_tabs
+        self.assertEqual([tabs.tabText(i) for i in range(tabs.count())], ["Form", "Python script", "Variables",
+                                                                          "Database"])
+        self.designer.variables_edit.setPlainText(self.designer.VARIABLES_EXAMPLE)
+        structures, problems = self.designer.read_variables()
+        self.assertEqual(([item.name for item in structures], problems), (["Calib Data", "Idle"], []))
+        self.assertIn("Calib Data: 136 bytes, memory 0x20001000, little-endian", self.designer.variables_status.text())
+        self.canvas.add_widget_at("var_list", 10, 10, structure="Calib Data")
+        self.assertEqual(self.canvas._items[0].widget().tree.topLevelItemCount(), 3, "previewed with its fields")
+        self.canvas.set_selection([0])
+        choice = self.designer.properties.controls["structure"][1]
+        self.assertEqual([choice.itemText(i) for i in range(choice.count())], ["Calib Data", "Idle"])
+        self.designer.db_id_edit.setText("vars_2026-09-30")
+        self.assertTrue(self.designer.save())
+        again = FormDesigner()
+        self.addCleanup(again.close)
+        self.assertTrue(again.load(self.folder / "vars_2026-09-30.xml"))
+        self.assertEqual(again.variables_edit.toPlainText(), self.designer.VARIABLES_EXAMPLE, "as it was written")
+        self.assertEqual([item.name for item in again.canvas.variables], ["Calib Data", "Idle"])
+        self.designer.variables_edit.setPlainText("Calib Data\n* uint23 temperature")
+        self.designer.read_variables()
+        self.assertIn("Line 2: uint23 is not a type. Did you mean uint32?", self.designer.variables_status.text())
+        problem = next(item for item in self.designer.check_form() if item.kind == "variables")
+        self.assertEqual((problem.severity, problem.where()), ("error", "Variables, line 2"))
+        self.designer.go_to_problem(problem)
+        self.assertIs(tabs.currentWidget(), self.designer.variables_page)
+        self.assertEqual(self.designer.variables_edit.textCursor().blockNumber(), 1)
+
+    def test_closing_the_designer_closes_its_test_panels(self):
+        self.designer.show()
+        dialog = self.designer.test_panel()
+        self.assertTrue(dialog.isVisible())
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Discard):
+            self.designer.close()
+        self.assertFalse(dialog.isVisible(), "the test panel closes with the form it tests...")
+        self.assertTrue(dialog._stop.is_set(), "...and its virtual bus and simulated ECU stop")
 
     def test_test_panel_flashes_firmware_into_the_simulated_ecu(self):
         from canexpert.flashing import load_firmware

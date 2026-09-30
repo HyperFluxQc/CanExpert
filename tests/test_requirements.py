@@ -252,11 +252,38 @@ class RequirementsTest(unittest.TestCase):
         self.window = main.MainWindow()                                      # as if the application restarted
         items = self.window.channel_items
         self.assertEqual(self.window.selected_channel_config["channel"], 1)
-        self.assertTrue(items[("kvaser", 1, "", "")].font(0).bold())
+        self.assertTrue(items[("kvaser", 1, "", "")].font(0).bold(), "in use: its ECUs are checked")
         self.assertFalse(items[("kvaser", 0, "", "")].font(0).bold())
         self.assertIsNotNone(self.window.ecu_monitor, "TesterPresent should start on the remembered channel")
         heartbeat = self.ecu.recv(1.0)
         self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, PADDED_TESTER_PRESENT))
+
+    def test_only_the_channel_in_use_is_in_bold(self):
+        self.channels({"interface": "kvaser", "channel": 0}, {"interface": "kvaser", "channel": 1})
+        first, second = ("kvaser", 0, "", ""), ("kvaser", 1, "", "")
+        window = self.window
+
+        def bold():
+            return [key for key, item in window.channel_items.items() if item.font(0).bold()]
+
+        self.assertEqual(bold(), [])
+        window.on_channel_selected(window.channel_items[first])
+        window.on_connect_clicked()                                    # connected on the first
+        self.assertEqual(bold(), [first])
+        window.disconnect_database()                                   # its ECUs still checked: still in use
+        self.assertEqual(bold(), [first])
+        window.on_channel_selected(window.channel_items[second])
+        window.on_connect_clicked()                                    # another interface: the first is not in use
+        self.assertEqual(bold(), [second])
+        self.assertNotIn(first, window.database_items, "nor its database offered")
+        window.on_disconnect_clicked()                                 # nothing in use
+        self.assertEqual(bold(), [])
+        window.check_ecus(window.channel_items[first].data(0, Qt.UserRole))
+        self.assertEqual(bold(), [first])
+        window.set_offline(True)                                       # Kill CAN: nothing in use
+        self.assertEqual(bold(), [])
+        window.set_offline(False)                                      # back: the ECU check of the one used last
+        self.assertEqual(bold(), [second])
 
     def test_a_responding_ecu_offers_its_database_for_a_double_click(self):
         channel = self.channels({"interface": "kvaser", "channel": 0})[0]
@@ -272,7 +299,14 @@ class RequirementsTest(unittest.TestCase):
         self.assertIsNotNone(self.window.can_bus, self.window.status_label.text())
         self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-09-18.xml"))
         self.assertIsNone(self.window.ecu_monitor, "the session takes the channel over")
-        self.assertTrue(spin_until(lambda: "loaded" in self.window.database_items[key].text(0)))
+
+        def loaded():
+            # The ECU goes on answering the session's TesterPresent: without an answer for its timeout (0.2 s
+            # here) it is lost, and its database is no longer offered - which a slow machine got to first.
+            self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))
+            item = self.window.database_items.get(key)
+            return item is not None and "loaded" in item.text(0)
+        self.assertTrue(spin_until(loaded))
         self.assertIs(self.window.database_items[key].parent(), self.window.channel_items[key])  # the tree was rebuilt
 
     def test_the_manual_button_opens_the_user_manual(self):
@@ -733,6 +767,19 @@ def key(api, key):
         APP.processEvents()
         QApplication.sendEvent(self.window.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
         self.assertTrue(spin_until(lambda: any("key k" in line for line in write.lines())), write.lines())
+        # A key for the Form Designer, open beside the main window, is not the panel's.
+        designer = self.window.open_form_designer()
+        designer.canvas.graphics_view.setFocus()
+        self.assertTrue(spin_until(lambda: APP.activeWindow() is designer))
+        QApplication.sendEvent(designer.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
+        designer.close()
+        self.window.activateWindow()
+        self.assertTrue(spin_until(lambda: APP.activeWindow() is self.window))
+        QApplication.sendEvent(self.window.windowHandle(), QKeyEvent(QEvent.KeyPress, Qt.Key_K, Qt.NoModifier, "k"))
+        keys = lambda: sum("key k" in line for line in write.lines())    # noqa: E731
+        self.assertTrue(spin_until(lambda: keys() == 2), write.lines())
+        spin_until(lambda: keys() > 2, 0.3)
+        self.assertEqual(keys(), 2, "the main window's two, in order: not the one for the designer between them")
         self.window.on_disconnect_clicked()
         self.assertFalse(self.window._keys_watched)
 
@@ -831,6 +878,130 @@ def ready(api):
         self.addCleanup(configuration.close)
         self.assertEqual((configuration.server_id_edit.text(), configuration.ecu_id_edit.text()), ("7E0", "7E8"))
 
+    def drain(self):
+        """The frames the ECU's bus has received and not read yet."""
+        frames = []
+        message = self.ecu.recv(0)
+        while message is not None:
+            frames.append(message)
+            message = self.ecu.recv(0)
+        return frames
+
+    def assert_quiet(self, seconds=0.5):
+        """Nothing reaches the bus for a while (after what was on its way has arrived)."""
+        spin_until(lambda: False, 0.2)
+        self.drain()
+        spin_until(lambda: False, seconds)
+        self.assertEqual([hex(frame.arbitration_id) for frame in self.drain()], [], "nothing sent any more")
+
+    def test_the_kill_switch_takes_can_expert_off_the_bus(self):
+        from canexpert.channel_setup import load_setup
+        from canexpert.transmit_window import default_row
+        (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_stop
+def goodbye(api):
+    api.can.send(0x321, [0xDE, 0xAD])       # what a stopping script may send
+""")
+        kill = self.window._toolbar_actions["kill"]
+        self.assertEqual((kill.text(), kill.shortcut().toString()), ("Kill CAN", "Ctrl+F9"))
+        self.assertTrue(kill.isCheckable() and not kill.isChecked())
+        self.window.on_connect_clicked()                             # a session, and a message every 10 ms
+        messages = self.window.open_transmit().messages
+        messages.rows = [default_row("Beat", 0x123, b"\x01", 10)]
+        messages.rows[0]["enabled"] = True
+        messages._fill_table()
+        messages._sync_cyclic()
+        self.assertTrue(spin_until(lambda: any(frame.arbitration_id == 0x123 for frame in self.drain())))
+        kill.trigger()                                                # Kill CAN
+        self.assertTrue(self.window.offline and kill.isChecked())
+        self.assertNotIn(0x321, [frame.arbitration_id for frame in self.drain()], "no @on_stop: it could send")
+        self.assertIsNone(self.window.can_bus)
+        self.assertFalse(messages.rows[0]["enabled"], "the Transmit window's messages stop")
+        self.assert_quiet()
+        self.assertIn("Off the bus", self.window.status_label.text())
+        self.assertFalse(self.window._toolbar_actions["connect"].isEnabled())
+        calls = len(self.bus_calls)                                   # nothing opens the adapter
+        self.window.on_connect_clicked()
+        self.window.check_ecus(self.window.selected_channel_config)
+        self.window.disconnect_database()
+        with self.assertRaises(ValueError):
+            self.window._scan_bus(self.window.selected_channel_config)
+        setup = ChannelSetupDialog(self.window.selected_channel_config,
+                                   load_setup(self.settings, self.window.selected_channel_config), 500000,
+                                   offline=True)
+        self.addCleanup(setup.close)
+        self.assertFalse(setup.detect_btn.isEnabled(), "nor the bit rate search")
+        self.assertEqual(len(self.bus_calls), calls)
+        self.assertIsNone(self.window.ecu_monitor)
+        self.assert_quiet(0.2)
+        again = main.MainWindow()                                     # kept: it starts off the bus
+        self.addCleanup(again.close)
+        self.assertTrue(again.offline and again._toolbar_actions["kill"].isChecked())
+        again.selected_channel_config = self.window.selected_channel_config
+        again.on_connect_clicked()
+        self.assertIsNone(again.can_bus)
+        kill.trigger()                                                # released: back on the bus
+        self.assertFalse(self.window.offline or kill.isChecked())
+        self.assertFalse(self.settings.value("offline", True, type=bool))
+        self.assertTrue(self.window._toolbar_actions["connect"].isEnabled())
+        self.window.check_ecus(self.window.selected_channel_config)   # the ECU check, and a scan...
+        self.assertIsNotNone(self.window.ecu_monitor)
+        scan = self.window.open_ecu_scan(self.window.selected_channel_config)
+        self.addCleanup(scan.close)
+        self.assertIsNotNone(scan.start())
+        self.window.set_offline(True)                                 # ...stop too
+        self.assertIsNone(self.window.ecu_monitor)
+        self.assertFalse(scan.scanner.isRunning())
+        self.assertEqual(scan.status.text(), "The scan stopped: CAN Expert went off the bus (Kill CAN)")
+        self.assert_quiet()
+        self.window.set_offline(False)
+
+    def test_the_toolbar_buttons_can_be_shown_or_hidden(self):
+        from PyQt5.QtCore import Qt
+        buttons = self.window.toolbar_buttons
+        self.assertEqual(self.window.findChild(main.QToolBar).contextMenuPolicy(), Qt.CustomContextMenu,
+                         "right-click: the ticks")
+        ticks = {action.text(): action for action in buttons.menu().actions() if action.isCheckable()}
+        self.assertEqual(list(ticks), [label for label, _item in buttons.items.values()], "every button, in order")
+        self.assertTrue(all(action.isChecked() for action in ticks.values()))
+        trace = buttons.items["trace"][1]
+        ticks["Trace"].setChecked(False)
+        self.assertFalse(trace.isVisible())
+        self.assertTrue(self.window._toolbar_actions["trace"].isEnabled(), "still in the Tools menu, with its key")
+        self.assertEqual(json.loads(self.settings.value("toolbar/hidden")), ["trace"])
+        again = main.MainWindow()                                   # kept for the next start
+        self.addCleanup(again.close)
+        self.assertFalse(again.toolbar_buttons.items["trace"][1].isVisible())
+        flashing = buttons.items["flashing"][1]                     # Flashing: connected, and ticked
+        buttons.set_shown("flashing", False)
+        self.window.on_connect_clicked()
+        self.assertFalse(flashing.isVisible(), "unticked: not even while connected")
+        buttons.set_shown("flashing", True)
+        self.assertTrue(flashing.isVisible())
+        self.window.on_disconnect_clicked()
+        self.assertFalse(flashing.isVisible())
+        separators = [action for action in self.window.findChild(main.QToolBar).actions() if action.isSeparator()]
+        self.assertTrue(separators[0].isVisible())
+        for name in ("connect", "disconnect", "kill"):                 # the first group, all hidden
+            buttons.set_shown(name, False)
+        self.assertFalse(separators[0].isVisible(), "no separator with nothing before it")
+        buttons.show_all()
+        self.assertTrue(trace.isVisible() and separators[0].isVisible())
+        view = next(action.menu() for action in self.window.menuBar().actions() if action.text() == "View")
+        self.assertIn("Toolbar buttons", [action.text() for action in view.actions()])
+
+    def test_the_selected_configuration_has_an_edit_button(self):
+        self.assertEqual(self.window.edit_config_btn.text(), "Edit")
+        self.window.edit_config_btn.click()
+        dialog = next(item for item in self.window.findChildren(main.ConfigurationDialog) if item.isVisible())
+        self.assertEqual(dialog.name_edit.currentText(), "Second", "the one selected")
+        dialog.close()
+        self.window.on_connect_clicked()
+        self.assertFalse(self.window.edit_config_btn.isEnabled(), "not the one in use")
+        self.assertIsNone(self.window.edit_configuration())
+        self.window.on_disconnect_clicked()
+        self.assertTrue(self.window.edit_config_btn.isEnabled())
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)
@@ -838,6 +1009,54 @@ def ready(api):
         dialog = main.ConfigurationDialog(self.window, {"name": "Legacy"}, settings=self.settings)
         self.assertEqual(dialog.node_timeout_spin.value(), 2.0)
         self.assertEqual(dialog.heartbeat_spin.value(), 0.5)
+
+    def test_a_panel_with_typos_says_where_they_are_at_connect(self):
+        panel = self.databases / "panel_2026-09-18.xml"
+        panel.write_text(PANEL.replace('label="Status" binding_value="status" x="10" y="50"',
+                                       'label="Status" binding_value="status" x="10" y="5O"'))
+        self.window.on_connect_clicked()
+        self.assertIsNone(self.window.can_bus, "the panel cannot be loaded: no connection")
+        dialog = self.window.problems_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.heading.text(), "<b>The panel panel_2026-09-18.xml cannot be loaded</b>")
+        problem = dialog.problems[0]
+        self.assertEqual((problem.line, problem.message, problem.hint),
+                         (3, 'y="5O" is not a whole number', 'Did you mean "50"?'))
+        self.assertIn('y="5O" is not a whole number', self.window.debug_log.toPlainText())
+
+        panel.write_text(PANEL)                                 # the script's syntax stops Connect too, and says where
+        (self.databases / "panel_2026-09-18_script.py").write_text(SCRIPT.replace("(api):", "(api)"))
+        self.window.on_connect_clicked()
+        self.assertIsNone(self.window.can_bus)
+        problem = dialog.problems[0]
+        self.assertEqual((problem.kind, problem.line, problem.message),
+                         ("script", 1, "expected ':': the script cannot start"))
+        self.assertEqual(dialog.go_button.text(), "Open in Form Designer")
+        dialog.go_button.click()                                # the panel opened in the Form Designer, there
+        designer = self.window.form_designer
+        self.assertEqual(designer.db_id_edit.text(), "panel_2026-09-18")
+        self.assertIs(designer.design_tabs.currentWidget(), designer.code_page)
+        self.assertEqual(designer.code_editor.textCursor().blockNumber(), 0)
+        designer.close()
+
+    def test_a_panel_that_runs_with_warnings_says_so_once_for_each_version(self):
+        panel = self.databases / "panel_2026-09-18.xml"
+        panel.write_text(PANEL.replace("<checkbox ", "<chekbox "))
+        self.window.on_connect_clicked()
+        self.assertIsNotNone(self.window.can_bus, "warnings do not stop Connect")
+        dialog = self.window.problems_dialog
+        self.assertEqual(dialog.heading.text(), "<b>The panel panel_2026-09-18.xml has 2 warnings</b>")
+        self.assertEqual([problem.hint for problem in dialog.problems],
+                         ["Did you mean <checkbox>?", ""], "the checkbox is left out, and the script's use of it")
+        dialog.close()
+        self.window.on_disconnect_clicked()
+        self.window.on_connect_clicked()
+        self.assertFalse(dialog.isVisible(), "the same files: not every Connect")
+        self.window.on_disconnect_clicked()
+        stamp = panel.stat().st_mtime + 10
+        os.utime(panel, (stamp, stamp))                         # a new version
+        self.window.on_connect_clicked()
+        self.assertTrue(dialog.isVisible())
 
     def test_tool_windows_can_be_maximized(self):
         from PyQt5.QtCore import Qt
@@ -849,6 +1068,45 @@ def ready(api):
             self.assertTrue(flags & Qt.WindowCloseButtonHint, type(window).__name__)
             self.assertFalse(flags & Qt.WindowContextHelpButtonHint, type(window).__name__)
             window.close()
+
+    def test_the_form_designer_is_a_window_of_its_own(self):
+        from PyQt5 import sip
+        from PyQt5.QtCore import QEvent, QSize, Qt
+        designer = self.window.open_form_designer()
+        self.assertIsNone(designer.parent(), "not owned by the main window: a taskbar button of its own")
+        self.assertFalse(designer.isModal(), "the main window stays usable beside it")
+        self.assertIsNone(APP.activeModalWidget())
+        for hint in (Qt.WindowMinimizeButtonHint, Qt.WindowMaximizeButtonHint, Qt.WindowCloseButtonHint):
+            self.assertTrue(designer.windowFlags() & hint, hint)
+        designer.showMaximized()
+        designer.showMinimized()
+        self.assertTrue(designer.isMinimized())
+        self.assertIs(self.window.open_form_designer(), designer, "opened again: the one that is open")
+        self.assertFalse(designer.isMinimized(), "restored...")
+        self.assertTrue(designer.isMaximized(), "...as it was: maximized")
+        designer.showNormal()
+        designer.resize(740, 500)
+        self.assertTrue(designer.close(), "nothing unsaved: it closes without asking")
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.assertTrue(sip.isdeleted(designer), "closed, it is gone...")
+        designer = self.window.open_form_designer()
+        self.assertEqual(designer.size(), QSize(740, 500), "...and the next one opens as the last one was left")
+        designer.showMaximized()
+        designer.close()
+        APP.sendPostedEvents(None, QEvent.DeferredDelete)
+        designer = self.window.open_form_designer()
+        self.assertTrue(designer.isMaximized(), "maximized too")
+        # Closing CAN Expert closes it - not without asking about what is not saved, shown to ask.
+        designer.canvas.add_widget_at("button", 100, 100)
+        designer.showMinimized()
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Cancel) as asked:
+            self.assertFalse(self.window.close(), "Cancel: neither window closes")
+        asked.assert_called_once()
+        self.assertTrue(designer.isVisible())
+        self.assertFalse(designer.isMinimized(), "the question is not asked from the taskbar")
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Discard):
+            self.assertTrue(self.window.close())
+        self.assertFalse(designer.isVisible())
 
     def test_designer_widgets_reach_top_left_corner(self):
         from PyQt5.QtCore import QEvent, QPoint, Qt

@@ -1562,6 +1562,18 @@ class WindowTest(unittest.TestCase):
         self.assertIn("Services", self.window.coverage_view.toPlainText())
         self.assertIn("ECU: F195 systemSupplierECUSoftwareVersionNumber = APP-1.0.0", self.window.log.toPlainText())
 
+    def test_the_toolbar_buttons_can_be_shown_or_hidden(self):
+        buttons = self.window.toolbar_buttons
+        self.assertEqual(list(buttons.items), [entry[0] for entry in window_module.TOOLBAR if entry])
+        buttons.set_shown("compare", False)
+        self.assertFalse(buttons.items["compare"][1].isVisible())
+        self.assertTrue(self.window.actions["compare"].isEnabled(), "still in the Run menu")
+        other = window_module.TestExpertWindow(self.settings)
+        self.addCleanup(other.close)
+        self.assertFalse(other.toolbar_buttons.items["compare"][1].isVisible(), "kept")
+        view = next(action.menu() for action in other.menuBar().actions() if action.text() == "&View")
+        self.assertEqual([action.text() for action in view.actions()], ["&Toolbar buttons"])
+
     def test_variants_in_the_window(self):
         window = self.window
         self.assertTrue(window.variant_box.isHidden(), "the Dummy ECU's own description: one variant")

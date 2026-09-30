@@ -1,11 +1,17 @@
-"""The user manual and the window that shows it."""
+"""The user manual, its pictures and the window that shows it."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import importlib.util
+import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from PyQt5.QtCore import QUrl
+from PyQt5.QtGui import QTextDocument
 from PyQt5.QtWidgets import QApplication
 
+from canexpert import help_window
 from canexpert.help_window import MANUAL, HelpWindow, manual_sections
 
 APP = QApplication.instance() or QApplication([])
@@ -17,7 +23,7 @@ class UserManualTest(unittest.TestCase):
 
     def test_the_manual_covers_the_windows_it_promises(self):
         sections = manual_sections(self.text)
-        for section in ("Starting up", "Configurations", "Connecting", "Form Designer", "CAN Logger",
+        for section in ("How to...", "Starting up", "Configurations", "Connecting", "Form Designer", "CAN Logger",
                         "Firmware flashing", "Symbol databases", "Trace window",
                         "Transmit window", "UDS Console", "Recording and replaying",
                         "Arranging the windows"):
@@ -48,6 +54,43 @@ class UserManualTest(unittest.TestCase):
         window.search.setText("something that is not written anywhere")
         window.find_next()
         self.assertEqual(window.status.text(), "not found")
+
+    def test_the_manual_shows_its_pictures(self):
+        pictures = re.findall(r"!\[[^\]]*\]\((images/[a-z_]+\.png)\)", self.text)
+        self.assertGreaterEqual(len(pictures), 10)
+        for name in pictures:
+            self.assertTrue((MANUAL.parent / name).is_file(), name)
+            self.assertIn("[![", self.text.split(f"]({name})")[0][-300:], "a link to itself: full size on GitHub")
+        window = HelpWindow()
+        self.addCleanup(window.close)
+        window.resize(900, 700)
+        window.show()
+        APP.processEvents()
+        window.browser.fit_images()
+        images = window.browser.images()
+        self.assertEqual(len(images), len(pictures), "every picture, found beside the manual")
+        room = window.browser.viewport().width()
+        for _position, _length, image in images:
+            self.assertLessEqual(image.width(), room, "no wider than the window...")
+            self.assertTrue(image.name().endswith("@fitted"), "...smoothly scaled")
+            fitted = window.browser.document().resource(QTextDocument.ImageResource, QUrl(image.name()))
+            self.assertFalse(fitted.isNull(), image.name())
+        window.resize(1600, 900)                                             # wider: made again, never larger
+        APP.processEvents()
+        window.browser.fit_images()
+        self.assertTrue(all(image.width() <= 1280 for _p, _l, image in window.browser.images()))
+        opened = []
+        with patch.object(help_window.QDesktopServices, "openUrl", opened.append):
+            window.browser.picture_clicked.emit("images/trace.png")          # a click on a picture
+        self.assertEqual(Path(opened[0].toLocalFile()), MANUAL.parent / "images" / "trace.png", "full size")
+
+    def test_the_pictures_are_the_ones_the_tool_makes(self):
+        spec = importlib.util.spec_from_file_location(
+            "make_screenshots", Path(__file__).resolve().parent.parent / "tools" / "make_screenshots.py")
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        shown = set(re.findall(r"!\[[^\]]*\]\(images/([a-z_]+)\.png\)", self.text))
+        self.assertEqual(shown, set(tool.PICTURES), "python tools/make_screenshots.py makes them all again")
 
     def test_a_missing_manual_says_so_instead_of_failing(self):
         window = HelpWindow(path=Path("no", "such", "manual.md"))

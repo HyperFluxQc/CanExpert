@@ -58,18 +58,19 @@ from canexpert import features
 from canexpert.sysvars import SystemVariables
 from canexpert.about import AboutDialog
 from canexpert.status_strip import StatusStrip
-from canexpert.ui_common import DockTitleBar, app_icon, app_settings, line_icon, toolbar_icon
+from canexpert.ui_common import DockTitleBar, ToolbarButtons, app_icon, app_settings, line_icon, toolbar_icon
 from canexpert.workspace import add_pane, create_workspace, fit_on_screen, make_pane, set_content
 from canexpert.main_layouts import TOOL_AREAS
 from canexpert.main_tools import ToolWindows
 from canexpert.main_layouts import Layouts
 from canexpert.main_channels import Channels
-from canexpert.main_session import MARKER_HISTORY, Session
+from canexpert.main_session import MARKER_HISTORY, OFFLINE_SETTING, Session
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window and the console
+TOOLBAR_HIDDEN = "toolbar/hidden"    # settings: the toolbar buttons unticked (a JSON list)
 PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
@@ -77,7 +78,7 @@ ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console"
                   "write", "tests", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
-SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
+SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "kill": "Ctrl+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
              "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
              "tests": "Ctrl+8", "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
 # The manual's section for each tool window, for F1.
@@ -130,7 +131,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.session_generation = 0
         # Checks the ECUs with TesterPresent while no database is connected (after Disconnect, or on request).
         self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
-        self.last_channel, self.used_channels = None, set()
+        self.last_channel = None   # the channel used last: selected and checked at the next start
         self._read_channel_history()
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
         # One clock for the Trace, the Logger, the Write window and the UDS Console (clock.py).
@@ -156,8 +157,13 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.recorder = None
         self.replay = None
         self.tool_panes = {}       # the tool windows opened so far (their panes are in _tool_slots from the start)
+        self.form_designer = None  # the Form Designer while it is open: a window of its own (open_form_designer)
+        self.problems_dialog = None     # the Panel check window: what a check of the panel found at Connect
+        self._problems_path = None      # the panel database it is about
+        self._panels_reported = set()   # the versions of panel files whose problems were shown after a Connect
         self._diagnostic_answers = (None, False, None)   # response ID, extended, address byte of the session
         self._bus_state = "unknown"
+        self.offline = False       # the kill switch: off the bus, nothing opens the adapter (set_offline)
 
         self.init_ui()
         self.load_configurations()
@@ -165,6 +171,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.node_timer.setInterval(100)
         self.node_timer.timeout.connect(self._update_nodes)
         self.node_timer.start()
+        if self._settings.value(OFFLINE_SETTING, False, type=bool):
+            self._toolbar_actions["kill"].setChecked(True)      # left off the bus: it starts off the bus
         self.check_last_channel()
 
     @property
@@ -187,6 +195,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
 
         toolbar = QToolBar("Main actions", self)
         toolbar.setMovable(False)
+        # Right-click it (or View > Toolbar buttons) to choose the buttons it shows.
+        self.toolbar_buttons = ToolbarButtons(toolbar, self._settings, TOOLBAR_HIDDEN)
         toolbar.setIconSize(QSize(28, 28))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         # A checked button keeps a pressed-in background with an accent line: a style sheet that names
@@ -206,6 +216,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
             ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
              self.disconnect_database),
+            ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - the session, the ECU check, the "
+             "Transmit window's\nmessages and nodes and any scan stop, and nothing opens the adapter until it is "
+             "pressed again.\nFor another tool, or another tester, to have the bus to itself", self.set_offline),
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
@@ -239,6 +252,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
                 action.setCheckable(True)
                 action.toggled.connect(lambda shown, n=name, show=callback: self._toggle_tool(n, shown, show))
                 hint = f"{hint}\nPress again to close the pane"
+            elif name == "kill":
+                action.setCheckable(True)                    # pressed in while CAN Expert is off the bus
+                action.toggled.connect(callback)
             else:
                 action.triggered.connect(callback)
             if name in SHORTCUTS:
@@ -255,10 +271,11 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             button.setAccessibleName(label)
             toolbar_item = toolbar.addWidget(button)
             self._toolbar_actions[name] = action
+            self.toolbar_buttons.add(name, label, toolbar_item)
             if name == "flashing":
                 # Shown only while connected to a database.
                 self.flashing_toolbar_item = toolbar_item
-                toolbar_item.setVisible(False)
+                self.toolbar_buttons.set_available("flashing", False)
             if name == "connect":
                 self.connect_btn = button
             elif name == "disconnect":
@@ -284,11 +301,16 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.new_config_btn = QPushButton("New")
         self.new_config_btn.setToolTip("Create a CAN configuration")
         self.new_config_btn.clicked.connect(self.create_new_config)
+        self.edit_config_btn = QPushButton("Edit")
+        self.edit_config_btn.setToolTip("Edit the selected configuration (double-clicking it does the same).\n"
+                                        "Disconnect first to edit the one in use.")
+        self.edit_config_btn.clicked.connect(lambda: self.edit_configuration())
         self.import_config_btn = QPushButton("Import")
         self.import_config_btn.clicked.connect(self.import_config)
         self.export_config_btn = QPushButton("Export")
         self.export_config_btn.clicked.connect(self.export_config)
         btn_row.addWidget(self.new_config_btn)
+        btn_row.addWidget(self.edit_config_btn)
         btn_row.addWidget(self.import_config_btn)
         btn_row.addWidget(self.export_config_btn)
         config_layout.addLayout(btn_row)
@@ -497,6 +519,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             action.triggered.connect(lambda _checked, d=display: self.set_time_display(d))
             time_group.addAction(action)
             self._time_display_actions.append(action)
+        view_menu.addSeparator()
+        buttons_menu = view_menu.addMenu('Toolbar buttons')
+        buttons_menu.aboutToShow.connect(lambda: self.toolbar_buttons.fill(buttons_menu))
         view_menu.addSeparator()
         self._desktop_menu = view_menu.addMenu('Desktops')
         view_menu.addAction('Save desktop as...').triggered.connect(lambda: self.save_desktop())
@@ -707,16 +732,19 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
     # --- Configurations ---
 
     def edit_configuration(self, item=None):
+        """Edit (the Edit button, or a double-click) the selected configuration - not the one in use."""
         if self.can_bus is None:
-            self._open_configuration_dialog(dict(self.active_config or {}))
+            return self._open_configuration_dialog(dict(self.active_config or {}))
+        return None
 
     def create_new_config(self):
-        self._open_configuration_dialog({})
+        return self._open_configuration_dialog({})
 
     def _open_configuration_dialog(self, config):
         dialog = ConfigurationDialog(self, config, CONFIG_DIR, settings=self._settings)
         dialog.accepted.connect(self.load_configurations)
         dialog.show()
+        return dialog
 
     def import_config(self):
         """Copy a configuration file into the Configurations folder."""
@@ -825,6 +853,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         report_result(self, ok, text)
 
     def closeEvent(self, event):
+        if not self.close_form_designer():
+            event.ignore()          # Cancel, asked about the Form Designer's unsaved changes: nothing closes
+            return
         self._watch_keys(False)
         self.save_layout()          # before the panes go away, so they come back where they were
         self.node_timer.stop()

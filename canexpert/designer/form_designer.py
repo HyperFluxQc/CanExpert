@@ -4,12 +4,14 @@ Form Designer
 Visual editor for panel databases, in the spirit of CANoe's Panel Designer: drag controls from the
 palette (or DBC signals from the symbol list) onto pages, arrange them with multi-select, align,
 distribute, grid snap, resize handles and undo/redo, set their properties, and write the panel's
-Python script (per-control handlers and CAPL-style event decorators). Test mode runs the panel
-against the simulated ECU on a virtual CAN bus.
+Python script (per-control handlers and CAPL-style event decorators). Check panel finds the typos - in
+the form, its DBC bindings and its script - with where they are; Test mode runs the panel against the
+simulated ECU on a virtual CAN bus.
 """
 import os
 import re
 import tempfile
+import textwrap
 import threading
 import time
 import uuid
@@ -18,7 +20,7 @@ from datetime import date
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QKeySequence, QTextCursor
+from PyQt5.QtGui import QFontDatabase, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QMenuBar, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QStatusBar, QTabWidget,
@@ -33,13 +35,17 @@ from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
 from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
+from canexpert.panel.check import (ERROR, FORM, SCRIPT, VARIABLES, Problem, check_panel, check_panel_file,
+                                   display_name, summary)
 from canexpert.panel.controls import CONTROLS, WIDGET_GROUPS
 from canexpert.config import read_configurations
 from canexpert.panel.database import (DATABASES_DIR, parse_application_database, parse_widget, select_database,
                                       split_database_id)
+from canexpert.panel.problems_dialog import ProblemsDialog
 from canexpert.panel.runtime import SCRIPT_TEMPLATE
+from canexpert.panel.variables import parse_variables
 from canexpert.paths import CONFIG_DIR, EXAMPLE_FIRMWARE_DIR
-from canexpert.ui_common import SplitterPanel, enable_maximize
+from canexpert.ui_common import SplitterPanel, enable_maximize, make_main_window
 
 def portable_dbc_path(dbc_path: str, database_dir) -> str:
     """The DBC path as the panel file keeps it. Near the panel - in its folder, or anywhere under the folder
@@ -115,6 +121,7 @@ class TestPanelDialog(QDialog):
         self.panel.control_changed.connect(lambda name, value: self.runtime.post("control", name, value))
         self.runtime.dbc = self.panel.dbc
         self.runtime.handlers = self.panel.handlers()
+        self.runtime.set_variables(database.get("variables", []))
         self.flash_button = QPushButton("Flashing...")
         self.flash_button.setToolTip("Flash a .s19/.hex file into the simulated ECU, with the script's Flashing() "
                                      "or the built-in sequence")
@@ -243,13 +250,16 @@ class TestPanelDialog(QDialog):
 # -----------------------------------------------------------------------------
 
 class FormDesigner(QDialog):
-    """Main form designer dialog: a menu bar, the Form, Python script and Database tabs, a status line."""
+    """Main form designer window: a menu bar, the Form, Python script and Database tabs, a status line.
+
+    A window of its own (minimize, maximize, close): the main window opens it without a parent, so it has a
+    taskbar button of its own and the main window stays usable beside it (MainWindow.open_form_designer)."""
     saved = pyqtSignal(str)
 
     def __init__(self, parent=None, db_id: str = "", db_name: str = "", description: str = ""):
         super().__init__(parent)
-        enable_maximize(self)
-        self.setMinimumSize(900, 600)
+        make_main_window(self)
+        self.setMinimumSize(720, 480)       # small enough to maximize on a small screen at 125 or 150 %
         self.resize(1200, 780)
         self.database_dir = DATABASES_DIR
         self.db_id = db_id or f"new_{date.today().isoformat()}"
@@ -257,6 +267,7 @@ class FormDesigner(QDialog):
         self.description = description
         self._loaded_id = None          # the ID of the file on disk this form came from, if any
         self._dirty = False
+        self.problems_dialog = None     # what the last check found (show_problems)
 
         self.symbol_list = SymbolListPanel()
         self.palette = WidgetPalette()
@@ -309,9 +320,11 @@ class FormDesigner(QDialog):
         code_split.setSizes([640, 330])
         code_layout.addWidget(code_split, 1)
         self.database_page = self._database_page()
+        self.variables_page = self._variables_page()
         self.design_tabs = QTabWidget()
         self.design_tabs.addTab(self.canvas, "Form")
         self.design_tabs.addTab(self.code_page, "Python script")
+        self.design_tabs.addTab(self.variables_page, "Variables")
         self.design_tabs.addTab(self.database_page, "Database")
         self.design_tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -343,6 +356,7 @@ class FormDesigner(QDialog):
         for edit in (self.db_id_edit, self.db_name_edit, self.dbc_path_edit):
             edit.textChanged.connect(self._mark_dirty)
         self.desc_edit.textChanged.connect(self._mark_dirty)
+        self.variables_edit.textChanged.connect(self._mark_dirty)
         self.db_id_edit.textChanged.connect(self._refresh_id_hint)
         self._mark_clean()
 
@@ -425,6 +439,9 @@ class FormDesigner(QDialog):
         menu.aboutToShow.connect(lambda: self.handler_action.setEnabled(len(self.canvas.selection) == 1))
 
         menu = self.menus["test"] = bar.addMenu("&Test")
+        self._action(menu, "&Check the panel", self.show_check, "F6",
+                     "Find the typos in the form, its DBC bindings and its script, with where each one is")
+        menu.addSeparator()
         self._action(menu, "Test panel with the &simulated ECU", lambda: self.test_panel(), "F5",
                      "Run the panel and its script against the simulated ECU on a virtual CAN bus")
         self._action(menu, "Test panel &without an ECU", lambda: self.test_panel(simulate_ecu=False), "Shift+F5",
@@ -433,10 +450,19 @@ class FormDesigner(QDialog):
         menu = self.menus["help"] = bar.addMenu("&Help")
         self._action(menu, "Form Designer in the &manual", self.open_manual, "F1")
 
+        check_btn = QPushButton("Check panel")
+        check_btn.setToolTip("Find the typos in the form, its DBC bindings and its script, with where each one is "
+                             "and what was probably meant (F6)")
+        check_btn.clicked.connect(self.show_check)
         test_btn = QPushButton("Test panel...")
         test_btn.setToolTip("Run this panel and its script against the simulated ECU on a virtual CAN bus (F5)")
         test_btn.clicked.connect(lambda: self.test_panel())      # with the simulated ECU, not clicked's False
-        bar.setCornerWidget(test_btn, Qt.TopRightCorner)
+        corner = QWidget()
+        corner_layout = QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.addWidget(check_btn)
+        corner_layout.addWidget(test_btn)
+        bar.setCornerWidget(corner, Qt.TopRightCorner)
         return bar
 
     def _edit_target(self):
@@ -514,6 +540,63 @@ class FormDesigner(QDialog):
             self.recent_menu.addAction(f"No panel in {self.database_dir}").setEnabled(False)
 
     # --- the Database tab --------------------------------------------------------------------
+
+    VARIABLES_EXAMPLE = ("Calib Data (memory 0x20001000, little-endian)\n* uint32 temperature\n* uint32 Axis\n"
+                         "* uint32 FOC[32]\n\nIdle (DID 0x0110)\n* uint16 speed")
+
+    def _variables_page(self):
+        """The panel's structured variables (variables.py), written as they are thought of."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        guide = QLabel("A variable's name on a line, then its fields, one a line: <i>type name</i>, or <i>type "
+                       "name[count]</i> for an array (uint8 to uint64, int8 to int64, float32, float64, bool, "
+                       "char). In brackets after the name, where it lives in the ECU - <i>DID 0x0110</i> or "
+                       "<i>memory 0x20001000</i> - and <i>little-endian</i> if it is. A struct pasted from a C header "
+                       "works too. A <b>Variable List</b> shows one, a control named after a field (Calib Data.FOC[3]) "
+                       "shows that field, and the script has it as <i>api.var(\"Calib Data\")</i>.")
+        guide.setWordWrap(True)
+        guide.setStyleSheet("color: gray;")
+        layout.addWidget(guide)
+        self.variables_edit = QPlainTextEdit()
+        font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        if "Consolas" in QFontDatabase().families():
+            font.setFamily("Consolas")
+        self.variables_edit.setFont(font)
+        self.variables_edit.setPlaceholderText(self.VARIABLES_EXAMPLE)
+        layout.addWidget(self.variables_edit, 1)
+        self.variables_status = QLabel("")
+        self.variables_status.setWordWrap(True)
+        layout.addWidget(self.variables_status)
+        self.structures = []
+        self._variables_timer = QTimer(self)
+        self._variables_timer.setSingleShot(True)
+        self._variables_timer.setInterval(300)
+        self._variables_timer.timeout.connect(self.read_variables)
+        self.variables_edit.textChanged.connect(self._variables_timer.start)
+        return page
+
+    def read_variables(self):
+        """Read the Variables tab: what it defines, or what is wrong in it, under it - and the Variable Lists on the
+        form show the variables as they are now."""
+        self.structures, problems = parse_variables(self.variables_edit.toPlainText())
+        if problems:
+            self.variables_status.setStyleSheet("color: red;")
+            self.variables_status.setText("\n".join(f"Line {line}: {message}" for line, message in problems[:4]) +
+                                          (f"\n... and {len(problems) - 4} more" if len(problems) > 4 else ""))
+        else:
+            self.variables_status.setStyleSheet("color: gray;")
+            self.variables_status.setText("\n".join(item.describe() for item in self.structures) or
+                                          "No variable: the placeholder shows how to write one.")
+        self.canvas.variables = self.structures
+        self.properties.variable_names = [item.name for item in self.structures]
+        if any(data.get("type") == "var_list" for page in self.canvas.pages for data in page["widgets"]):
+            self.canvas._rebuild()
+        return self.structures, problems
+
+    def _variables_xml_text(self) -> str:
+        """The Variables tab as the database keeps it: indented under <variables>, the lines as they were."""
+        text = self.variables_edit.toPlainText().rstrip()
+        return "\n" + textwrap.indent(text, "        ") + "\n    " if text.strip() else ""
 
     def _database_page(self):
         page = QWidget()
@@ -665,6 +748,10 @@ class FormDesigner(QDialog):
         that is not on screen asks nobody."""
         if not self._dirty or not self.isVisible():
             return True
+        if self.isMinimized():      # closed from its taskbar button or with CAN Expert: the question must be seen
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        self.raise_()
+        self.activateWindow()
         answer = QMessageBox.question(self, "Form Designer", f"Save the changes to {self._current_id()}?",
                                       QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
                                       QMessageBox.Save)
@@ -676,6 +763,12 @@ class FormDesigner(QDialog):
         """Esc, the window's close button and Close: not without asking about unsaved changes."""
         if self._confirm_discard():
             super().reject()
+
+    def done(self, result):
+        """Closing: the test panels of this form close with it, and their virtual buses and simulated ECUs stop."""
+        for dialog in self.findChildren(TestPanelDialog):
+            dialog.close()
+        super().done(result)
 
     # --- script -------------------------------------------------------------------------
 
@@ -729,6 +822,9 @@ class FormDesigner(QDialog):
                 for data in form_page["widgets"]:
                     words += [control_name(data), str(data.get("handler", ""))]
             words += self.symbol_list.get_dbc_signals()
+            for structure in self.structures:
+                words += [structure.name, f'api.var("{structure.name}")']
+                words += [f"{structure.name}.{path}" for path in structure.paths()[:64]]
             self.code_editor.set_completion_words(words)
         elif page is self.database_page:
             self._refresh_database_info()
@@ -803,6 +899,8 @@ class FormDesigner(QDialog):
         self.db_id_edit.setText(f"new_{date.today().isoformat()}")
         self.db_name_edit.setText(f"new_{date.today().isoformat()}")
         self.desc_edit.clear()
+        self.variables_edit.clear()
+        self.read_variables()
         self.remove_dbc()
         self.code_editor.setPlainText(SCRIPT_TEMPLATE)
         self._loaded_id = None
@@ -821,6 +919,7 @@ class FormDesigner(QDialog):
         path = str(path)
         try:
             root = ET.parse(path).getroot()
+            pages = self._read_pages(root)             # a value the panel cannot take stops here, before any change
             self.database_dir = Path(path).resolve().parent
             self.canvas.base_dir = self.properties.base_dir = self.database_dir
             self.db_id = Path(path).stem
@@ -830,6 +929,9 @@ class FormDesigner(QDialog):
             desc = root.find("description")
             self.description = desc.text.strip() if desc is not None and desc.text else ""
             self.desc_edit.setPlainText(self.description)
+            variables = textwrap.dedent(root.findtext("variables") or "")
+            self.variables_edit.setPlainText((variables[1:] if variables.startswith("\n") else variables).rstrip())
+            self.read_variables()
             dbc_el = root.find("dbc_path")
             dbc_path = root.get("dbc_path", "") or (dbc_el.text.strip() if dbc_el is not None and dbc_el.text else "")
             if dbc_path and not Path(dbc_path).is_absolute():
@@ -840,29 +942,44 @@ class FormDesigner(QDialog):
             else:
                 self.remove_dbc()
 
-            pages_el = root.find("pages")
-            if pages_el is not None:
-                data = {"pages": []}
-                for page_el in pages_el.findall("page"):
-                    # Document order is the z-order (group boxes stay behind their contents).
-                    widgets = [parse_widget(elem) for elem in page_el.iter() if elem.tag in WIDGET_GROUPS]
-                    data["pages"].append({"name": page_el.get("name", "Page"), "widgets": widgets})
-                self.canvas.load_from_data(data)
-            else:
-                data = {tag: [] for tag in ["buttons", "values", "checkboxes", "sliders", "labels"]}
-                for tag in data:
-                    for elem in root.findall(".//" + {"checkboxes": "checkbox"}.get(tag, tag[:-1])):
-                        data[tag].append(parse_widget(elem))
-                self.canvas.load_from_data(data)
+            self.canvas.load_from_data(pages)
             self.properties.clear()
             self._load_script()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load: {e}")
+            name = Path(path).name
+            problems = check_panel_file(path)
+            if not any(problem.is_error for problem in problems):
+                problems.insert(0, Problem(ERROR, str(e), FORM, path))
+            self.show_problems(problems, f"{name} cannot be opened",
+                               "Put these errors right in the file - with a text editor - and open it again. "
+                               "Nothing was changed.")
+            self.status.showMessage(f"{name} cannot be opened: {e}", 10000)
             return False
         self._loaded_id = self.db_id
         self._mark_clean()
         self.status.showMessage(f"Opened {path}", 5000)
+        problems = check_panel_file(path, dbc=self.symbol_list.dbc)
+        if problems:
+            self.show_problems(problems, f"{Path(path).name}: {summary(problems)}",
+                               "It is open: put them right here and save. Double-click one to go to it.")
         return True
+
+    @staticmethod
+    def _read_pages(root) -> dict:
+        """The pages of a database's XML and their controls, as the canvas takes them."""
+        pages_el = root.find("pages")
+        if pages_el is not None:
+            data = {"pages": []}
+            for page_el in pages_el.findall("page"):
+                # Document order is the z-order (group boxes stay behind their contents).
+                widgets = [parse_widget(elem) for elem in page_el.iter() if elem.tag in WIDGET_GROUPS]
+                data["pages"].append({"name": page_el.get("name", "Page"), "widgets": widgets})
+            return data
+        data = {tag: [] for tag in ["buttons", "values", "checkboxes", "sliders", "labels"]}
+        for tag in data:
+            for elem in root.findall(".//" + {"checkboxes": "checkbox"}.get(tag, tag[:-1])):
+                data[tag].append(parse_widget(elem))
+        return data
 
     def _build_root(self, db_name, description):
         data = self.canvas.get_data()
@@ -872,6 +989,9 @@ class FormDesigner(QDialog):
             root.set("dbc_path", dbc_path)
         if description:
             ET.SubElement(root, "description").text = description
+        variables = self._variables_xml_text()
+        if variables:
+            ET.SubElement(root, "variables").text = variables
         pages_el = ET.SubElement(root, "pages")
         for page in data.get("pages", []):
             page_el = ET.SubElement(pages_el, "page", name=page.get("name", "Page"))
@@ -931,11 +1051,87 @@ class FormDesigner(QDialog):
         self.db_id_edit.setText(name.strip())
         return self.save()
 
+    # --- checking --------------------------------------------------------------------------------------
+
+    def check_form(self) -> list:
+        """The panel as it is on screen - the form, its DBC bindings and its script - checked (check.py)."""
+        root = self._build_root(self.db_name_edit.text().strip() or self._current_id(),
+                                self.desc_edit.toPlainText().strip())
+        return check_panel(ET.tostring(root, encoding="utf-8"), "", self.code_editor.toPlainText(),
+                           str(self._script_path()), self.database_dir, dbc=self.symbol_list.dbc)
+
+    def show_check(self):
+        """Check panel (F6): what the check finds, or that it finds nothing."""
+        problems = self.check_form()
+        if problems:
+            self.status.showMessage(f"Check: {summary(problems)}", 10000)
+            return self.show_problems(problems, f"{self._current_id()}: {summary(problems)}",
+                                      "Errors stop the panel from loading or its script from starting; warnings are "
+                                      "what will not work as written. Double-click one to go to it.")
+        self.status.showMessage("Check: no problems found", 10000)
+        return self.show_problems([], f"{self._current_id()}: no problems found",
+                                  "The form, its DBC bindings and its script were checked.")
+
+    def show_problems(self, problems, heading, note=""):
+        """The problems window of this designer, filled and in front."""
+        if self.problems_dialog is None:
+            self.problems_dialog = ProblemsDialog(self)
+            self.problems_dialog.go_to.connect(self.go_to_problem)
+        return self.problems_dialog.show_problems(problems, heading, note)
+
+    def go_to_problem(self, problem):
+        """Show where a problem is: its line in the script, or its control on the form, selected."""
+        self.raise_()
+        self.activateWindow()
+        if problem.kind == SCRIPT:
+            if problem.line:
+                self.design_tabs.setCurrentWidget(self.code_page)
+                self.code_editor.go_to_line(problem.line, max(problem.column - 1, 0))
+            return
+        if problem.kind == VARIABLES:
+            self.design_tabs.setCurrentWidget(self.variables_page)
+            if problem.position:
+                block = self.variables_edit.document().findBlockByNumber(max(0, problem.position[0] - 1))
+                self.variables_edit.setTextCursor(QTextCursor(block))
+                self.variables_edit.setFocus()
+            return
+        found = self._find_control(problem)
+        if found is not None:
+            page, index = found
+            self.design_tabs.setCurrentWidget(self.canvas)
+            if self.canvas.current_page_index != page:
+                self.canvas._switch_page(page)
+            self.canvas.set_selection([index])
+
+    def _find_control(self, problem):
+        """(page, index) of the control a problem is about: at its place when the name there matches, else the
+        first control of that name."""
+        pages = self.canvas.pages
+        if problem.position:
+            page, index = problem.position
+            if page < len(pages) and index < len(pages[page]["widgets"]) and \
+                    display_name(pages[page]["widgets"][index]) == problem.control:
+                return page, index
+        for page, form_page in enumerate(pages):
+            for index, data in enumerate(form_page["widgets"]):
+                if problem.control and display_name(data) == problem.control:
+                    return page, index
+        return None
+
     def test_panel(self, simulate_ecu=True):
-        """Run the form as it is now (no need to save) in a test window."""
-        if not self.check_syntax():
-            self.design_tabs.setCurrentWidget(self.code_page)
+        """Run the form as it is now (no need to save) in a test window - not while the check finds errors."""
+        self.check_syntax()
+        problems = self.check_form()
+        errors = [problem for problem in problems if problem.is_error]
+        if errors:
+            self.show_problems(problems, "The panel cannot be tested yet",
+                               "Put the errors right first - warnings do not stop a test. Double-click one to go "
+                               "to it.")
+            if errors[0].kind == SCRIPT:
+                self.go_to_problem(errors[0])
             return None
+        if problems:
+            self.status.showMessage(f"Testing with {summary(problems)}: Check panel (F6) lists them", 10000)
         try:
             root = self._build_root(self.db_name_edit.text().strip() or "Test", self.desc_edit.toPlainText().strip())
             temp = Path(tempfile.mkdtemp()) / "test_panel.xml"

@@ -74,7 +74,8 @@ from canexpert.test_expert.variants import Identification, identify, is_odx
 from canexpert.testing.report import COLOURS, summary_text
 from canexpert.testing.runner import BLOCKED, ERROR, FAILED, INFO, PASS, PASSED
 from canexpert.testing.window import MemorySettings, step_text
-from canexpert.ui_common import app_icon, app_settings, enable_maximize, is_dark_theme, toolbar_icon
+from canexpert.ui_common import (ToolbarButtons, app_icon, app_settings, enable_maximize, is_dark_theme,
+                                 toolbar_icon)
 from canexpert.uds.observer import SERVICE_NAMES
 
 TEST_EXPERT_DIR = APP_DIR / "TestExpert"          # reports/ and the recordings of the runs
@@ -218,10 +219,13 @@ class TestExpertWindow(QMainWindow):
         run_menu = self.menuBar().addMenu("&Run")
         for entry in ("connect", None, "run", "rerun", "stop", None, "discover", "compare", "report"):
             self._menu_entry(run_menu, entry)
+        self._build_toolbar()
+        view_menu = self.menuBar().addMenu("&View")
+        buttons_menu = view_menu.addMenu("&Toolbar buttons")
+        buttons_menu.aboutToShow.connect(lambda: self.toolbar_buttons.fill(buttons_menu))
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.actions["manual"])
         help_menu.addAction("&About").triggered.connect(self.show_about)
-        self._build_toolbar()
 
         splitter = QSplitter(Qt.Horizontal)
         side = QTabWidget()
@@ -396,6 +400,8 @@ class TestExpertWindow(QMainWindow):
             QToolBar QToolButton:pressed { background: palette(mid); }
         """)
         self.toolbar = toolbar
+        # Right-click it (or View > Toolbar buttons) to choose the buttons it shows.
+        self.toolbar_buttons = ToolbarButtons(toolbar, self.settings, PREFIX + "toolbar_hidden")
         for entry in TOOLBAR:
             if entry is None:
                 toolbar.addSeparator()
@@ -406,7 +412,7 @@ class TestExpertWindow(QMainWindow):
             button.setIconSize(QSize(28, 28))
             button.setMinimumSize(76, 62)
             button.setAccessibleName(entry[1])
-            toolbar.addWidget(button)
+            self.toolbar_buttons.add(entry[0], entry[1], toolbar.addWidget(button))
         self.addToolBar(toolbar)
 
     def _refresh_icons(self):

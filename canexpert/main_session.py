@@ -1,7 +1,8 @@
 """
 The main window's measurement: Connect (the database, the adapter, the CAN worker and the panel script) and
 Disconnect, and the one path every frame takes - into the history, the recording, the panel, the script, the
-status strip and every open tool window.
+status strip and every open tool window. What a check of the panel finds is shown at Connect: why it failed,
+when the panel is the reason, else the panel's problems, once for each version of its files.
 """
 import time
 from pathlib import Path
@@ -14,13 +15,16 @@ from canexpert.can_bus import CanWorker, ReceiveMailbox, channel_key
 from canexpert.channel_setup import load_setup, open_configured
 from canexpert.config import uds_transport, validate_config
 from canexpert.j1939_window import address_setting
-from canexpert.panel.database import load_application_database
+from canexpert.panel.check import ERROR, FORM, Problem, check_panel_file, script_file, summary
+from canexpert.panel.database import parse_application_database, select_database
+from canexpert.panel.problems_dialog import ProblemsDialog
 from canexpert.panel.runtime import ScriptRuntime
 from canexpert.transport_settings import apply_transport, load_transport
 from canexpert.status_strip import DiagnosticState
 from canexpert.workspace import fit_on_screen
 
 MARKER_HISTORY = 1000              # markers kept for a window opened later
+OFFLINE_SETTING = "offline"        # settings: the kill switch was on - CAN Expert starts off the bus
 
 
 class Session:
@@ -30,17 +34,24 @@ class Session:
         """Connect: load the active configuration's panel database and run its script on the bus."""
         if self.can_bus is not None:
             return
+        if self.offline:
+            self._set_status("Off the bus: release Kill CAN (Ctrl+F9) to connect", "red")
+            return
         if not self.active_config or not self.selected_channel_config:
             QMessageBox.warning(self, "Connection", "Select a configuration and a CAN receiver first.")
             return
         self.stop_ecu_monitor()  # the session sends TesterPresent itself
+        database_path, panel_failure = None, False     # panel_failure: a failure now would be the panel's
         try:
             config = self.session_configuration()
-            database = load_application_database(config["database_family"], self.databases_dir)
-            if database is None:
+            database_path = select_database(self.databases_dir, config["database_family"])
+            if database_path is None:
                 raise ValueError("No matching database. Create a panel in Form Designer first.")
+            panel_failure = True
+            database = parse_application_database(database_path)
             # Validate/build before opening hardware, so errors leave a usable UI.
             self.build_application_ui(database)
+            panel_failure = False
             cfg = self.selected_channel_config
             setup = load_setup(self._settings, cfg)
             self.can_bus = open_configured(cfg, config["bitrate"], setup, config)
@@ -85,13 +96,17 @@ class Session:
             script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
             runtime.dbc = self.panel.dbc
             runtime.handlers = self.panel.handlers()
+            runtime.set_variables(database.get("variables", []))
+            panel_failure = True
             runtime.start(script_path)
+            panel_failure = False
             self._toolbar_actions["connect"].setEnabled(False)
             self._toolbar_actions["disconnect"].setEnabled(True)
             self.status_strip.connected()
             self._set_flashing_available(False)
-            self.flashing_toolbar_item.setVisible(True)
+            self.toolbar_buttons.set_available("flashing", True)
             self.config_list.setEnabled(False)
+            self.edit_config_btn.setEnabled(False)          # the configuration in use stays as it is
             self.database_pane.toggleView(True)
             self.database_pane.setAsCurrentTab()
             fit_on_screen(self.database_pane)
@@ -101,10 +116,50 @@ class Session:
             self._update_diagnostic_ids()
             self._set_status(f"Connected — {Path(database['source_path']).name}", "green")
             self.log_verbose(f"Loaded {database['source_path']}")
+            self.report_panel_problems(database_path)
         except Exception as exc:
             self.on_disconnect_clicked()
             self._set_status(f"Connection failed: {exc}", "red")
             self.log_verbose(str(exc))
+            if panel_failure:
+                self.report_panel_problems(database_path, failure=exc)
+
+    def report_panel_problems(self, path, failure=None):
+        """What a check of the panel database and its script finds (check.py), in the Panel check window and
+        the log. After a Connect the panel stopped: why, in full. After one that worked: its problems - once for
+        each version of the files, not at every Connect."""
+        path = Path(path)
+        problems = check_panel_file(path, dbc=self.panel.dbc if self.panel is not None else None)
+        if failure is not None:
+            if not any(problem.is_error for problem in problems):
+                problems.insert(0, Problem(ERROR, str(failure), FORM, str(path)))
+            heading = f"The panel {path.name} cannot be loaded"
+            note = ("Connect stopped here. Double-click a problem to open the panel in the Form Designer at that "
+                    "place; put it right, save, and connect again.")
+        else:
+            version = (str(path), *(item.stat().st_mtime_ns for item in (path, script_file(path)) if item.exists()))
+            if not problems or version in self._panels_reported:
+                return None
+            self._panels_reported.add(version)
+            heading = f"The panel {path.name} has {summary(problems)}"
+            note = ("It is running; what is listed will not work as written. Double-click a problem to open the "
+                    "panel in the Form Designer at that place.")
+        for problem in problems:
+            self.log_verbose(problem.text())
+        if self.problems_dialog is None:
+            self.problems_dialog = ProblemsDialog(self, "Open in Form Designer")
+            self.problems_dialog.go_to.connect(self.open_panel_problem)
+        self._problems_path = path
+        return self.problems_dialog.show_problems(problems, heading, note)
+
+    def open_panel_problem(self, problem):
+        """A problem of the panel database, in the Form Designer: the panel opened there, at that place."""
+        designer = self.open_form_designer()
+        path = self._problems_path.resolve()
+        if (designer.database_dir.resolve(), designer._loaded_id) != (path.parent, path.stem) and \
+                not designer.load(path):
+            return
+        designer.go_to_problem(problem)
 
     def session_configuration(self) -> dict:
         """The selected configuration as a session uses it: validated, with its ISO-TP settings folded in
@@ -124,7 +179,42 @@ class Session:
         self.on_disconnect_clicked()
         self._set_status(error, "red")
 
-    def on_disconnect_clicked(self):
+    def set_offline(self, offline: bool):
+        """The kill switch (Kill CAN, Ctrl+F9). On: CAN Expert off the bus at once - the Transmit window's
+        messages and nodes, any ECU scan, the session (its script stopped without its @on_stop handlers, which
+        could send) and the ECU check stop, every adapter is closed, and nothing opens one again until the switch
+        is released: not Connect, not the ECU check, not a scan. Kept in the settings, so CAN Expert starts off
+        the bus if it was left so. Off: back on the bus, and the ECU check starts again as at startup."""
+        from canexpert.ecu_scan import EcuScanDialog
+        offline = bool(offline)
+        action = self._toolbar_actions["kill"]
+        if action.isChecked() != offline:
+            action.setChecked(offline)                   # the button follows; it calls back here
+            return
+        self.offline = offline
+        self._settings.setValue(OFFLINE_SETTING, offline)
+        if offline:
+            transmit = self.tool_widget("transmit")
+            if transmit is not None:
+                transmit.stop_sending()
+            for scan in self.findChildren(EcuScanDialog):
+                scan.halt("CAN Expert went off the bus (Kill CAN)")
+            if self.can_bus is not None:
+                self.on_disconnect_clicked(hard=True)
+            self.stop_ecu_monitor()
+            self._toolbar_actions["connect"].setEnabled(False)
+            self.log_verbose("Kill CAN: off the bus - nothing is sent or received until it is released")
+            self._set_status("Off the bus: CAN Expert sends and receives nothing (Kill CAN, Ctrl+F9, to go back on)",
+                             "red")
+        else:
+            self._toolbar_actions["connect"].setEnabled(self.can_bus is None)
+            self.log_verbose("Kill CAN released: back on the bus")
+            self._set_status("Back on the bus", "gray")
+            self.check_last_channel()
+        self._label_channels()
+
+    def on_disconnect_clicked(self, hard=False):
+        """End the session. hard (the kill switch): its script is stopped without its @on_stop handlers."""
         self.session_generation += 1
         self._watch_keys(False)
         if self.flash_runner is not None:
@@ -133,9 +223,9 @@ class Session:
         if tests is not None:
             tests.stop()                    # the running test case ends; its mailboxes close with the worker
         self._close_flash_dialog()
-        self.flashing_toolbar_item.setVisible(False)
+        self.toolbar_buttons.set_available("flashing", False)
         if self.script_runtime:
-            self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
+            self.script_runtime.stop(run_stop_handlers=not hard)   # @on_stop handlers, then the bus revoked
             self.script_runtime = None
         if self.worker is not None:
             self.worker.stop()
@@ -150,10 +240,11 @@ class Session:
         self.connected_channel_config = None
         self.stop_recording()
         self._label_channels()
-        self._toolbar_actions["connect"].setEnabled(True)
+        self._toolbar_actions["connect"].setEnabled(not self.offline)
         self._toolbar_actions["disconnect"].setEnabled(False)
         self.status_strip.disconnected()
         self.config_list.setEnabled(True)
+        self.edit_config_btn.setEnabled(True)
         self._restore_side_panels()
         self.database_pane.toggleView(False)
         self.channels_dock.show()

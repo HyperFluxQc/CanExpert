@@ -1,7 +1,7 @@
 """
-The main window's CAN Channels: the receivers found, the channels used before, the ECUs that answer on each
-and the database each can load, the ECU check (TesterPresent while no database is connected), the scan for
-ECUs and the channel setup.
+The main window's CAN Channels: the receivers found - the one in use in bold -, the ECUs that answer on each and
+the database each can load, the channel used last (selected and checked at the next start), the ECU check
+(TesterPresent while no database is connected), the scan for ECUs and the channel setup.
 """
 import json
 import time
@@ -19,31 +19,24 @@ from canexpert.panel.database import select_database
 
 
 LAST_CHANNEL = "last_channel"      # settings: the channel to select and check at the next start
-USED_CHANNELS = "used_channels"    # settings: the channels connected before, shown in bold
 
 
 class Channels:
     """The CAN Channels panel and the ECU check of MainWindow (main_window.py)."""
 
     def _read_channel_history(self):
-        """The channel used last and every channel connected before, as saved by _remember_channel()."""
-        settings = self._settings
+        """The channel used last, as saved by _remember_channel()."""
         try:
-            used = json.loads(settings.value(USED_CHANNELS, "[]") or "[]")
-            last = json.loads(settings.value(LAST_CHANNEL, "null") or "null")
+            last = json.loads(self._settings.value(LAST_CHANNEL, "null") or "null")
         except ValueError:
-            used, last = [], None
-        self.used_channels = {tuple(key) for key in used if isinstance(key, list)}
+            last = None
         self.last_channel = tuple(last) if isinstance(last, list) else None
 
     def _remember_channel(self, channel_config):
         """Keep the channel as the one to select and check at the next start."""
         key = channel_key(channel_config)
         self.last_channel = key
-        self.used_channels.add(key)
-        settings = self._settings
-        settings.setValue(LAST_CHANNEL, json.dumps(list(key)))
-        settings.setValue(USED_CHANNELS, json.dumps([list(used) for used in self.used_channels]))
+        self._settings.setValue(LAST_CHANNEL, json.dumps(list(key)))
 
     def check_last_channel(self):
         """At startup: select the channel used last and start checking its ECUs with TesterPresent, so a
@@ -83,13 +76,9 @@ class Channels:
         for cfg in self.can_channels:
             item = QTreeWidgetItem([self._channel_label(cfg)])
             item.setData(0, Qt.UserRole, cfg)
-            key = channel_key(cfg)
-            if key in self.used_channels:  # channels connected before stand out
-                font = item.font(0)
-                font.setBold(True)
-                item.setFont(0, font)
             self.channel_list.addTopLevelItem(item)
-            self.channel_items[key] = item
+            self.channel_items[channel_key(cfg)] = item
+        self._label_channels()
         if not self.can_channels:
             self.channel_list.addTopLevelItem(QTreeWidgetItem(["No CAN receivers found"]))
         remembered = self.channel_items.get(self.last_channel)
@@ -112,8 +101,13 @@ class Channels:
         return label
 
     def _label_channels(self):
-        for item in self.channel_items.values():
+        """Each channel's label - [Connected], [Checking ECUs], [listen-only] - and the one in use in bold: the
+        session's, or the one whose ECUs are checked. A channel used before is not, once it is not in use."""
+        for key, item in self.channel_items.items():
             item.setText(0, self._channel_label(item.data(0, Qt.UserRole)))
+            font = item.font(0)
+            font.setBold(self._channel_checked(key))
+            item.setFont(0, font)
 
     def _channel_checked(self, key):
         """True while ECU replies on this channel are being watched: a database session or the ECU check."""
@@ -181,6 +175,9 @@ class Channels:
         """Send TesterPresent on the channel at the configuration's interval and watch the ECU replies:
         each ECU shows Responding, or Lost connection after the node loss timeout."""
         self.stop_ecu_monitor()
+        if self.offline:
+            self.log_verbose("ECU check not started: CAN Expert is off the bus (Kill CAN)")
+            return
         channel = channel_config.get("channel", 0)
         setup = load_setup(self._settings, channel_config)
         if setup.listen_only:
@@ -252,7 +249,7 @@ class Channels:
         menu = QMenu(self)
         if self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
             menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
-        elif self.can_bus is None and self.active_config:
+        elif self.can_bus is None and self.active_config and not self.offline:
             menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
         menu.addSeparator()
         menu.addAction("Scan for ECUs on this channel...", lambda: self.open_ecu_scan(cfg))
@@ -271,6 +268,8 @@ class Channels:
     def _scan_bus(self, channel_config=None):
         """(bus, mailbox or None, close, padding) for a scan: a mailbox on the session or the ECU check when
         they run on that channel - their TesterPresent is paused meanwhile - else the channel itself."""
+        if self.offline:
+            raise ValueError("CAN Expert is off the bus: release Kill CAN (Ctrl+F9) first.")
         wanted = channel_config or self.connected_channel_config or self.monitor_channel or self.selected_channel_config
         if wanted is None:
             raise ValueError("Select a CAN channel first.")
@@ -311,7 +310,7 @@ class Channels:
                                                 and key == channel_key(self.connected_channel_config))
         bitrate = int((self.session_config or self.active_config or {}).get("bitrate", 500000))
         dialog = ChannelSetupDialog(channel_config, load_setup(self._settings, channel_config), bitrate, self,
-                                    in_use=in_use)
+                                    in_use=in_use, offline=self.offline)
         if dialog.exec_() == ChannelSetupDialog.Accepted:
             save_setup(self._settings, channel_config, dialog.setup)
             self._label_channels()

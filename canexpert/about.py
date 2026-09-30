@@ -32,7 +32,7 @@ from canexpert.ui_common import app_icon
 # __version__.
 LIBRARIES = (("python-can", "python-can", "can"), ("cantools", "cantools", "cantools"),
              ("odxtools", "odxtools", "odxtools"), ("pyqtgraph", "pyqtgraph", "pyqtgraph"),
-             ("PyQtAds", "PyQtAds", "PyQtAds"))
+             ("PyQtAds", "PyQtAds", "PyQtAds"), ("pyflakes", "pyflakes", "pyflakes"))
 # The driver DLL each adapter's python-can interface loads, 64-bit name first.
 DRIVERS = (("Kvaser CANlib", ("canlib32",)), ("Vector XL Driver Library", ("vxlapi64", "vxlapi")),
            ("IXXAT VCI", ("vcinpl2", "vcinpl")))

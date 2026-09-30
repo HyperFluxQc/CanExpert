@@ -57,7 +57,7 @@ for every push to `main` and every `v*` tag (the *Windows programs* job's artifa
 
 ## Usage
 
-1. The application lists configurations and restores the last selected one. The CAN receiver used last is selected again and shown in **bold** (as is every receiver connected before), and CAN Expert starts checking it with TesterPresent straight away.
+1. The application lists configurations and restores the last selected one. The CAN receiver used last is selected again, and CAN Expert starts checking it with TesterPresent straight away. The receiver in use - connected, or checking its ECUs - is shown in **bold**.
 2. An ECU that answers appears under its receiver, together with the database that configuration can load: **double-click that entry** (or the receiver) to load it, exactly as **Connect** does.
 3. Create a configuration or double-click one to edit its CAN IDs, TesterPresent interval, node timeout and optional database family.
 4. Or select a CAN receiver yourself and click **Connect**. The newest matching database is loaded before communication starts.

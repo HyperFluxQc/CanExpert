@@ -6,7 +6,8 @@ script hears.
 """
 import time
 
-from PyQt5.QtCore import QEvent
+from PyQt5 import sip
+from PyQt5.QtCore import QByteArray, QEvent, Qt
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAbstractSpinBox,
@@ -30,18 +31,55 @@ from canexpert.trace_window import TraceWindow
 from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
 from canexpert.testing.window import TestWindow
+from canexpert.ui_common import fit_new_window
 from canexpert.workspace import fit_on_screen, set_content
 from canexpert.write_window import WriteWindow
+
+
+DESIGNER_GEOMETRY = "form_designer/geometry"     # its size, place and maximized state when it was last closed
 
 
 class ToolWindows:
     """The tool windows of MainWindow (main_window.py)."""
 
     def open_form_designer(self):
-        """Open the Form Designer dialog."""
-        designer = FormDesigner(self)
-        designer.saved.connect(lambda p: self.load_configurations())
-        designer.exec_()
+        """The Form Designer: a window of its own beside this one, not owned by it - a taskbar button of its
+        own to minimize to, maximize, and this window usable while it is open. Opened again, the open one comes
+        to the front, restored if it was minimized, rather than a second copy of it."""
+        designer = self.form_designer
+        if designer is None or sip.isdeleted(designer) or not designer.isVisible():
+            designer = self.form_designer = FormDesigner()
+            designer.setAttribute(Qt.WA_DeleteOnClose)     # what was not saved goes with it; the next one is new
+            designer.saved.connect(lambda _path: self.load_configurations())
+            designer.finished.connect(
+                lambda _result, d=designer: self._settings.setValue(DESIGNER_GEOMETRY, d.saveGeometry()))
+            geometry = self._settings.value(DESIGNER_GEOMETRY)
+            if not (isinstance(geometry, (QByteArray, bytes)) and designer.restoreGeometry(geometry)):
+                fit_new_window(designer, self)
+            designer.show()
+        elif designer.isMinimized():
+            designer.setWindowState((designer.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        designer.raise_()
+        designer.activateWindow()
+        return designer
+
+    def close_form_designer(self) -> bool:
+        """Close the Form Designer if it is open, asking about its unsaved changes. False if it stays open."""
+        designer = self.form_designer
+        if designer is None or sip.isdeleted(designer) or not designer.isVisible():
+            return True
+        return designer.close()
+
+    def _in_form_designer(self, widget) -> bool:
+        """Whether a widget is the Form Designer's, or one of the windows opened from it (its test panels)."""
+        designer = self.form_designer
+        if designer is None or sip.isdeleted(designer):
+            return False
+        while widget is not None:
+            if widget is designer:
+                return True
+            widget = widget.parentWidget()
+        return False
 
     def tool_widget(self, name):
         """The widget of a tool window that was opened, else None (nothing is created here)."""
@@ -159,10 +197,13 @@ class ToolWindows:
         return super().eventFilter(watched, event)
 
     def _key_pressed(self, event):
-        """Hand a key to the script - unless it is being typed into a field, or a dialog is waiting."""
+        """Hand a key to the script - unless it is being typed into a field, a dialog is waiting, or it is for
+        the Form Designer (a Delete meant for its form is not the panel's)."""
         if event.isAutoRepeat() or QApplication.activeModalWidget() is not None:
             return
         focus = QApplication.focusWidget()
+        if self._in_form_designer(focus or QApplication.activeWindow()):
+            return
         if isinstance(focus, (QLineEdit, QAbstractSpinBox)) or \
                 (isinstance(focus, (QPlainTextEdit, QTextEdit)) and not focus.isReadOnly()) or \
                 (isinstance(focus, QComboBox) and focus.isEditable()):

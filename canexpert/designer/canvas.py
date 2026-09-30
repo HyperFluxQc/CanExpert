@@ -3,10 +3,11 @@ Form Designer canvas: the widgets on the page (move, resize, select, z-order), t
 palette and DBC signals, and FormCanvas with its pages, layout tools, clipboard and undo/redo.
 """
 import copy
+import re
 import time
 
 from PyQt5.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QPalette, QPen, QPolygonF
+from PyQt5.QtGui import QColor, QPainterPath, QPalette, QPen, QPolygonF
 from PyQt5.QtWidgets import (
     QFrame, QGraphicsItem, QGraphicsProxyWidget, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QPushButton, QRubberBand, QToolButton, QVBoxLayout,
@@ -30,16 +31,25 @@ class CanvasItem(QGraphicsProxyWidget):
         super().__init__()
         self.canvas, self.index, self.kind = canvas, index, kind
         self.setAcceptHoverEvents(False)
+
+    def show_control(self, widget):
+        """Show a preview of the control. It is a picture to move, whatever it is: the move cursor, not the text
+        cursor an I/O box's line edit would bring, and no keyboard focus."""
+        self.setWidget(widget)
         self.setFlag(QGraphicsItem.ItemIsFocusable, False)
         self.setCursor(Qt.SizeAllCursor)
 
-    def is_container_interior(self, scene_pos):
-        """Inside a group box, away from its title and border: a rubber-band start, not a move."""
-        if self.kind != "group_box":
-            return False
-        local = self.mapFromScene(scene_pos)
+    def shape(self):
+        """What a click hits: all of a control - but only the title and frame of a group box, so the controls
+        inside it can be grabbed even when it was put on the page after them (and lies above them)."""
+        path = QPainterPath()
         rect = self.boundingRect()
-        return rect.adjusted(8, 22, -8, -8).contains(local)
+        path.addRect(rect)
+        if self.kind == "group_box":
+            inside = QPainterPath()
+            inside.addRect(rect.adjusted(8, 22, -8, -8))
+            path = path.subtracted(inside)
+        return path
 
     def mousePressEvent(self, event):
         self.canvas.item_pressed(self, event)
@@ -51,7 +61,8 @@ class CanvasItem(QGraphicsProxyWidget):
         self.canvas.item_released(event)
 
     def mouseDoubleClickEvent(self, event):
-        self.canvas.handler_requested.emit(self.index)
+        # Held and moved, it is a drag like any press; released where it was, it goes to the handler.
+        self.canvas.item_pressed(self, event, double=True)
 
     def wheelEvent(self, event):
         event.ignore()  # scroll the canvas, not the previewed control
@@ -152,10 +163,10 @@ class DroppableGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event):
         self.setFocus()
-        scene_pos = self.mapToScene(event.pos())
+        # The inside of a group box is not part of its shape: a press there reaches the control beneath, or
+        # starts a rubber band.
         top = next((item for item in self.items(event.pos()) if isinstance(item, (CanvasItem, ResizeHandle))), None)
-        if event.button() == Qt.LeftButton and (top is None or (isinstance(top, CanvasItem)
-                                                                 and top.is_container_interior(scene_pos))):
+        if event.button() == Qt.LeftButton and top is None:
             if not event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
                 self.canvas.set_selection([])
             self._band_origin = event.pos()
@@ -223,6 +234,7 @@ class FormCanvas(QGroupBox):
         self.current_page_index = 0
         self.selection = []                  # indices on the current page; the last one is primary
         self.base_dir = None
+        self.variables = []             # the structured variables of the Variables tab: Variable Lists show them
         self.snap = True
         self.show_grid = True
         self._widget_clipboard = []
@@ -325,17 +337,22 @@ class FormCanvas(QGroupBox):
         return 1 + max((int(w.get("id", 0)) for p in self.pages for w in p["widgets"]
                         if str(w.get("id", "")).isdigit()), default=0)
 
+    @staticmethod
+    def _default_label(wtype: str, n) -> str:
+        """The label a new control is given: its kind and ID (I/O Box 3, Group 4, Label 5)."""
+        if wtype == "label":
+            return f"Label {n}"
+        return f"Group {n}" if wtype == "group_box" else f"{CONTROLS.get(wtype, CONTROLS['label']).label} {n}"
+
     def _default_data(self, wtype: str) -> dict:
         control = CONTROLS.get(wtype, CONTROLS["label"])
         n = self._next_id()
         data = {"type": wtype, "id": str(n), "x": 0, "y": 0, "variable": "", "binding_type": BINDING_TYPE_SCRIPT,
                 "binding_value": ""}
         data.update(control.defaults())
+        data["label"] = self._default_label(wtype, n)
         if wtype == "label":
-            data["text"] = f"Label {n}"
-            data["label"] = data["text"]
-        else:
-            data["label"] = f"{control.label} {n}" if wtype != "group_box" else f"Group {n}"
+            data["text"] = data["label"]
         return data
 
     # --- undo / redo --------------------------------------------------------------------
@@ -529,7 +546,8 @@ class FormCanvas(QGroupBox):
         self.delete_selection()
 
     def paste_at(self, x=None, y=None):
-        """Paste the clipboard; with a position, the pasted group's top-left lands there."""
+        """Paste the clipboard; with a position, the pasted group's top-left lands there. A copy beside its
+        original gets a name of its own and no handler (rename_copy); a control that was cut keeps both."""
         if not self._widget_clipboard:
             return
         self.checkpoint()
@@ -543,14 +561,10 @@ class FormCanvas(QGroupBox):
             n = self._next_id()
             data["id"] = str(n)
             data["x"], data["y"] = max(0, self._snap(data.get("x", 0) + dx)), max(0, self._snap(data.get("y", 0) + dy))
-            if data.get("binding_type", BINDING_TYPE_SCRIPT) == BINDING_TYPE_SCRIPT and data.get("binding_value"):
-                base = data["binding_value"]
-                suffix = 2
-                while f"{base}_{suffix}" in names:
-                    suffix += 1
-                data["binding_value"] = data["variable"] = f"{base}_{suffix}"
-                names.add(data["binding_value"])
-            data.pop("handler", None)
+            if control_name(data) in names:                 # its original is on the panel: a copy
+                self.rename_copy(data, source.get("id", ""), names)
+                data.pop("handler", None)                   # its own, written when it is double-clicked
+            names.add(control_name(data))
             self._current_widgets().append(data)
             new_indices.append(len(self._current_widgets()) - 1)
         self._widget_clipboard = [copy.deepcopy(self._current_widgets()[i]) for i in new_indices]
@@ -561,6 +575,27 @@ class FormCanvas(QGroupBox):
     def duplicate_selection(self):
         self.copy_selection()
         self.paste_at()
+
+    def rename_copy(self, data, original_id, names):
+        """Give a copy the name of its own that keeps it apart from its original - in the script, for its
+        handler, at run time. A label made up from the original's ID (I/O Box 3) is made up from the copy's
+        (I/O Box 5); a script name goes on with a number (speed, speed_2, speed_3); a control named by its label
+        keeps the label and gets a script name after it (Start_2). One bound to a DBC signal keeps the signal:
+        that is what it shows or sets."""
+        if data.get("binding_type", BINDING_TYPE_SCRIPT) != BINDING_TYPE_SCRIPT:
+            return
+        kind = data.get("type", "button")
+        if not data.get("binding_value") and data.get("label") == self._default_label(kind, original_id):
+            data["label"] = self._default_label(kind, data["id"])
+            if kind == "label":
+                data["text"] = data["label"]
+            if control_name(data) not in names:
+                return
+        base = re.sub(r"_\d+$", "", control_name(data)) or "control"
+        number = 2
+        while f"{base}_{number}" in names:
+            number += 1
+        data["binding_value"] = data["variable"] = f"{base}_{number}"
 
     # --- selection ------------------------------------------------------------------------
 
@@ -628,7 +663,8 @@ class FormCanvas(QGroupBox):
 
     # --- mouse: select, move, resize ---------------------------------------------------------
 
-    def item_pressed(self, item, event):
+    def item_pressed(self, item, event, double=False):
+        """A press on a control (the second press of a double-click too): select it and get ready to drag."""
         index = item.index
         if event.button() == Qt.RightButton:
             if index not in self.selection:
@@ -636,7 +672,10 @@ class FormCanvas(QGroupBox):
             return
         if event.button() != Qt.LeftButton:
             return
-        if event.modifiers() & Qt.ControlModifier:
+        if double:
+            if index not in self.selection:
+                self.set_selection([index])
+        elif event.modifiers() & Qt.ControlModifier:
             if index in self.selection:
                 self.set_selection([i for i in self.selection if i != index])
                 return
@@ -646,7 +685,8 @@ class FormCanvas(QGroupBox):
         else:
             self.set_selection([i for i in self.selection if i != index] + [index])  # make it primary
         widgets = self._current_widgets()
-        self._drag = {"start": event.scenePos(), "moved": False, "snapshot": self._snapshot(),
+        self._drag = {"start": event.scenePos(), "moved": False, "snapshot": self._snapshot(), "double": double,
+                      "index": index,
                       "origins": {i: (widgets[i].get("x", 0), widgets[i].get("y", 0)) for i in self.selection}}
 
     def item_dragged(self, event):
@@ -677,12 +717,13 @@ class FormCanvas(QGroupBox):
     def item_released(self, event):
         if self._drag is None:
             return
-        moved = self._drag["moved"]
-        self._drag = None
-        if moved:
+        drag, self._drag = self._drag, None
+        if drag["moved"]:
             self._fit_scene()
             self._update_tool_states()
             self.geometry_changed.emit(self._current_widgets()[self.selected_index])
+        elif drag["double"]:
+            self.handler_requested.emit(drag["index"])              # a double-click, not a drag
 
     def resize_started(self):
         data = self._current_widgets()[self.selected_index]
@@ -876,14 +917,14 @@ class FormCanvas(QGroupBox):
         for i, data in enumerate(widgets):
             kind = data.get("type", "button")
             try:
-                control, widget = build(kind, data, {"base_dir": self.base_dir})
+                control, widget = build(kind, data, {"base_dir": self.base_dir, "variables": self.variables})
                 control.preview(widget, data)
             except Exception as exc:  # a half-typed property must not break the canvas
                 widget = QLabel(f"{kind}: {exc}")
             widget.setFixedSize(max(MIN_SIZE[0], int(data.get("width", 100))), max(MIN_SIZE[1], int(data.get("height", 30))))
             widget.setAttribute(Qt.WA_TransparentForMouseEvents)
             item = CanvasItem(self, i, kind)
-            item.setWidget(widget)
+            item.show_control(widget)
             item.setPos(data.get("x", 0), data.get("y", 0))
             item.setZValue(i)
             self.scene.addItem(item)

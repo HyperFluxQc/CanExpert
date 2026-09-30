@@ -326,7 +326,10 @@ class FlowControlTest(unittest.TestCase):
         sending = Background(isotp_send, self.ecu, ECU_ID, payload, TESTER_ID)
         self.assertEqual(isotp_recv(self.tester, ECU_ID, TESTER_ID, 2.0), payload)
         sending.join(1)
-        self.assertEqual(bytes(self.sniffer.recv(1).data), bytes([0x10, 0x00, 0x00, 0x00, 0x13, 0x88, 0x00, 0x01]))
+        # The ECU's first frame. The tester's flow control can reach the sniffer before it: python-can's virtual
+        # bus hands a frame to one bus after the other, and the tester may answer in between.
+        first = next(message for message in iter(lambda: self.sniffer.recv(1), None) if message.arbitration_id == ECU_ID)
+        self.assertEqual(bytes(first.data), bytes([0x10, 0x00, 0x00, 0x00, 0x13, 0x88, 0x00, 0x01]))
 
 
 class FirmwareFileTest(unittest.TestCase):

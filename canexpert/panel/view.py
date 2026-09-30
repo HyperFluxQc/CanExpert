@@ -11,6 +11,22 @@ from canexpert.panel.database import decode_value_from_can_data
 from canexpert.panel.page_window import DEFAULT_ZOOM, PanelPage, PanelWindow
 
 
+def control_key(definition, page_index, index, taken) -> str:
+    """The name a panel and its script know a control by: its script binding, else its label, else its ID - a
+    label or ID used before gets the control's place in front of it. ValueError for a script binding that
+    another control has already (taken: the names so far)."""
+    kind = definition.get("kind") or definition.get("type") or "label"
+    script_binding = definition.get("binding_type", "script") == "script"
+    explicit_name = (definition.get("binding_value") or definition.get("variable")) if script_binding else ""
+    key = explicit_name or definition.get("label") or definition.get("id")
+    key = key or f"{page_index}.{kind}.{index}"
+    if key in taken:
+        if explicit_name:
+            raise ValueError(f"Duplicate control name '{key}'; use unique script bindings")
+        key = f"{page_index}.{kind}.{index}.{key}"
+    return key
+
+
 class PanelView(QWidget):
     """Runs a panel: builds its controls, forwards user input to CAN/DBC/script, shows received values."""
     control_changed = pyqtSignal(str, object)
@@ -27,6 +43,8 @@ class PanelView(QWidget):
         self.dbc = None
         self.frames = {}
         self.page_windows = []          # (page name, PanelWindow), in the database's order
+        self.variables = {item.name: item for item in database.get("variables", ())}
+        self._var_lists = {}            # variable name -> the keys of the Variable Lists showing it
         source = database.get("source_path")
         base_dir = Path(source).parent if source else None
         dbc_path = database.get("dbc_path")
@@ -49,16 +67,12 @@ class PanelView(QWidget):
             definitions = page.get("widgets") or [w for group in WIDGET_GROUPS.values() for w in page.get(group, [])]
             for index, definition in enumerate(definitions):
                 kind = definition.get("kind") or definition.get("type") or "label"
-                script_binding = definition.get("binding_type", "script") == "script"
-                explicit_name = (definition.get("binding_value") or definition.get("variable")) if script_binding else ""
-                key = explicit_name or definition.get("label") or definition.get("id")
-                key = key or f"{page_index}.{kind}.{index}"
-                if key in self.widgets:
-                    if explicit_name:
-                        raise ValueError(f"Duplicate control name '{key}'; use unique script bindings")
-                    key = f"{page_index}.{kind}.{index}.{key}"
+                key = control_key(definition, page_index, index, self.widgets)
                 self._apply_dbc_metadata(kind, definition)
-                control, widget = build(kind, definition, {"base_dir": base_dir})
+                control, widget = build(kind, definition, {"base_dir": base_dir,
+                                                           "variables": list(self.variables.values())})
+                if kind == "var_list":
+                    self._var_lists.setdefault(str(definition.get("structure", "")).strip(), []).append(key)
                 widget.setMinimumSize(1, 1)
                 container.place(widget, definition.get("x", 0), definition.get("y", 0),
                                 definition.get("width", 100), definition.get("height", 30))
@@ -84,6 +98,7 @@ class PanelView(QWidget):
             return
         if signal.unit and not definition.get("unit"):
             definition["unit"] = signal.unit
+        definition["_byte_order"] = "little" if signal.byte_order == "little_endian" else "big"   # for ascii
         if signal.choices:
             choices = {int(value): str(label) for value, label in signal.choices.items()}
             definition["_choices"] = choices
@@ -99,10 +114,23 @@ class PanelView(QWidget):
         return {key: self.controls[key].get_value(widget) for key, widget in self.widgets.items()}
 
     def set_value(self, name, value):
-        widget = self.widgets.get(name)
-        if widget is None:
+        """A control's value - or a structured variable's: the whole of it (a dict) or a field ("Calib Data.FOC[3]"),
+        shown in its Variable Lists and in the controls named after its fields."""
+        variable, dot, path = str(name).partition(".")
+        lists = self._var_lists.get(variable, ()) if variable in self.variables else ()
+        for key in lists:
+            self._set_widget(key, (path, value) if dot else value)
+        if not dot and variable in self.variables and isinstance(value, dict):
+            for field_path, field_value in self.variables[variable].flatten(value):
+                if f"{variable}.{field_path}" in self.widgets:
+                    self._set_widget(f"{variable}.{field_path}", field_value)
+        if name in self.widgets and name not in lists:
+            self._set_widget(name, value)
+        elif name not in self.widgets and variable not in self.variables:
             self.log(f"Unknown panel control: {name}")
-            return
+
+    def _set_widget(self, name, value):
+        widget = self.widgets[name]
         blocker = QSignalBlocker(widget)
         try:
             self.controls[name].set_value(widget, self.definitions[name], value)
@@ -113,9 +141,18 @@ class PanelView(QWidget):
 
     def _changed(self, name, value):
         definition = self.definitions[name]
+        if definition["kind"] == "var_list":            # a field typed in, or Read / Write: the variable's
+            path, typed = value
+            variable = str(definition.get("structure", "")).strip()
+            self.control_changed.emit(f"{variable}.{path}" if path else variable, typed)
+            return
         try:
             kind = definition["kind"]
-            if kind in ("io_box", "text_input"):
+            if kind in ("io_box", "text_input") and definition.get("format") == "ascii":
+                value = str(value).encode("ascii", errors="replace")     # "10" -> 31 30, as the display reads it
+                if definition.get("binding_type") == "dbc":
+                    value = int.from_bytes(value, definition.get("_byte_order", "big"))
+            elif kind in ("io_box", "text_input"):
                 typ = definition.get("value_type", "string")
                 if typ == "integer":
                     value = int(value, 0)

@@ -320,6 +320,14 @@ class EcuScanDialog(QDialog):
         if self.scanner is not None:
             self.scanner.requestInterruption()
 
+    def halt(self, why):
+        """Stop now and close the bus now (CAN Expert's kill switch), saying why."""
+        if self.scanner is not None and self.scanner.isRunning():
+            self.scanner.requestInterruption()
+            self.scanner.wait(2000)
+        self.status.setText(f"The scan stopped: {why}")
+        self._on_finished()
+
     def _on_progress(self, done, total, text):
         self.progress_bar.setMaximum(max(1, total))
         self.progress_bar.setValue(done)
