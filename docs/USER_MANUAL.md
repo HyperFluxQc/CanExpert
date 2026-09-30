@@ -146,6 +146,21 @@ More in *Checking a panel*, under *Form Designer*.
 
 More in *Building a form*, under *Form Designer*.
 
+### ...read and write a block of calibration data
+
+1. In the Form Designer, on the **Variables** tab, write the data as the ECU keeps it — a name, where it lives
+   (`DID 0x0110` or `memory 0x20001000`), and a field a line: `* uint32 FOC[32]`.
+2. On the **Form** tab, drop a **Variable List** and choose the variable in Properties.
+3. **Test panel...** (or connect): **Read** fills the list; double-click a value to change it; **Write** sends
+   the variable back. Writing usually needs the extended session and, for memory, security access.
+
+[![A Variable List read from the Dummy ECU](images/variables.png)](images/variables.png)
+
+*The calibration example against the simulated ECU: Calib Data read from memory, the idle speed from its DID
+and on a gauge named after that field.*
+
+More in *The Variables tab*, under *Form Designer*.
+
 ### ...leave the bus to another tool
 
 1. Press **Kill CAN** (Ctrl+F9). CAN Expert stops everything it sends — the session, TesterPresent, the
@@ -466,8 +481,8 @@ keeps its zoom, also in a newer dated version of the database.
 **Tools → Form Designer** builds and edits panels. A panel is two files in `Databases/`: the layout
 `family_YYYY-MM-DD.xml` and its script `family_YYYY-MM-DD_script.py`.
 
-The window has a menu bar, the **Symbols & controls** panel on the left, the **Form**, **Python script** and
-**Database** tabs in the middle and **Properties** on the right. The title shows the database ID, with a
+The window has a menu bar, the **Symbols & controls** panel on the left, the **Form**, **Python script**,
+**Variables** and **Database** tabs in the middle and **Properties** on the right. The title shows the database ID, with a
 **\*** while there are unsaved changes.
 
 It is a window of its own, with its own taskbar button: minimize it to the taskbar, maximize it (or
@@ -517,6 +532,45 @@ New, Open and closing the window ask whether to save changes first.
   bytes: to the script's handler as `b"10"`, into a DBC signal as the number those bytes make. Bytes shown in
   the other formats appear in hex: `31 30`.
 - **+ Add page** adds a page; panels can have several.
+
+**The Variables tab** — structured variables: a record of typed fields and arrays that the panel keeps,
+such as a block of calibration data the ECU holds. Write each one as you think of it — its name on a line,
+then its fields, one a line:
+
+```
+Calib Data (memory 0x20001000, little-endian)
+* uint32 temperature
+* uint32 Axis
+* uint32 FOC[32]
+
+Idle (DID 0x0110)
+* uint16 speed
+```
+
+- A field is *type name*, or *type name[count]* for an array. The types: `uint8` to `uint64`, `int8` to
+  `int64`, `float32`, `float64`, `bool` and `char` (`char name[16]` is a text of 16 bytes) — and their C
+  names (`uint32_t`, `unsigned int`, `float`, `double`...), so a `struct` pasted from a C header works too.
+  The `*` (or `-`) in front is optional; `//` and `#` start a comment.
+- In brackets after the name, where it lives in the ECU: **DID 0x0110** (read with ReadDataByIdentifier,
+  written with WriteDataByIdentifier) or **memory 0x20001000** (ReadMemoryByAddress, WriteMemoryByAddress,
+  4-byte address and size) — and **little-endian** when the ECU keeps it so; big-endian otherwise. Without
+  either, only the script fills the variable.
+- The fields are packed, one after the other: padding the ECU keeps is written as a field (`uint8 pad[3]`).
+  The line under the text says the size of each variable, or what is wrong — the line, and what was probably
+  meant (`uint23` → *Did you mean uint32?*). **Check panel** lists it too, and the panel cannot be tested or
+  connected until it is put right.
+
+[![The Variables tab](images/variables_tab.png)](images/variables_tab.png)
+
+*The Variables tab of the calibration example: two variables, and under them what they are.*
+
+On the form, a **Variable List** (under *Display*) shows a variable field by field — an array opens into its
+elements — in the *Format* chosen (decimal, hex...). **Double-click a value** to type a new one: it is checked
+against its type, and the script has it at once. **Read** and **Write** read the variable from the ECU and
+write it back. A control named after a field — *Name / signal* `Idle.speed`, or `Calib Data.FOC[3]` — shows
+that field too, and what is typed into it goes to the variable. The script reaches a variable as
+`api.var("Calib Data")` (see *Writing panel scripts*). `examples/calibration_2026-09-30.xml` is a panel of both
+kinds, against the Dummy ECU.
 
 **Connecting a control to code** — give it a *Handler function* in Properties, or double-click the control:
 the script tab opens with the function created for you.
@@ -622,6 +676,24 @@ j1939.send(0xEF00, [1, 2, 3], 0x00)        # send a PGN; more than 8 bytes go as
 ```
 
 Keys reach the script while a measurement runs, but not while you type into a field or a dialog is open.
+
+The structured variables of the panel (the Form Designer's **Variables** tab) are the script's too:
+
+```python
+calib = api.var("Calib Data")
+if calib.read():                           # ReadMemoryByAddress (or RDBI): true when the ECU answered
+    api.log(f"{calib.temperature} degC, FOC[3] = {calib.FOC[3]}")
+calib.Axis = 2                             # the Variable List and a control named Calib Data.Axis show it
+calib.FOC[3] = 0x10
+calib.write()                              # WriteMemoryByAddress (or WDBI), from the values it holds
+data = calib.bytes()                       # as the ECU keeps it; calib.decode(data) the other way
+
+@on_variable("Calib Data")                 # a field typed on the panel ("*" or nothing: any variable)
+def typed(api, variable, field):           # field: "Axis", "FOC[3]"
+    api.log(f"{variable.name}.{field} = {variable[field]}")
+```
+
+A value that does not fit its type (`calib.Axis = -1` for a `uint32`) raises an error that says so.
 
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.

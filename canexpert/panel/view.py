@@ -43,6 +43,8 @@ class PanelView(QWidget):
         self.dbc = None
         self.frames = {}
         self.page_windows = []          # (page name, PanelWindow), in the database's order
+        self.variables = {item.name: item for item in database.get("variables", ())}
+        self._var_lists = {}            # variable name -> the keys of the Variable Lists showing it
         source = database.get("source_path")
         base_dir = Path(source).parent if source else None
         dbc_path = database.get("dbc_path")
@@ -67,7 +69,10 @@ class PanelView(QWidget):
                 kind = definition.get("kind") or definition.get("type") or "label"
                 key = control_key(definition, page_index, index, self.widgets)
                 self._apply_dbc_metadata(kind, definition)
-                control, widget = build(kind, definition, {"base_dir": base_dir})
+                control, widget = build(kind, definition, {"base_dir": base_dir,
+                                                           "variables": list(self.variables.values())})
+                if kind == "var_list":
+                    self._var_lists.setdefault(str(definition.get("structure", "")).strip(), []).append(key)
                 widget.setMinimumSize(1, 1)
                 container.place(widget, definition.get("x", 0), definition.get("y", 0),
                                 definition.get("width", 100), definition.get("height", 30))
@@ -109,10 +114,23 @@ class PanelView(QWidget):
         return {key: self.controls[key].get_value(widget) for key, widget in self.widgets.items()}
 
     def set_value(self, name, value):
-        widget = self.widgets.get(name)
-        if widget is None:
+        """A control's value - or a structured variable's: the whole of it (a dict) or a field ("Calib Data.FOC[3]"),
+        shown in its Variable Lists and in the controls named after its fields."""
+        variable, dot, path = str(name).partition(".")
+        lists = self._var_lists.get(variable, ()) if variable in self.variables else ()
+        for key in lists:
+            self._set_widget(key, (path, value) if dot else value)
+        if not dot and variable in self.variables and isinstance(value, dict):
+            for field_path, field_value in self.variables[variable].flatten(value):
+                if f"{variable}.{field_path}" in self.widgets:
+                    self._set_widget(f"{variable}.{field_path}", field_value)
+        if name in self.widgets and name not in lists:
+            self._set_widget(name, value)
+        elif name not in self.widgets and variable not in self.variables:
             self.log(f"Unknown panel control: {name}")
-            return
+
+    def _set_widget(self, name, value):
+        widget = self.widgets[name]
         blocker = QSignalBlocker(widget)
         try:
             self.controls[name].set_value(widget, self.definitions[name], value)
@@ -123,6 +141,11 @@ class PanelView(QWidget):
 
     def _changed(self, name, value):
         definition = self.definitions[name]
+        if definition["kind"] == "var_list":            # a field typed in, or Read / Write: the variable's
+            path, typed = value
+            variable = str(definition.get("structure", "")).strip()
+            self.control_changed.emit(f"{variable}.{path}" if path else variable, typed)
+            return
         try:
             kind = definition["kind"]
             if kind in ("io_box", "text_input") and definition.get("format") == "ascii":

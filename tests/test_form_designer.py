@@ -359,6 +359,35 @@ class FormDesignerTest(unittest.TestCase):
         self.assertEqual(dialog.heading.text(), "<b>broken_2026-09-29.xml: 1 warning</b>", "...and is shown")
         self.assertEqual(dialog.problems[0].hint, "Did you mean <button>?")
 
+    def test_the_variables_tab(self):
+        tabs = self.designer.design_tabs
+        self.assertEqual([tabs.tabText(i) for i in range(tabs.count())], ["Form", "Python script", "Variables",
+                                                                          "Database"])
+        self.designer.variables_edit.setPlainText(self.designer.VARIABLES_EXAMPLE)
+        structures, problems = self.designer.read_variables()
+        self.assertEqual(([item.name for item in structures], problems), (["Calib Data", "Idle"], []))
+        self.assertIn("Calib Data: 136 bytes, memory 0x20001000, little-endian", self.designer.variables_status.text())
+        self.canvas.add_widget_at("var_list", 10, 10, structure="Calib Data")
+        self.assertEqual(self.canvas._items[0].widget().tree.topLevelItemCount(), 3, "previewed with its fields")
+        self.canvas.set_selection([0])
+        choice = self.designer.properties.controls["structure"][1]
+        self.assertEqual([choice.itemText(i) for i in range(choice.count())], ["Calib Data", "Idle"])
+        self.designer.db_id_edit.setText("vars_2026-09-30")
+        self.assertTrue(self.designer.save())
+        again = FormDesigner()
+        self.addCleanup(again.close)
+        self.assertTrue(again.load(self.folder / "vars_2026-09-30.xml"))
+        self.assertEqual(again.variables_edit.toPlainText(), self.designer.VARIABLES_EXAMPLE, "as it was written")
+        self.assertEqual([item.name for item in again.canvas.variables], ["Calib Data", "Idle"])
+        self.designer.variables_edit.setPlainText("Calib Data\n* uint23 temperature")
+        self.designer.read_variables()
+        self.assertIn("Line 2: uint23 is not a type. Did you mean uint32?", self.designer.variables_status.text())
+        problem = next(item for item in self.designer.check_form() if item.kind == "variables")
+        self.assertEqual((problem.severity, problem.where()), ("error", "Variables, line 2"))
+        self.designer.go_to_problem(problem)
+        self.assertIs(tabs.currentWidget(), self.designer.variables_page)
+        self.assertEqual(self.designer.variables_edit.textCursor().blockNumber(), 1)
+
     def test_closing_the_designer_closes_its_test_panels(self):
         self.designer.show()
         dialog = self.designer.test_panel()

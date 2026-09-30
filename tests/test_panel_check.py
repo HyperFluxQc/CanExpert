@@ -9,8 +9,8 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication
 
-from canexpert.panel.check import (ERROR, FORM, SCRIPT, WARNING, Problem, check_panel, check_panel_file, closest,
-                                   summary, typo_distance)
+from canexpert.panel.check import (ERROR, FORM, SCRIPT, VARIABLES, WARNING, Problem, check_panel, check_panel_file,
+                                   closest, summary, typo_distance)
 from canexpert.panel.database import parse_application_database
 from canexpert.panel.view import PanelView
 
@@ -209,7 +209,8 @@ class PanelCheckTest(unittest.TestCase):
                               ('@on_signal("EngineData.Temperature")', '@on_signal("EngineData.Temp")'))
         self.assertEqual([(problem.line, problem.message, problem.hint) for problem in problems], [
             (8, 'There is no control named "lgo" on the panel', 'Did you mean "log"?'),
-            (11, '"EngineData.Temp" is not in dummy_ecu.dbc: EngineData has no signal Temp', "")])
+            (11, '"EngineData.Temp" is not in dummy_ecu.dbc: EngineData has no signal Temp',
+             'Did you mean "EngineData.Temperature"?')])
 
         problem = self.only(self.check(PANEL, PANEL_SCRIPT + '\n\n@on_message("EngineDat")\ndef frame(api, frame):\n'
                                                        '    pass\n'), ERROR)
@@ -220,6 +221,38 @@ class PanelCheckTest(unittest.TestCase):
         self.assertEqual(problem.message, "EngineData has no signal Temprature")
         self.assertEqual(problem.hint, "Did you mean Temperature?")
         self.assertEqual(self.check(PANEL, PANEL_SCRIPT + "\n\nfrom math import *\n"), [], "import *: names are not guessed")
+
+    def test_structured_variables(self):
+        variables = """<application_database name="Check" dbc_path="dummy_ecu.dbc">
+    <variables>
+        Calib Data (memory 0x10000, little-endian)
+        * uint23 temperature
+        * uint32 FOC[4]
+    </variables>"""
+        typo = PANEL.replace('<application_database name="Check" dbc_path="dummy_ecu.dbc">', variables)
+        problem = self.only(self.check(typo, PANEL_SCRIPT), ERROR)
+        self.assertEqual((problem.kind, problem.line, problem.position), (VARIABLES, 5, (2,)))
+        self.assertIn("uint23 is not a type. Did you mean uint32?", problem.message)
+        self.assertEqual(problem.source.strip(), "* uint23 temperature")
+        self.assertFalse(self.loads())
+        panel = typo.replace("uint23", "uint32").replace(
+            '<output id="4"', '<var_list id="5" structure="Calib" x="200" y="10"/>\n            '
+                              '<value id="6" binding_value="Calib Data.FOC[4]" x="200" y="300"/>\n            '
+                              '<output id="4"')
+        script = PANEL_SCRIPT + """
+
+@on_variable("Calib Data")
+def changed(api, variable, field):
+    api.var("Calib Dta").read()
+    api.ui.set_value("Calib Data.FOC[3]", 1)
+"""
+        problems = self.check(panel, script)
+        self.assertEqual([(problem.kind, problem.message, problem.hint) for problem in problems], [
+            (FORM, 'This Variable List shows "Calib", which is not a variable of the panel', 'Did you mean "Calib Data"?'),
+            (FORM, 'This control is named "Calib Data.FOC[4]": Calib Data.FOC has 4 values: [0] to [3]',
+             'Did you mean "Calib Data.FOC[3]"?'),
+            (SCRIPT, 'The panel has no variable "Calib Dta"', 'Did you mean "Calib Data"?')])
+        self.assertTrue(self.loads(), "warnings: it loads")
 
     def test_a_form_in_memory_names_the_control(self):
         problems = check_panel(PANEL.replace('on_color="#c62828"', 'on_colour="#c62828"'), "", PANEL_SCRIPT, "panel_script.py",

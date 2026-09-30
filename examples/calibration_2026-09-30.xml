@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='utf-8'?>
+<application_database name="Calibration">
+    <description>Structured variables (Variables tab) against the Dummy ECU: Read fills them, Unlock then Write sends them back.</description>
+    <variables>
+        Calib Data (memory 0x00010000, little-endian)
+        * uint32 temperature
+        * uint32 Axis
+        * uint32 FOC[32]
+
+        Idle (DID 0x0110)
+        * uint16 speed
+    </variables>
+    <pages>
+        <page name="Calibration">
+            <var_list type="var_list" id="1" x="10" y="10" width="420" height="380" variable="" binding_type="script" binding_value="" structure="Calib Data" buttons="True" format="auto" decimals="" />
+            <var_list type="var_list" id="2" x="450" y="10" width="330" height="110" variable="" binding_type="script" binding_value="" structure="Idle" buttons="True" format="auto" decimals="" />
+            <gauge type="gauge" id="3" x="450" y="130" width="200" height="200" variable="Idle.speed" binding_type="script" binding_value="Idle.speed" label="Idle speed" min="0" max="2000" unit="rpm" decimals="0" warning="" critical="" />
+            <button type="button" id="4" x="670" y="140" width="110" height="32" variable="unlock" binding_type="script" binding_value="unlock" label="Unlock" handler="on_unlock_clicked" />
+            <output type="output" id="5" x="450" y="340" width="330" height="50" variable="log" binding_type="script" binding_value="log" />
+        </page>
+    </pages>
+</application_database>

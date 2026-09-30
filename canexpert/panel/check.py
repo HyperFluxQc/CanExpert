@@ -24,14 +24,16 @@ from PyQt5.QtGui import QColor
 from canexpert.panel.controls import APPEARANCE, CONTROLS, READ_ONLY
 from canexpert.panel.database import parse_can_id, parse_hex_bytes, parse_widget
 from canexpert.panel.runtime import script_globals
+from canexpert.panel.variables import parse_variables, split_path
 from canexpert.panel.view import control_key
 
 ERROR, WARNING = "error", "warning"
-FORM, SCRIPT = "form", "script"         # where a problem is: the panel's XML and controls, or its Python script
+FORM, SCRIPT, VARIABLES = "form", "script", "variables"    # where a problem is: the XML and its controls, the
+#                                                             Python script, or the structured variables
 
 # What a panel database holds besides its controls, with the attributes each one takes.
 STRUCTURE = {"application_database": ("name", "dbc_path"), "description": (), "pages": (), "page": ("name",),
-             "dbc_path": ()}
+             "dbc_path": (), "variables": ()}
 # The attributes of every control (parse_widget, the Form Designer), besides each one's own properties.
 COMMON = ("type", "kind", "id", "name", "label", "text", "x", "y", "width", "height", "binding_type",
           "binding_value", "variable", "handler", "value_type", "unit", "min", "max", "can_id", "byte_start",
@@ -78,7 +80,8 @@ class Problem:
     hint: str = ""              # what was probably meant, or how to put it right
     control: str = ""           # the control it is about, as the panel names it
     page: str = ""              # and its page
-    position: tuple = ()        # (page, index on the page) of that control, for the Form Designer to select it
+    position: tuple = ()        # (page, index on the page) of that control, for the Form Designer to select it;
+    #                             for the variables, (line,) as the Form Designer's Variables tab shows them
 
     @property
     def is_error(self) -> bool:
@@ -86,9 +89,12 @@ class Problem:
 
     def where(self) -> str:
         """showcase_2026-09-18.xml, line 12, column 5 - or, for a form in memory: page Main, control Speed."""
-        parts = [Path(self.path).name] if self.path else ["script"] if self.kind == SCRIPT else []
+        parts = [Path(self.path).name] if self.path else \
+            ["script"] if self.kind == SCRIPT else ["Variables"] if self.kind == VARIABLES else []
         if self.line:
             parts.append(f"line {self.line}" + (f", column {self.column}" if self.column else ""))
+        elif self.kind == VARIABLES and self.position:
+            parts.append(f"line {self.position[0]}")
         elif self.control:
             parts.append(f"page {self.page}, control {self.control}" if self.page else f"control {self.control}")
         return ", ".join(parts)
@@ -143,7 +149,8 @@ def typo_distance(a, b) -> int:
 
 def closest(word, candidates):
     """The candidate a typo most likely meant, else None: the same word in other capitals, else the one the
-    fewest letters away (a third of the word's letters at most), else one that looks much the same."""
+    fewest letters away (a third of the word's letters at most), else the only one it begins (a name cut short),
+    else one that looks much the same."""
     word = str(word)
     lower = {}
     for candidate in candidates:
@@ -156,6 +163,9 @@ def closest(word, candidates):
     distance, best = min((typo_distance(key, candidate), candidate) for candidate in lower)
     if distance <= max(1, len(key) // 3):
         return lower[best]
+    longer = [candidate for candidate in lower if candidate.startswith(key)]
+    if len(key) >= 3 and len(longer) == 1:
+        return lower[longer[0]]
     matches = difflib.get_close_matches(key, list(lower), n=1, cutoff=0.8)
     return lower[matches[0]] if matches else None
 
@@ -226,6 +236,7 @@ def check_panel(xml_data, path="", script_text=None, script_path="", base_dir=No
         root = check.parse(xml_data)
         if root is not None:
             check.check_structure(root)
+            check.check_variables(root)
             check.load_dbc(root)
             check.check_controls(root)
         if script_text is not None:
@@ -249,6 +260,7 @@ class _Check:
         self.positions = {}                 # element -> (line, column) of its start tag, as expat saw it
         self.info = {}                      # control element -> (name, page name, (page, index))
         self.names = None                   # control name -> element, as the panel names them; None: no XML
+        self.structures = {}                # the structured variables: name -> Structure
         self.handlers = {}                  # handler function name -> [(control element, control name)]
         self.script_path = ""
         self.script_lines = []
@@ -354,6 +366,44 @@ class _Check:
                 self.form(WARNING, f"This {CONTROLS[elem.tag].label.lower()} is outside <pages>: it is not shown",
                           elem, hint="Move it into a <page>.")
 
+    def check_variables(self, root):
+        """The structured variables (<variables>): a line written wrong stops the panel from loading."""
+        element = root.find("variables")
+        text = element.text or "" if element is not None else ""
+        structures, problems = parse_variables(text)
+        self.structures = {item.name: item for item in structures}
+        if element is None:
+            return
+        first, _column = self.positions.get(element, (0, 0))
+        shift = 1 if text.startswith("\n") else 0           # the Form Designer shows them from the next line
+        for number, message in problems:
+            line = first + number - 1 if self.path and first else 0
+            source = self.lines[line - 1] if 0 < line <= len(self.lines) else ""
+            self.problems.append(Problem(ERROR, message, VARIABLES, self.path, line, 0, source, "",
+                                         position=(max(1, number - shift),)))
+
+    def variable_path_problem(self, name):
+        """For a name like "Calib Data.FOC[3]": (what is wrong with it as a field of a variable, hint) - ("", "")
+        when nothing is; None when it names no variable at all."""
+        variable, dot, path = str(name).partition(".")
+        structure = self.structures.get(variable)
+        if not dot or structure is None:
+            return None
+        fields = [f"{variable}.{item}" for item in structure.paths()]
+        try:
+            field_name, index = split_path(path)
+        except ValueError as exc:
+            return str(exc), did_you_mean(name, fields)
+        item = structure.field(field_name)
+        if item is None:
+            return f"{variable} has no field {field_name}", did_you_mean(name, fields)
+        if index is not None and (item.count is None or item.text):
+            return f"{variable}.{field_name} is not an array", f'Write "{variable}.{field_name}".'
+        if index is not None and not index < item.count:
+            return (f"{variable}.{field_name} has {item.count} values: [0] to [{item.count - 1}]",
+                    f'Did you mean "{variable}.{field_name}[{item.count - 1}]"?')
+        return "", ""
+
     def load_dbc(self, root):
         value = root.get("dbc_path", "").strip()
         if not value:
@@ -413,6 +463,16 @@ class _Check:
                           "Use letters, digits and _, not beginning with a digit: on_start_clicked.")
             elif handler:
                 self.handlers.setdefault(handler, []).append((elem, key))
+            problem = self.variable_path_problem(key)
+            if problem and problem[0]:
+                self.form(WARNING, f'This control is named "{key}": {problem[0]}', elem, "binding_value", problem[1])
+            if elem.tag == "var_list":
+                shown = str(definition.get("structure") or "").strip()
+                if shown not in self.structures:
+                    self.form(WARNING, f'This Variable List shows "{shown}", which is not a variable of the panel'
+                              if shown else "This Variable List shows no variable", elem, "structure",
+                              did_you_mean(shown, self.structures) or
+                              "Define it on the Form Designer's Variables tab, then choose it in Properties.")
         self.check_bindings(controls)
 
     def describe(self, elem) -> str:
@@ -645,6 +705,8 @@ class _Check:
                 continue
             if name == "on_control":
                 self.check_control_name(argument.value, argument)
+            elif name == "on_variable":
+                self.check_variable_name(argument.value, argument)
             elif name == "on_signal":
                 self.check_signal(argument.value, argument)
             elif name == "on_message":
@@ -661,6 +723,8 @@ class _Check:
             self.check_control_name(first.value, first)                     # api.ui.set_value("name", ...)
         elif on_api and function.attr == "on":
             self.check_control_name(first.value, first)                     # api.on("name", callback)
+        elif on_api and function.attr == "var":
+            self.check_variable_name(first.value, first)                    # api.var("Calib Data")
         elif on_api and function.attr in ("signal", "set_signal"):
             self.check_signal(first.value, first)
         elif on_api and function.attr == "send_message" and self.dbc is not None:
@@ -675,7 +739,14 @@ class _Check:
                     self.script(WARNING, f"{first.value} has no signal {keyword.arg}", keyword.value.lineno,
                                 keyword.value.col_offset + 1, did_you_mean(keyword.arg, signals, "{}"))
 
+    def check_variable_name(self, name, node):
+        if name not in self.structures:
+            self.script(WARNING, f'The panel has no variable "{name}"', node.lineno, node.col_offset + 1,
+                        did_you_mean(name, self.structures) or "Define it on the Form Designer's Variables tab.")
+
     def check_control_name(self, name, node):
+        if self.variable_path_problem(name) == ("", ""):
+            return                                     # a variable's field: its Variable Lists show it
         if name not in self.names:
             self.script(WARNING, f'There is no control named "{name}" on the panel', node.lineno, node.col_offset + 1,
                         did_you_mean(name, self.names))

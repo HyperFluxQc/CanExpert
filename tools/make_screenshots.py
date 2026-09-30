@@ -18,6 +18,7 @@ if sys.platform == "win32":                     # the offscreen platform finds n
 import importlib  # noqa: E402
 import pkgutil  # noqa: E402
 import shutil  # noqa: E402
+import struct  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -140,7 +141,7 @@ def main_window_pictures(studio, wanted):
     window.selected_channel_config = {"interface": "virtual", "channel": CHANNEL}
     dbc = studio.folder / "DBC" / "dummy_ecu.dbc"
     window.symbols.set_paths([str(dbc)])
-    window.resize(1180, 760)
+    window.resize(1280, 760)                    # every toolbar button in view
     window.show()
     settle(0.5)
 
@@ -283,11 +284,39 @@ def dummy_ecu_picture(studio, wanted):
     window.close()
 
 
+def variables_pictures(studio, wanted):
+    """The calibration example: its Variables tab, and its structured variables read from the simulated ECU."""
+    from canexpert.designer.form_designer import FormDesigner
+    designer = FormDesigner()
+    designer.resize(1180, 700)
+    designer.show()
+    designer.load(studio.folder / "examples" / "calibration_2026-09-30.xml")
+    if designer.problems_dialog is not None:
+        designer.problems_dialog.close()
+    designer.status.clearMessage()
+    if "variables_tab" in wanted:
+        designer.design_tabs.setCurrentWidget(designer.variables_page)
+        save(designer, "variables_tab")
+    if "variables" in wanted:
+        dialog = designer.test_panel()
+        dialog.ecu.write_memory(0x10000, struct.pack("<34I", 25, 2, *(1000 + 25 * i for i in range(32))))
+        settle(1)
+        calib = next(widget for key, widget in dialog.panel.widgets.items()
+                     if dialog.panel.definitions[key].get("structure") == "Calib Data")
+        calib.buttons[0].click()                                    # Read
+        settle(1)
+        calib.tree.topLevelItem(2).setExpanded(True)                # FOC, element by element
+        save(dialog, "variables", (820, 680))
+        dialog.close()
+    designer._mark_clean()
+    designer.close()
+
+
 PICTURES = {"connect_problem": main_window_pictures, "main_window": main_window_pictures,
             "trace": main_window_pictures, "can_logger": main_window_pictures, "transmit": main_window_pictures,
             "uds_console": main_window_pictures, "form_designer": designer_pictures,
             "test_panel": designer_pictures, "panel_check": designer_pictures, "test_expert": test_expert_picture,
-            "dummy_ecu": dummy_ecu_picture}
+            "dummy_ecu": dummy_ecu_picture, "variables_tab": variables_pictures, "variables": variables_pictures}
 
 
 def main(names):

@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from canexpert.panel.controls import WIDGET_GROUPS
+from canexpert.panel.variables import parse_variables
 from canexpert.paths import DATABASES_DIR
 
 
@@ -113,13 +114,26 @@ def parse_widget(elem):
     return data
 
 
+def read_variables(root) -> list:
+    """The structured variables of a panel database (<variables>, variables.py); ValueError for the first
+    problem in them, with its line in the variables."""
+    text = root.findtext("variables") or ""
+    structures, problems = parse_variables(text)
+    if problems:
+        line, message = problems[0]
+        shift = 1 if text.startswith("\n") else 0         # counted as the Form Designer shows them
+        raise ValueError(f"Variables, line {max(1, line - shift)}: {message}")
+    return structures
+
+
 def parse_application_database(path):
     path = Path(path)
     root = ET.parse(path).getroot()
     if root.tag != "application_database":
         raise ValueError("Expected an application_database XML root")
     result = {"name": root.get("name", path.stem), "description": root.findtext("description", "").strip(),
-              "source_path": str(path.resolve()), "dbc_path": root.get("dbc_path", ""), "pages": []}
+              "source_path": str(path.resolve()), "dbc_path": root.get("dbc_path", ""), "pages": [],
+              "variables": read_variables(root)}
     pages = root.find("pages")
     for source in list(pages) if pages is not None else [root]:
         page = {"name": source.get("name", "Main"), "widgets": []}  # widgets: document (z) order

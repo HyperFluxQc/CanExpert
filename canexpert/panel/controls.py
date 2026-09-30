@@ -17,6 +17,7 @@ from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPalette, QPen, QPixmap, QRadialGradient
 from PyQt5.QtWidgets import (
     QAbstractButton,
+    QAbstractItemView,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -33,9 +34,13 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSlider,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+from canexpert.panel.variables import convert
 
 try:
     import pyqtgraph as pg
@@ -617,6 +622,115 @@ class OutputBox(QPlainTextEdit):
         return self.toPlainText()
 
 
+class VariableListWidget(QWidget):
+    """A structured variable (variables.py) field by field - an array opens into its elements - with each
+    one's type and value; a double-click types a new value. Read and Write, when it lives in the ECU."""
+    edited = pyqtSignal(str, object)        # a field ("FOC[3]") and what was typed, checked against its type
+    action = pyqtSignal(str)                # "read" or "write"
+    PATH, TYPE, SHOWN = Qt.UserRole, Qt.UserRole + 1, Qt.UserRole + 2
+
+    def __init__(self, structure, name, data):
+        super().__init__()
+        self.structure, self.data = structure, data
+        self._items, self._updating = {}, False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        bar = QHBoxLayout()
+        self.title = QLabel(structure.describe() if structure is not None else
+                            f"No variable named {name!r}: define it on the Form Designer's Variables tab"
+                            if name else "Choose its variable in Properties")
+        self.title.setWordWrap(True)
+        bar.addWidget(self.title, 1)
+        self.buttons = []
+        if structure is not None and structure.where() and flag(data, "buttons", True):
+            for text, what in (("Read", "read"), ("Write", "write")):
+                button = QPushButton(text)
+                button.setToolTip(f"{text} {structure.name} {'from' if what == 'read' else 'to'} the ECU "
+                                  f"({structure.where()})")
+                button.clicked.connect(lambda _checked=False, w=what: self.action.emit(w))
+                bar.addWidget(button)
+                self.buttons.append(button)
+        layout.addLayout(bar)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Field", "Type", "Value"])
+        self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tree.itemDoubleClicked.connect(self._edit)
+        self.tree.itemChanged.connect(self._changed)
+        layout.addWidget(self.tree, 1)
+        if structure is None:
+            return
+        for item in structure.fields:
+            kind = f"{item.type}[{item.count}]" if item.count is not None else item.type
+            row = QTreeWidgetItem(self.tree, [item.name, kind, ""])
+            if item.count is None or item.text:
+                self._leaf(row, item.name, item.type)
+            else:
+                row.setText(2, f"{item.count} values")
+                for index in range(item.count):
+                    self._leaf(QTreeWidgetItem(row, [f"[{index}]", item.type, ""]), f"{item.name}[{index}]",
+                               item.type)
+        self.show_values(structure.defaults())
+        self.tree.resizeColumnToContents(0)
+
+    def _leaf(self, row, path, type_name):
+        row.setData(0, self.PATH, path)
+        row.setData(0, self.TYPE, "text" if type_name == "char" and "[" not in path and
+                    (self.structure.field(path).count or 0) > 1 else type_name)
+        row.setFlags(row.flags() | Qt.ItemIsEditable)
+        row.setToolTip(2, "Double-click to type a new value")
+        self._items[path] = row
+
+    def _text(self, type_name, value):
+        if type_name in ("text", "char", "bool"):
+            return str(value)
+        if type_name.startswith("float"):
+            return format_value(value, dict(self.data, format="auto"))
+        return format_value(value, self.data)
+
+    def show_values(self, values: dict):
+        """Every field of the variable."""
+        for path, value in self.structure.flatten(values):
+            self.show_field(path, value)
+
+    def show_field(self, path, value):
+        row = self._items.get(path)
+        if row is None:
+            return
+        self._updating = True
+        try:
+            text = self._text(row.data(0, self.TYPE), value)
+            row.setText(2, text)
+            row.setData(0, self.SHOWN, text)
+            row.setToolTip(2, "Double-click to type a new value")
+        finally:
+            self._updating = False
+
+    def _edit(self, row, _column):
+        if row.data(0, self.PATH):
+            self.tree.editItem(row, 2)
+
+    def _changed(self, row, column):
+        if self._updating or column != 2 or not row.data(0, self.PATH):
+            return
+        path, type_name, text = row.data(0, self.PATH), row.data(0, self.TYPE), row.text(2).strip()
+        try:
+            if type_name == "text":
+                size = self.structure.field(path).count
+                if len(text.encode("latin-1", errors="replace")) > size:
+                    raise ValueError(f"it holds {size} characters")
+            else:
+                convert(type_name, text)
+        except ValueError as exc:
+            self._updating = True
+            row.setText(2, row.data(0, self.SHOWN) or "")      # what it held, and why the new one is not taken
+            row.setToolTip(2, f"{text!r}: {exc}")
+            self._updating = False
+            return
+        row.setData(0, self.SHOWN, text)
+        self.edited.emit(path, text)
+
+
 # -----------------------------------------------------------------------------
 # Registry
 # -----------------------------------------------------------------------------
@@ -1021,6 +1135,36 @@ class Output(Control):
         widget.setPlainText("Script output appears here")
 
 
+class VarList(Control):
+    """A structured variable, field by field: shown and typed into, read and written (variables.py)."""
+    kind, label, category, group = "var_list", "Variable List", "Display", "var_lists"
+    size = (340, 220)
+    uses_label = False
+    props = (Prop("structure", "Variable", "variable", ""), Prop("buttons", "Read and Write buttons", "bool", True),
+             *NUMBER_FORMAT)
+
+    def create(self, data, ctx):
+        name = str(data.get("structure", "") or "").strip()
+        structure = next((item for item in ctx.get("variables", ()) if item.name == name), None)
+        return VariableListWidget(structure, name, data)
+
+    def connect(self, widget, emit):
+        widget.edited.connect(lambda path, text: emit((path, text)))
+        widget.action.connect(lambda what: emit(("", what)))
+
+    def set_value(self, widget, data, value):
+        """A whole variable (a dict), or one of its fields ((path, value))."""
+        if widget.structure is None:
+            return
+        if isinstance(value, dict):
+            widget.show_values(value)
+        elif isinstance(value, tuple) and len(value) == 2:
+            widget.show_field(*value)
+
+    def get_value(self, widget):
+        return None
+
+
 class Label(Control):
     kind, label, category, group = "label", "Label", "Decoration", "labels"
     uses_label = False
@@ -1078,7 +1222,7 @@ def resolve_path(path, base_dir):
 
 CONTROLS = {control.kind: control for control in (
     Button(), Switch(), CheckBox(), Radio(), Combo(), Slider(), Knob(), Spin(), IoBox(), TextInput(),
-    Value(), Display(), Gauge(), ProgressBar(), Led(), Indicator(), Trend(), Output(),
+    Value(), Display(), Gauge(), ProgressBar(), Led(), Indicator(), Trend(), Output(), VarList(),
     Label(), GroupBox(), Picture(),
 )}
 WIDGET_GROUPS = {kind: control.group for kind, control in CONTROLS.items()}

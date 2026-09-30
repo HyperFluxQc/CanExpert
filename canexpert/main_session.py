@@ -96,6 +96,7 @@ class Session:
             script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
             runtime.dbc = self.panel.dbc
             runtime.handlers = self.panel.handlers()
+            runtime.set_variables(database.get("variables", []))
             panel_failure = True
             runtime.start(script_path)
             panel_failure = False

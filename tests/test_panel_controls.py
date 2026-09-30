@@ -27,7 +27,7 @@ BO_ 1280 Text: 8 ECU
 SAMPLES = {"button": None, "switch": True, "checkbox": True, "radio": "Option 2", "combo": "Two", "slider": 42,
            "knob": 42, "spin": 42, "io_box": 42, "text_input": "hello", "value": 42, "display": 42, "gauge": 42,
            "progress_bar": 42, "led": True, "indicator": 1, "trend": 42, "output": "line", "label": "text",
-           "group_box": "Title", "picture": None}
+           "group_box": "Title", "picture": None, "var_list": {"temperature": 25}}
 EXPECTED = {"switch": True, "checkbox": True, "radio": "Option 2", "combo": "Two", "slider": 42, "knob": 42, "spin": 42,
             "io_box": "42", "text_input": "hello", "value": "42", "display": "42", "gauge": 42, "progress_bar": 42,
             "led": True, "indicator": "1", "trend": 42, "output": "line", "label": "text", "group_box": "Title"}

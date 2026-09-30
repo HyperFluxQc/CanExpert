@@ -301,6 +301,7 @@ class PropertyEditor(QGroupBox):
         super().__init__("Properties")
         self.symbol_panel = symbol_panel
         self.base_dir = None
+        self.variable_names = []        # the structured variables defined (a Variable List's choice)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
         self.hint = QLabel("Select a control to edit its properties.")
@@ -421,6 +422,15 @@ class PropertyEditor(QGroupBox):
             self.form.addRow(prop.label, ctrl)
         elif editor == "choice":
             self._add_combo(prop.key, prop.label, list(prop.options), str(value or prop.default))
+        elif editor == "variable":
+            ctrl = QComboBox()
+            ctrl.setEditable(True)              # one still to be defined can be typed
+            ctrl.addItems(self.variable_names)
+            ctrl.setCurrentText(str(value or ""))
+            ctrl.setToolTip("A variable of the Variables tab")
+            ctrl.currentTextChanged.connect(lambda v, k=prop.key: self._on_change(k, v.strip()))
+            self.controls[prop.key] = ("str", ctrl)
+            self.form.addRow(prop.label, ctrl)
         elif editor == "color":
             ctrl = ColorField(value)
             ctrl.changed.connect(lambda v, k=prop.key: self._on_change(k, v))

@@ -11,6 +11,7 @@ simulated ECU on a virtual CAN bus.
 import os
 import re
 import tempfile
+import textwrap
 import threading
 import time
 import uuid
@@ -19,7 +20,7 @@ from datetime import date
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QKeySequence, QTextCursor
+from PyQt5.QtGui import QFontDatabase, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QMenuBar, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QStatusBar, QTabWidget,
@@ -34,13 +35,15 @@ from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import FlashProfile
 from canexpert.flashing import (FlashDialog, choose_firmware, close_progress, progress_dialog, report_result,
                                 update_progress)
-from canexpert.panel.check import ERROR, FORM, SCRIPT, Problem, check_panel, check_panel_file, display_name, summary
+from canexpert.panel.check import (ERROR, FORM, SCRIPT, VARIABLES, Problem, check_panel, check_panel_file,
+                                   display_name, summary)
 from canexpert.panel.controls import CONTROLS, WIDGET_GROUPS
 from canexpert.config import read_configurations
 from canexpert.panel.database import (DATABASES_DIR, parse_application_database, parse_widget, select_database,
                                       split_database_id)
 from canexpert.panel.problems_dialog import ProblemsDialog
 from canexpert.panel.runtime import SCRIPT_TEMPLATE
+from canexpert.panel.variables import parse_variables
 from canexpert.paths import CONFIG_DIR, EXAMPLE_FIRMWARE_DIR
 from canexpert.ui_common import SplitterPanel, enable_maximize, make_main_window
 
@@ -118,6 +121,7 @@ class TestPanelDialog(QDialog):
         self.panel.control_changed.connect(lambda name, value: self.runtime.post("control", name, value))
         self.runtime.dbc = self.panel.dbc
         self.runtime.handlers = self.panel.handlers()
+        self.runtime.set_variables(database.get("variables", []))
         self.flash_button = QPushButton("Flashing...")
         self.flash_button.setToolTip("Flash a .s19/.hex file into the simulated ECU, with the script's Flashing() "
                                      "or the built-in sequence")
@@ -316,9 +320,11 @@ class FormDesigner(QDialog):
         code_split.setSizes([640, 330])
         code_layout.addWidget(code_split, 1)
         self.database_page = self._database_page()
+        self.variables_page = self._variables_page()
         self.design_tabs = QTabWidget()
         self.design_tabs.addTab(self.canvas, "Form")
         self.design_tabs.addTab(self.code_page, "Python script")
+        self.design_tabs.addTab(self.variables_page, "Variables")
         self.design_tabs.addTab(self.database_page, "Database")
         self.design_tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -350,6 +356,7 @@ class FormDesigner(QDialog):
         for edit in (self.db_id_edit, self.db_name_edit, self.dbc_path_edit):
             edit.textChanged.connect(self._mark_dirty)
         self.desc_edit.textChanged.connect(self._mark_dirty)
+        self.variables_edit.textChanged.connect(self._mark_dirty)
         self.db_id_edit.textChanged.connect(self._refresh_id_hint)
         self._mark_clean()
 
@@ -533,6 +540,63 @@ class FormDesigner(QDialog):
             self.recent_menu.addAction(f"No panel in {self.database_dir}").setEnabled(False)
 
     # --- the Database tab --------------------------------------------------------------------
+
+    VARIABLES_EXAMPLE = ("Calib Data (memory 0x20001000, little-endian)\n* uint32 temperature\n* uint32 Axis\n"
+                         "* uint32 FOC[32]\n\nIdle (DID 0x0110)\n* uint16 speed")
+
+    def _variables_page(self):
+        """The panel's structured variables (variables.py), written as they are thought of."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        guide = QLabel("A variable's name on a line, then its fields, one a line: <i>type name</i>, or <i>type "
+                       "name[count]</i> for an array (uint8 to uint64, int8 to int64, float32, float64, bool, "
+                       "char). In brackets after the name, where it lives in the ECU - <i>DID 0x0110</i> or "
+                       "<i>memory 0x20001000</i> - and <i>little-endian</i> if it is. A struct pasted from a C header "
+                       "works too. A <b>Variable List</b> shows one, a control named after a field (Calib Data.FOC[3]) "
+                       "shows that field, and the script has it as <i>api.var(\"Calib Data\")</i>.")
+        guide.setWordWrap(True)
+        guide.setStyleSheet("color: gray;")
+        layout.addWidget(guide)
+        self.variables_edit = QPlainTextEdit()
+        font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        if "Consolas" in QFontDatabase().families():
+            font.setFamily("Consolas")
+        self.variables_edit.setFont(font)
+        self.variables_edit.setPlaceholderText(self.VARIABLES_EXAMPLE)
+        layout.addWidget(self.variables_edit, 1)
+        self.variables_status = QLabel("")
+        self.variables_status.setWordWrap(True)
+        layout.addWidget(self.variables_status)
+        self.structures = []
+        self._variables_timer = QTimer(self)
+        self._variables_timer.setSingleShot(True)
+        self._variables_timer.setInterval(300)
+        self._variables_timer.timeout.connect(self.read_variables)
+        self.variables_edit.textChanged.connect(self._variables_timer.start)
+        return page
+
+    def read_variables(self):
+        """Read the Variables tab: what it defines, or what is wrong in it, under it - and the Variable Lists on the
+        form show the variables as they are now."""
+        self.structures, problems = parse_variables(self.variables_edit.toPlainText())
+        if problems:
+            self.variables_status.setStyleSheet("color: red;")
+            self.variables_status.setText("\n".join(f"Line {line}: {message}" for line, message in problems[:4]) +
+                                          (f"\n... and {len(problems) - 4} more" if len(problems) > 4 else ""))
+        else:
+            self.variables_status.setStyleSheet("color: gray;")
+            self.variables_status.setText("\n".join(item.describe() for item in self.structures) or
+                                          "No variable: the placeholder shows how to write one.")
+        self.canvas.variables = self.structures
+        self.properties.variable_names = [item.name for item in self.structures]
+        if any(data.get("type") == "var_list" for page in self.canvas.pages for data in page["widgets"]):
+            self.canvas._rebuild()
+        return self.structures, problems
+
+    def _variables_xml_text(self) -> str:
+        """The Variables tab as the database keeps it: indented under <variables>, the lines as they were."""
+        text = self.variables_edit.toPlainText().rstrip()
+        return "\n" + textwrap.indent(text, "        ") + "\n    " if text.strip() else ""
 
     def _database_page(self):
         page = QWidget()
@@ -758,6 +822,9 @@ class FormDesigner(QDialog):
                 for data in form_page["widgets"]:
                     words += [control_name(data), str(data.get("handler", ""))]
             words += self.symbol_list.get_dbc_signals()
+            for structure in self.structures:
+                words += [structure.name, f'api.var("{structure.name}")']
+                words += [f"{structure.name}.{path}" for path in structure.paths()[:64]]
             self.code_editor.set_completion_words(words)
         elif page is self.database_page:
             self._refresh_database_info()
@@ -832,6 +899,8 @@ class FormDesigner(QDialog):
         self.db_id_edit.setText(f"new_{date.today().isoformat()}")
         self.db_name_edit.setText(f"new_{date.today().isoformat()}")
         self.desc_edit.clear()
+        self.variables_edit.clear()
+        self.read_variables()
         self.remove_dbc()
         self.code_editor.setPlainText(SCRIPT_TEMPLATE)
         self._loaded_id = None
@@ -860,6 +929,9 @@ class FormDesigner(QDialog):
             desc = root.find("description")
             self.description = desc.text.strip() if desc is not None and desc.text else ""
             self.desc_edit.setPlainText(self.description)
+            variables = textwrap.dedent(root.findtext("variables") or "")
+            self.variables_edit.setPlainText((variables[1:] if variables.startswith("\n") else variables).rstrip())
+            self.read_variables()
             dbc_el = root.find("dbc_path")
             dbc_path = root.get("dbc_path", "") or (dbc_el.text.strip() if dbc_el is not None and dbc_el.text else "")
             if dbc_path and not Path(dbc_path).is_absolute():
@@ -917,6 +989,9 @@ class FormDesigner(QDialog):
             root.set("dbc_path", dbc_path)
         if description:
             ET.SubElement(root, "description").text = description
+        variables = self._variables_xml_text()
+        if variables:
+            ET.SubElement(root, "variables").text = variables
         pages_el = ET.SubElement(root, "pages")
         for page in data.get("pages", []):
             page_el = ET.SubElement(pages_el, "page", name=page.get("name", "Page"))
@@ -1012,6 +1087,13 @@ class FormDesigner(QDialog):
             if problem.line:
                 self.design_tabs.setCurrentWidget(self.code_page)
                 self.code_editor.go_to_line(problem.line, max(problem.column - 1, 0))
+            return
+        if problem.kind == VARIABLES:
+            self.design_tabs.setCurrentWidget(self.variables_page)
+            if problem.position:
+                block = self.variables_edit.document().findBlockByNumber(max(0, problem.position[0] - 1))
+                self.variables_edit.setTextCursor(QTextCursor(block))
+                self.variables_edit.setFocus()
             return
         found = self._find_control(problem)
         if found is not None:

@@ -234,6 +234,7 @@ class FormCanvas(QGroupBox):
         self.current_page_index = 0
         self.selection = []                  # indices on the current page; the last one is primary
         self.base_dir = None
+        self.variables = []             # the structured variables of the Variables tab: Variable Lists show them
         self.snap = True
         self.show_grid = True
         self._widget_clipboard = []
@@ -916,7 +917,7 @@ class FormCanvas(QGroupBox):
         for i, data in enumerate(widgets):
             kind = data.get("type", "button")
             try:
-                control, widget = build(kind, data, {"base_dir": self.base_dir})
+                control, widget = build(kind, data, {"base_dir": self.base_dir, "variables": self.variables})
                 control.preview(widget, data)
             except Exception as exc:  # a half-typed property must not break the canvas
                 widget = QLabel(f"{kind}: {exc}")
