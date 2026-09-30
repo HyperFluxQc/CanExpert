@@ -131,7 +131,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.session_generation = 0
         # Checks the ECUs with TesterPresent while no database is connected (after Disconnect, or on request).
         self.ecu_monitor = self.monitor_bus = self.monitor_channel = self.monitor_config = None
-        self.last_channel, self.used_channels = None, set()
+        self.last_channel = None   # the channel used last: selected and checked at the next start
         self._read_channel_history()
         self.symbols = SymbolDatabases(parent=self, settings=self._settings)
         # One clock for the Trace, the Logger, the Write window and the UDS Console (clock.py).

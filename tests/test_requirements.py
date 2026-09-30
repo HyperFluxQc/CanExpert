@@ -252,11 +252,38 @@ class RequirementsTest(unittest.TestCase):
         self.window = main.MainWindow()                                      # as if the application restarted
         items = self.window.channel_items
         self.assertEqual(self.window.selected_channel_config["channel"], 1)
-        self.assertTrue(items[("kvaser", 1, "", "")].font(0).bold())
+        self.assertTrue(items[("kvaser", 1, "", "")].font(0).bold(), "in use: its ECUs are checked")
         self.assertFalse(items[("kvaser", 0, "", "")].font(0).bold())
         self.assertIsNotNone(self.window.ecu_monitor, "TesterPresent should start on the remembered channel")
         heartbeat = self.ecu.recv(1.0)
         self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, PADDED_TESTER_PRESENT))
+
+    def test_only_the_channel_in_use_is_in_bold(self):
+        self.channels({"interface": "kvaser", "channel": 0}, {"interface": "kvaser", "channel": 1})
+        first, second = ("kvaser", 0, "", ""), ("kvaser", 1, "", "")
+        window = self.window
+
+        def bold():
+            return [key for key, item in window.channel_items.items() if item.font(0).bold()]
+
+        self.assertEqual(bold(), [])
+        window.on_channel_selected(window.channel_items[first])
+        window.on_connect_clicked()                                    # connected on the first
+        self.assertEqual(bold(), [first])
+        window.disconnect_database()                                   # its ECUs still checked: still in use
+        self.assertEqual(bold(), [first])
+        window.on_channel_selected(window.channel_items[second])
+        window.on_connect_clicked()                                    # another interface: the first is not in use
+        self.assertEqual(bold(), [second])
+        self.assertNotIn(first, window.database_items, "nor its database offered")
+        window.on_disconnect_clicked()                                 # nothing in use
+        self.assertEqual(bold(), [])
+        window.check_ecus(window.channel_items[first].data(0, Qt.UserRole))
+        self.assertEqual(bold(), [first])
+        window.set_offline(True)                                       # Kill CAN: nothing in use
+        self.assertEqual(bold(), [])
+        window.set_offline(False)                                      # back: the ECU check of the one used last
+        self.assertEqual(bold(), [second])
 
     def test_a_responding_ecu_offers_its_database_for_a_double_click(self):
         channel = self.channels({"interface": "kvaser", "channel": 0})[0]

@@ -218,9 +218,10 @@ Options inside the windows work the same way: a button that switches something o
 Trace window, the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for
 as long as that option is active, so you can see at a glance what is switched on.
 
-At startup CAN Expert selects the receiver you used last, shows every receiver you have connected to
-before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below) — unless it
-was closed off the bus (**Kill CAN**, see *Connecting*).
+At startup CAN Expert selects the receiver you used last and starts asking its ECUs whether they are there
+(see *Checking ECUs* below) — unless it was closed off the bus (**Kill CAN**, see *Connecting*). The receiver
+CAN Expert is using — connected, or checking its ECUs — is in **bold**; one it used before is not, once it is
+no longer in use.
 
 ## Configurations
 
