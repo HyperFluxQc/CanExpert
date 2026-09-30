@@ -49,7 +49,8 @@ class BitrateDetector(QThread):
 class ChannelSetupDialog(QDialog):
     """How one adapter channel is opened. Kept under the channel, used from the next connection on."""
 
-    def __init__(self, channel_config: dict, setup: ChannelSetup, bitrate: int, parent=None, in_use=False):
+    def __init__(self, channel_config: dict, setup: ChannelSetup, bitrate: int, parent=None, in_use=False,
+                 offline=False):
         super().__init__(parent)
         self.channel_config, self.bitrate, self.setup = channel_config, int(bitrate), setup
         self.interface = channel_config.get("interface", "")
@@ -100,7 +101,10 @@ class ChannelSetupDialog(QDialog):
         detect_row.addWidget(self.detect_btn)
         detect_row.addWidget(self.detect_label, 1)
         form.addRow("Bit rate:", detect_row)
-        if in_use:
+        if offline:
+            self.detect_btn.setEnabled(False)
+            self.detect_label.setText("CAN Expert is off the bus: release Kill CAN (Ctrl+F9) first.")
+        elif in_use:
             self.detect_btn.setEnabled(False)
             self.detect_label.setText("Disconnect first: the channel is in use.")
         elif self.interface not in LISTEN_ONLY_OPTIONS:

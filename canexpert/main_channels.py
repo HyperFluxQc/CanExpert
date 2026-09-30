@@ -181,6 +181,9 @@ class Channels:
         """Send TesterPresent on the channel at the configuration's interval and watch the ECU replies:
         each ECU shows Responding, or Lost connection after the node loss timeout."""
         self.stop_ecu_monitor()
+        if self.offline:
+            self.log_verbose("ECU check not started: CAN Expert is off the bus (Kill CAN)")
+            return
         channel = channel_config.get("channel", 0)
         setup = load_setup(self._settings, channel_config)
         if setup.listen_only:
@@ -252,7 +255,7 @@ class Channels:
         menu = QMenu(self)
         if self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
             menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
-        elif self.can_bus is None and self.active_config:
+        elif self.can_bus is None and self.active_config and not self.offline:
             menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
         menu.addSeparator()
         menu.addAction("Scan for ECUs on this channel...", lambda: self.open_ecu_scan(cfg))
@@ -271,6 +274,8 @@ class Channels:
     def _scan_bus(self, channel_config=None):
         """(bus, mailbox or None, close, padding) for a scan: a mailbox on the session or the ECU check when
         they run on that channel - their TesterPresent is paused meanwhile - else the channel itself."""
+        if self.offline:
+            raise ValueError("CAN Expert is off the bus: release Kill CAN (Ctrl+F9) first.")
         wanted = channel_config or self.connected_channel_config or self.monitor_channel or self.selected_channel_config
         if wanted is None:
             raise ValueError("Select a CAN channel first.")
@@ -311,7 +316,7 @@ class Channels:
                                                 and key == channel_key(self.connected_channel_config))
         bitrate = int((self.session_config or self.active_config or {}).get("bitrate", 500000))
         dialog = ChannelSetupDialog(channel_config, load_setup(self._settings, channel_config), bitrate, self,
-                                    in_use=in_use)
+                                    in_use=in_use, offline=self.offline)
         if dialog.exec_() == ChannelSetupDialog.Accepted:
             save_setup(self._settings, channel_config, dialog.setup)
             self._label_channels()

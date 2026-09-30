@@ -24,6 +24,7 @@ from canexpert.status_strip import DiagnosticState
 from canexpert.workspace import fit_on_screen
 
 MARKER_HISTORY = 1000              # markers kept for a window opened later
+OFFLINE_SETTING = "offline"        # settings: the kill switch was on - CAN Expert starts off the bus
 
 
 class Session:
@@ -32,6 +33,9 @@ class Session:
     def on_connect_clicked(self):
         """Connect: load the active configuration's panel database and run its script on the bus."""
         if self.can_bus is not None:
+            return
+        if self.offline:
+            self._set_status("Off the bus: release Kill CAN (Ctrl+F9) to connect", "red")
             return
         if not self.active_config or not self.selected_channel_config:
             QMessageBox.warning(self, "Connection", "Select a configuration and a CAN receiver first.")
@@ -174,7 +178,42 @@ class Session:
         self.on_disconnect_clicked()
         self._set_status(error, "red")
 
-    def on_disconnect_clicked(self):
+    def set_offline(self, offline: bool):
+        """The kill switch (Kill CAN, Ctrl+F9). On: CAN Expert off the bus at once - the Transmit window's
+        messages and nodes, any ECU scan, the session (its script stopped without its @on_stop handlers, which
+        could send) and the ECU check stop, every adapter is closed, and nothing opens one again until the switch
+        is released: not Connect, not the ECU check, not a scan. Kept in the settings, so CAN Expert starts off
+        the bus if it was left so. Off: back on the bus, and the ECU check starts again as at startup."""
+        from canexpert.ecu_scan import EcuScanDialog
+        offline = bool(offline)
+        action = self._toolbar_actions["kill"]
+        if action.isChecked() != offline:
+            action.setChecked(offline)                   # the button follows; it calls back here
+            return
+        self.offline = offline
+        self._settings.setValue(OFFLINE_SETTING, offline)
+        if offline:
+            transmit = self.tool_widget("transmit")
+            if transmit is not None:
+                transmit.stop_sending()
+            for scan in self.findChildren(EcuScanDialog):
+                scan.halt("CAN Expert went off the bus (Kill CAN)")
+            if self.can_bus is not None:
+                self.on_disconnect_clicked(hard=True)
+            self.stop_ecu_monitor()
+            self._toolbar_actions["connect"].setEnabled(False)
+            self.log_verbose("Kill CAN: off the bus - nothing is sent or received until it is released")
+            self._set_status("Off the bus: CAN Expert sends and receives nothing (Kill CAN, Ctrl+F9, to go back on)",
+                             "red")
+        else:
+            self._toolbar_actions["connect"].setEnabled(self.can_bus is None)
+            self.log_verbose("Kill CAN released: back on the bus")
+            self._set_status("Back on the bus", "gray")
+            self.check_last_channel()
+        self._label_channels()
+
+    def on_disconnect_clicked(self, hard=False):
+        """End the session. hard (the kill switch): its script is stopped without its @on_stop handlers."""
         self.session_generation += 1
         self._watch_keys(False)
         if self.flash_runner is not None:
@@ -185,7 +224,7 @@ class Session:
         self._close_flash_dialog()
         self.toolbar_buttons.set_available("flashing", False)
         if self.script_runtime:
-            self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
+            self.script_runtime.stop(run_stop_handlers=not hard)   # @on_stop handlers, then the bus revoked
             self.script_runtime = None
         if self.worker is not None:
             self.worker.stop()
@@ -200,7 +239,7 @@ class Session:
         self.connected_channel_config = None
         self.stop_recording()
         self._label_channels()
-        self._toolbar_actions["connect"].setEnabled(True)
+        self._toolbar_actions["connect"].setEnabled(not self.offline)
         self._toolbar_actions["disconnect"].setEnabled(False)
         self.status_strip.disconnected()
         self.config_list.setEnabled(True)

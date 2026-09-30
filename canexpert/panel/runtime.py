@@ -810,9 +810,13 @@ class ScriptRuntime(QObject):
                 self.values[name] = value
             self.value_changed.emit(name, value)
 
-    def stop(self):
-        # @on_stop handlers run first, while the bus is still usable (bounded wait for a busy script).
-        if self.stop_handlers and self.thread is not None and self.thread.is_alive() and not self.stop_event.is_set():
+    def stop(self, run_stop_handlers=True):
+        """Stop the script. Its @on_stop handlers run first, while the bus is still usable (a bounded wait for a
+        busy script) - unless run_stop_handlers is False (the kill switch): then the bus is revoked at once."""
+        if not run_stop_handlers:
+            self.api.set_bus(None)
+        if run_stop_handlers and self.stop_handlers and self.thread is not None and self.thread.is_alive() and \
+                not self.stop_event.is_set():
             self._stop_done.clear()
             self.post("stop", None, None)
             self._stop_done.wait(1.0)

@@ -851,6 +851,84 @@ def ready(api):
         self.addCleanup(configuration.close)
         self.assertEqual((configuration.server_id_edit.text(), configuration.ecu_id_edit.text()), ("7E0", "7E8"))
 
+    def drain(self):
+        """The frames the ECU's bus has received and not read yet."""
+        frames = []
+        message = self.ecu.recv(0)
+        while message is not None:
+            frames.append(message)
+            message = self.ecu.recv(0)
+        return frames
+
+    def assert_quiet(self, seconds=0.5):
+        """Nothing reaches the bus for a while (after what was on its way has arrived)."""
+        spin_until(lambda: False, 0.2)
+        self.drain()
+        spin_until(lambda: False, seconds)
+        self.assertEqual([hex(frame.arbitration_id) for frame in self.drain()], [], "nothing sent any more")
+
+    def test_the_kill_switch_takes_can_expert_off_the_bus(self):
+        from canexpert.channel_setup import load_setup
+        from canexpert.transmit_window import default_row
+        (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_stop
+def goodbye(api):
+    api.can.send(0x321, [0xDE, 0xAD])       # what a stopping script may send
+""")
+        kill = self.window._toolbar_actions["kill"]
+        self.assertEqual((kill.text(), kill.shortcut().toString()), ("Kill CAN", "Ctrl+F9"))
+        self.assertTrue(kill.isCheckable() and not kill.isChecked())
+        self.window.on_connect_clicked()                             # a session, and a message every 10 ms
+        messages = self.window.open_transmit().messages
+        messages.rows = [default_row("Beat", 0x123, b"\x01", 10)]
+        messages.rows[0]["enabled"] = True
+        messages._fill_table()
+        messages._sync_cyclic()
+        self.assertTrue(spin_until(lambda: any(frame.arbitration_id == 0x123 for frame in self.drain())))
+        kill.trigger()                                                # Kill CAN
+        self.assertTrue(self.window.offline and kill.isChecked())
+        self.assertNotIn(0x321, [frame.arbitration_id for frame in self.drain()], "no @on_stop: it could send")
+        self.assertIsNone(self.window.can_bus)
+        self.assertFalse(messages.rows[0]["enabled"], "the Transmit window's messages stop")
+        self.assert_quiet()
+        self.assertIn("Off the bus", self.window.status_label.text())
+        self.assertFalse(self.window._toolbar_actions["connect"].isEnabled())
+        calls = len(self.bus_calls)                                   # nothing opens the adapter
+        self.window.on_connect_clicked()
+        self.window.check_ecus(self.window.selected_channel_config)
+        self.window.disconnect_database()
+        with self.assertRaises(ValueError):
+            self.window._scan_bus(self.window.selected_channel_config)
+        setup = ChannelSetupDialog(self.window.selected_channel_config,
+                                   load_setup(self.settings, self.window.selected_channel_config), 500000,
+                                   offline=True)
+        self.addCleanup(setup.close)
+        self.assertFalse(setup.detect_btn.isEnabled(), "nor the bit rate search")
+        self.assertEqual(len(self.bus_calls), calls)
+        self.assertIsNone(self.window.ecu_monitor)
+        self.assert_quiet(0.2)
+        again = main.MainWindow()                                     # kept: it starts off the bus
+        self.addCleanup(again.close)
+        self.assertTrue(again.offline and again._toolbar_actions["kill"].isChecked())
+        again.selected_channel_config = self.window.selected_channel_config
+        again.on_connect_clicked()
+        self.assertIsNone(again.can_bus)
+        kill.trigger()                                                # released: back on the bus
+        self.assertFalse(self.window.offline or kill.isChecked())
+        self.assertFalse(self.settings.value("offline", True, type=bool))
+        self.assertTrue(self.window._toolbar_actions["connect"].isEnabled())
+        self.window.check_ecus(self.window.selected_channel_config)   # the ECU check, and a scan...
+        self.assertIsNotNone(self.window.ecu_monitor)
+        scan = self.window.open_ecu_scan(self.window.selected_channel_config)
+        self.addCleanup(scan.close)
+        self.assertIsNotNone(scan.start())
+        self.window.set_offline(True)                                 # ...stop too
+        self.assertIsNone(self.window.ecu_monitor)
+        self.assertFalse(scan.scanner.isRunning())
+        self.assertEqual(scan.status.text(), "The scan stopped: CAN Expert went off the bus (Kill CAN)")
+        self.assert_quiet()
+        self.window.set_offline(False)
+
     def test_the_toolbar_buttons_can_be_shown_or_hidden(self):
         from PyQt5.QtCore import Qt
         buttons = self.window.toolbar_buttons
@@ -877,8 +955,8 @@ def ready(api):
         self.assertFalse(flashing.isVisible())
         separators = [action for action in self.window.findChild(main.QToolBar).actions() if action.isSeparator()]
         self.assertTrue(separators[0].isVisible())
-        buttons.set_shown("connect", False)
-        buttons.set_shown("disconnect", False)
+        for name in ("connect", "disconnect", "kill"):                 # the first group, all hidden
+            buttons.set_shown(name, False)
         self.assertFalse(separators[0].isVisible(), "no separator with nothing before it")
         buttons.show_all()
         self.assertTrue(trace.isVisible() and separators[0].isVisible())

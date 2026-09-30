@@ -64,7 +64,7 @@ from canexpert.main_layouts import TOOL_AREAS
 from canexpert.main_tools import ToolWindows
 from canexpert.main_layouts import Layouts
 from canexpert.main_channels import Channels
-from canexpert.main_session import MARKER_HISTORY, Session
+from canexpert.main_session import MARKER_HISTORY, OFFLINE_SETTING, Session
 
 # A question mark in a circle, for the manual button beside the Help menu.
 MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.4-2.8 4"/>'
@@ -78,7 +78,7 @@ ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console"
                   "write", "tests", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
-SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
+SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "kill": "Ctrl+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
              "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
              "tests": "Ctrl+8", "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
 # The manual's section for each tool window, for F1.
@@ -163,6 +163,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self._panels_reported = set()   # the versions of panel files whose problems were shown after a Connect
         self._diagnostic_answers = (None, False, None)   # response ID, extended, address byte of the session
         self._bus_state = "unknown"
+        self.offline = False       # the kill switch: off the bus, nothing opens the adapter (set_offline)
 
         self.init_ui()
         self.load_configurations()
@@ -170,6 +171,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.node_timer.setInterval(100)
         self.node_timer.timeout.connect(self._update_nodes)
         self.node_timer.start()
+        if self._settings.value(OFFLINE_SETTING, False, type=bool):
+            self._toolbar_actions["kill"].setChecked(True)      # left off the bus: it starts off the bus
         self.check_last_channel()
 
     @property
@@ -213,6 +216,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
             ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
              self.disconnect_database),
+            ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - the session, the ECU check, the "
+             "Transmit window's\nmessages and nodes and any scan stop, and nothing opens the adapter until it is "
+             "pressed again.\nFor another tool, or another tester, to have the bus to itself", self.set_offline),
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
@@ -246,6 +252,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
                 action.setCheckable(True)
                 action.toggled.connect(lambda shown, n=name, show=callback: self._toggle_tool(n, shown, show))
                 hint = f"{hint}\nPress again to close the pane"
+            elif name == "kill":
+                action.setCheckable(True)                    # pressed in while CAN Expert is off the bus
+                action.toggled.connect(callback)
             else:
                 action.triggered.connect(callback)
             if name in SHORTCUTS:

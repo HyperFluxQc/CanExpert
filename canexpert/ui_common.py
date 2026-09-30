@@ -164,6 +164,7 @@ class ToolbarButtons:
 _PATHS = {
     "connect": '<path d="M8 3v5m6-5v5M6 8h10v4a5 5 0 0 1-10 0V8zm5 9v4M18 17h4m-2-2v4"/>',
     "disconnect": '<path d="M8 3v4m6-4v4M6 9v3a5 5 0 0 0 8.5 3.5M16 11V8h-5m0 9v4M3 3l18 18"/>',
+    "kill": '<path d="M12 3v8"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/>',
     "designer": '<rect x="3" y="4" width="18" height="16" rx="2"/>'
                 '<path d="M3 9h18M9 9v11"/>'
                 '<path d="m13 17 1-3 5-5 2 2-5 5-3 1z"/>',
@@ -209,6 +210,7 @@ _PATHS = {
 _COLORS = {
     "connect": ("#15803d", "#6ee7a0"),
     "disconnect": ("#c43c3c", "#ff9696"),
+    "kill": ("#b91c1c", "#fca5a5"),
     "designer": ("#6d4acb", "#bfa7ff"),
     "logger": ("#1566ae", "#7ac4ff"),
     "diagnostics": ("#a6600b", "#f6c16b"),

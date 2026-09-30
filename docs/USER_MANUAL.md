@@ -146,6 +146,15 @@ More in *Checking a panel*, under *Form Designer*.
 
 More in *Building a form*, under *Form Designer*.
 
+### ...leave the bus to another tool
+
+1. Press **Kill CAN** (Ctrl+F9). CAN Expert stops everything it sends — the session, TesterPresent, the
+   Transmit window, scans — and closes the adapter. The status bar says **Off the bus**.
+2. Let the other tool, or the other tester, work: CAN Expert does not touch the bus, even if you restart it.
+3. Press **Kill CAN** again to come back; then connect as usual.
+
+More in *Connecting*.
+
 ### ...test an ECU against ISO 14229
 
 1. Start **TestExpert** (`test_expert.py`, or **TestExpert.exe** beside CAN Expert).
@@ -195,7 +204,8 @@ Trace window, the CAN Logger and the Form Designer — stays pressed in with a c
 as long as that option is active, so you can see at a glance what is switched on.
 
 At startup CAN Expert selects the receiver you used last, shows every receiver you have connected to
-before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below).
+before in **bold**, and starts asking its ECUs whether they are there (see *Checking ECUs* below) — unless it
+was closed off the bus (**Kill CAN**, see *Connecting*).
 
 ## Configurations
 
@@ -249,7 +259,18 @@ not at every Connect. Each problem is written to the Log as well.
 **Double-clicking** a receiver, an ECU under it, or the database offered under it connects straight away —
 the same as pressing Connect.
 
-**Disconnect** stops the script and the traffic, and closes the adapter.
+**Disconnect** stops the script and the session's traffic. CAN Expert then goes on checking the ECUs with
+TesterPresent, so the CAN Channels tree still shows which ones answer (see *Checking ECUs*).
+
+**Kill CAN** (Ctrl+F9) is the kill switch: it takes CAN Expert off the bus at once, for another tool — or
+another tester — to have the bus and the ECU to itself. The session ends (its script stops without its
+`@on_stop` handlers, which could send), the ECU check, the Transmit window's messages and simulated nodes
+and any scan stop, and every adapter CAN Expert opened is closed: from then on it sends nothing and
+receives nothing. The button stays pressed in, the status bar says **Off the bus**, and nothing opens the
+adapter again — not Connect, not the ECU check, not a scan, not the bit rate search — until you press it
+again. CAN Expert remembers it: closed off the bus, it starts off the bus, without checking any ECU. Pressed
+again, it is back on the bus and checks the ECUs as at startup. What the ECU was asked to send by itself
+(periodic data, events) stops with its diagnostic session, a few seconds later, since nothing keeps it open.
 
 While you are connected, the **status bar** says how things stand:
 
@@ -1405,6 +1426,7 @@ them break security access and flashing.
 | Key | Does |
 |---|---|
 | **F9** / **Shift+F9** | Connect / Disconnect |
+| **Ctrl+F9** | Kill CAN: off the bus at once — pressed again, back on |
 | **Ctrl+1** ... **Ctrl+9** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test, J1939 — the toolbar's order; pressed again, the window closes |
 | **Ctrl+E** | Form Designer |
 | **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
