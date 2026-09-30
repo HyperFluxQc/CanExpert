@@ -101,6 +101,7 @@ class Session:
             self._set_flashing_available(False)
             self.flashing_toolbar_item.setVisible(True)
             self.config_list.setEnabled(False)
+            self.edit_config_btn.setEnabled(False)          # the configuration in use stays as it is
             self.database_pane.toggleView(True)
             self.database_pane.setAsCurrentTab()
             fit_on_screen(self.database_pane)
@@ -203,6 +204,7 @@ class Session:
         self._toolbar_actions["disconnect"].setEnabled(False)
         self.status_strip.disconnected()
         self.config_list.setEnabled(True)
+        self.edit_config_btn.setEnabled(True)
         self._restore_side_panels()
         self.database_pane.toggleView(False)
         self.channels_dock.show()

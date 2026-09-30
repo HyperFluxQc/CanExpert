@@ -851,6 +851,18 @@ def ready(api):
         self.addCleanup(configuration.close)
         self.assertEqual((configuration.server_id_edit.text(), configuration.ecu_id_edit.text()), ("7E0", "7E8"))
 
+    def test_the_selected_configuration_has_an_edit_button(self):
+        self.assertEqual(self.window.edit_config_btn.text(), "Edit")
+        self.window.edit_config_btn.click()
+        dialog = next(item for item in self.window.findChildren(main.ConfigurationDialog) if item.isVisible())
+        self.assertEqual(dialog.name_edit.currentText(), "Second", "the one selected")
+        dialog.close()
+        self.window.on_connect_clicked()
+        self.assertFalse(self.window.edit_config_btn.isEnabled(), "not the one in use")
+        self.assertIsNone(self.window.edit_configuration())
+        self.window.on_disconnect_clicked()
+        self.assertTrue(self.window.edit_config_btn.isEnabled())
+
     def test_default_node_loss_timing(self):
         cfg = validate_config({"name": "Defaults"})
         self.assertEqual(cfg["node_timeout_seconds"], 2.0)

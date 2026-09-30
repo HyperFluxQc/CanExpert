@@ -288,11 +288,16 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.new_config_btn = QPushButton("New")
         self.new_config_btn.setToolTip("Create a CAN configuration")
         self.new_config_btn.clicked.connect(self.create_new_config)
+        self.edit_config_btn = QPushButton("Edit")
+        self.edit_config_btn.setToolTip("Edit the selected configuration (double-clicking it does the same).\n"
+                                        "Disconnect first to edit the one in use.")
+        self.edit_config_btn.clicked.connect(lambda: self.edit_configuration())
         self.import_config_btn = QPushButton("Import")
         self.import_config_btn.clicked.connect(self.import_config)
         self.export_config_btn = QPushButton("Export")
         self.export_config_btn.clicked.connect(self.export_config)
         btn_row.addWidget(self.new_config_btn)
+        btn_row.addWidget(self.edit_config_btn)
         btn_row.addWidget(self.import_config_btn)
         btn_row.addWidget(self.export_config_btn)
         config_layout.addLayout(btn_row)
@@ -711,16 +716,19 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
     # --- Configurations ---
 
     def edit_configuration(self, item=None):
+        """Edit (the Edit button, or a double-click) the selected configuration - not the one in use."""
         if self.can_bus is None:
-            self._open_configuration_dialog(dict(self.active_config or {}))
+            return self._open_configuration_dialog(dict(self.active_config or {}))
+        return None
 
     def create_new_config(self):
-        self._open_configuration_dialog({})
+        return self._open_configuration_dialog({})
 
     def _open_configuration_dialog(self, config):
         dialog = ConfigurationDialog(self, config, CONFIG_DIR, settings=self._settings)
         dialog.accepted.connect(self.load_configurations)
         dialog.show()
+        return dialog
 
     def import_config(self):
         """Copy a configuration file into the Configurations folder."""

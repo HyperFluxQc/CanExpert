@@ -194,7 +194,8 @@ before in **bold**, and starts asking its ECUs whether they are there (see *Chec
 
 ## Configurations
 
-A configuration describes how to talk to an ECU. Double-click one to edit it, or use **New**.
+A configuration describes how to talk to an ECU. Select one and press **Edit** (or double-click it) to
+change it, or use **New**. The one in use while connected cannot be edited: disconnect first.
 
 | Field | Meaning |
 |---|---|
