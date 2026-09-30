@@ -3,6 +3,7 @@ Form Designer canvas: the widgets on the page (move, resize, select, z-order), t
 palette and DBC signals, and FormCanvas with its pages, layout tools, clipboard and undo/redo.
 """
 import copy
+import re
 import time
 
 from PyQt5.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
@@ -335,17 +336,22 @@ class FormCanvas(QGroupBox):
         return 1 + max((int(w.get("id", 0)) for p in self.pages for w in p["widgets"]
                         if str(w.get("id", "")).isdigit()), default=0)
 
+    @staticmethod
+    def _default_label(wtype: str, n) -> str:
+        """The label a new control is given: its kind and ID (I/O Box 3, Group 4, Label 5)."""
+        if wtype == "label":
+            return f"Label {n}"
+        return f"Group {n}" if wtype == "group_box" else f"{CONTROLS.get(wtype, CONTROLS['label']).label} {n}"
+
     def _default_data(self, wtype: str) -> dict:
         control = CONTROLS.get(wtype, CONTROLS["label"])
         n = self._next_id()
         data = {"type": wtype, "id": str(n), "x": 0, "y": 0, "variable": "", "binding_type": BINDING_TYPE_SCRIPT,
                 "binding_value": ""}
         data.update(control.defaults())
+        data["label"] = self._default_label(wtype, n)
         if wtype == "label":
-            data["text"] = f"Label {n}"
-            data["label"] = data["text"]
-        else:
-            data["label"] = f"{control.label} {n}" if wtype != "group_box" else f"Group {n}"
+            data["text"] = data["label"]
         return data
 
     # --- undo / redo --------------------------------------------------------------------
@@ -539,7 +545,8 @@ class FormCanvas(QGroupBox):
         self.delete_selection()
 
     def paste_at(self, x=None, y=None):
-        """Paste the clipboard; with a position, the pasted group's top-left lands there."""
+        """Paste the clipboard; with a position, the pasted group's top-left lands there. A copy beside its
+        original gets a name of its own and no handler (rename_copy); a control that was cut keeps both."""
         if not self._widget_clipboard:
             return
         self.checkpoint()
@@ -553,14 +560,10 @@ class FormCanvas(QGroupBox):
             n = self._next_id()
             data["id"] = str(n)
             data["x"], data["y"] = max(0, self._snap(data.get("x", 0) + dx)), max(0, self._snap(data.get("y", 0) + dy))
-            if data.get("binding_type", BINDING_TYPE_SCRIPT) == BINDING_TYPE_SCRIPT and data.get("binding_value"):
-                base = data["binding_value"]
-                suffix = 2
-                while f"{base}_{suffix}" in names:
-                    suffix += 1
-                data["binding_value"] = data["variable"] = f"{base}_{suffix}"
-                names.add(data["binding_value"])
-            data.pop("handler", None)
+            if control_name(data) in names:                 # its original is on the panel: a copy
+                self.rename_copy(data, source.get("id", ""), names)
+                data.pop("handler", None)                   # its own, written when it is double-clicked
+            names.add(control_name(data))
             self._current_widgets().append(data)
             new_indices.append(len(self._current_widgets()) - 1)
         self._widget_clipboard = [copy.deepcopy(self._current_widgets()[i]) for i in new_indices]
@@ -571,6 +574,27 @@ class FormCanvas(QGroupBox):
     def duplicate_selection(self):
         self.copy_selection()
         self.paste_at()
+
+    def rename_copy(self, data, original_id, names):
+        """Give a copy the name of its own that keeps it apart from its original - in the script, for its
+        handler, at run time. A label made up from the original's ID (I/O Box 3) is made up from the copy's
+        (I/O Box 5); a script name goes on with a number (speed, speed_2, speed_3); a control named by its label
+        keeps the label and gets a script name after it (Start_2). One bound to a DBC signal keeps the signal:
+        that is what it shows or sets."""
+        if data.get("binding_type", BINDING_TYPE_SCRIPT) != BINDING_TYPE_SCRIPT:
+            return
+        kind = data.get("type", "button")
+        if not data.get("binding_value") and data.get("label") == self._default_label(kind, original_id):
+            data["label"] = self._default_label(kind, data["id"])
+            if kind == "label":
+                data["text"] = data["label"]
+            if control_name(data) not in names:
+                return
+        base = re.sub(r"_\d+$", "", control_name(data)) or "control"
+        number = 2
+        while f"{base}_{number}" in names:
+            number += 1
+        data["binding_value"] = data["variable"] = f"{base}_{number}"
 
     # --- selection ------------------------------------------------------------------------
 

@@ -13,7 +13,7 @@ from PyQt5.QtGui import QKeyEvent, QMouseEvent
 from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from canexpert.designer.form_designer import FormDesigner
-from canexpert.designer.side_panels import DraggablePaletteItem, default_handler_name
+from canexpert.designer.side_panels import DraggablePaletteItem, control_name, default_handler_name
 from canexpert.panel.database import parse_application_database
 from canexpert.panel.controls import CONTROLS
 
@@ -199,6 +199,30 @@ class FormDesignerTest(unittest.TestCase):
         self.canvas.set_selection([])
         self.canvas.select_in_rect(QRectF(0, 0, 25, 25))
         self.assertEqual(self.canvas.selection, [0])
+
+    def test_a_copy_gets_a_name_of_its_own(self):
+        io_box = self.canvas.add_widget_at("io_box", 10, 10)            # named by its made-up label: I/O Box 1
+        self.canvas.add_widget_at("button", 10, 60, label="Start", handler="on_start_clicked")
+        self.canvas.add_widget_at("spin", 10, 110, binding_value="speed", variable="speed", handler="on_speed_changed")
+        self.canvas.add_widget_at("value", 10, 160, binding_type="dbc", binding_value="EngineData.Temperature",
+                                  label="Temperature")
+        self.canvas.select_all()
+        self.canvas.duplicate_selection()
+        copies = self.widgets()[4:]
+        self.assertEqual([control_name(data) for data in copies], ["I/O Box 5", "Start_2", "speed_2", "Temperature"])
+        self.assertEqual((copies[0]["label"], copies[1]["label"]), ("I/O Box 5", "Start"), "a caption stays")
+        self.assertEqual(copies[3]["binding_value"], "EngineData.Temperature", "a DBC signal stays")
+        self.assertTrue(all("handler" not in data for data in copies), "no handler: the original's is not shared")
+        self.assertNotEqual(default_handler_name(copies[0]), default_handler_name(io_box))
+        self.canvas.set_selection([6])
+        self.canvas.duplicate_selection()
+        self.assertEqual(self.widgets()[-1]["binding_value"], "speed_3", "the next number, not speed_2_2")
+        self.assertFalse([problem for problem in self.designer.check_form() if "Two controls" in problem.message])
+        self.canvas.set_selection([2])                                    # cut and pasted: the same control, moved
+        self.canvas.cut_selection()
+        self.canvas.paste_at(300, 300)
+        moved = self.widgets()[-1]
+        self.assertEqual((moved["binding_value"], moved["handler"], moved["x"]), ("speed", "on_speed_changed", 300))
 
     def test_resize_handle_snaps_to_grid(self):
         data = self.canvas.add_widget_at("gauge", 20, 20)

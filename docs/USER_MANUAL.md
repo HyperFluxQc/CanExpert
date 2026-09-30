@@ -472,6 +472,12 @@ New, Open and closing the window ask whether to save changes first.
   control inside a group box, whichever was put on the page first. A group box itself moves by its title or
   its frame; pressing inside it, where nothing is, starts a selection rectangle. A **double-click** goes to
   the control's handler; double-click and keep the button down to drag instead.
+- **Duplicate** (Ctrl+D) and **Copy**/**Paste** give each copy a name of its own, so the script, its
+  handlers and the running panel keep it apart from the original: a made-up label follows the copy's ID
+  (`I/O Box 3` → `I/O Box 5`), a script name goes on with a number (`speed` → `speed_2`, then `speed_3`), and
+  a control named by its caption keeps the caption and gets a script name after it (`Start_2`). A copy has
+  no handler until you double-click it — then it gets one of its own. A control bound to a DBC signal stays
+  bound to it. **Cut** and **Paste** move a control: it keeps its name and its handler.
 - Select controls (click, or rubber-band several), then use the toolbar to align, distribute, make the same
   size, change the stacking order, undo and redo. The last selected control is the reference for aligning.
   The grid button snaps to the grid.
