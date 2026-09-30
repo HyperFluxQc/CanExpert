@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt5.QtCore import QEvent, QRectF, Qt
-from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtCore import QEvent, QPoint, QRectF, Qt
+from PyQt5.QtGui import QKeyEvent, QMouseEvent
 from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from canexpert.designer.form_designer import FormDesigner
@@ -29,6 +29,23 @@ def spin_until(predicate, timeout=3.0):
             return True
         time.sleep(0.005)
     return False
+
+
+def mouse(view, kind, pos, buttons=Qt.LeftButton):
+    """A mouse event on the canvas's viewport, as the mouse sends it."""
+    viewport = view.viewport()
+    APP.sendEvent(viewport, QMouseEvent(kind, pos, viewport.mapToGlobal(pos), Qt.LeftButton, buttons, Qt.NoModifier))
+
+
+def drag(view, start, end, double=False):
+    """Press (the second press of a double-click, with double), move in steps and release."""
+    if double:
+        mouse(view, QEvent.MouseButtonPress, start)
+        mouse(view, QEvent.MouseButtonRelease, start, Qt.NoButton)
+    mouse(view, QEvent.MouseButtonDblClick if double else QEvent.MouseButtonPress, start)
+    for step in range(1, 11):
+        mouse(view, QEvent.MouseMove, start + (end - start) * step / 10)
+    mouse(view, QEvent.MouseButtonRelease, end, Qt.NoButton)
 
 
 class CompletionTest(unittest.TestCase):
@@ -56,6 +73,7 @@ class FormDesignerTest(unittest.TestCase):
         self.widgets = self.canvas._current_widgets
 
     def tearDown(self):
+        self.designer._mark_clean()             # shown and changed by a test: closed without a question
         self.designer.close()
 
     def key(self, key, modifiers=Qt.NoModifier):
@@ -67,6 +85,49 @@ class FormDesignerTest(unittest.TestCase):
         for kind in kinds:
             data = self.canvas.add_widget_at(kind, 20, 20)
             self.assertEqual((data["width"], data["height"]), CONTROLS[kind].size)
+
+    def test_every_control_is_dragged_by_holding_the_left_button(self):
+        self.designer.resize(1200, 800)
+        self.designer.show()
+        view = self.canvas.graphics_view
+        for kind in (kind for kind, control in CONTROLS.items() if control.in_palette and kind != "group_box"):
+            for boxed in (False, True):
+                self.canvas.load_from_data({})
+                data = self.canvas.add_widget_at(kind, 200, 200)
+                if boxed:                               # a group box put around it afterwards lies above it
+                    box = self.canvas.add_widget_at("group_box", 160, 160)
+                    box["width"], box["height"] = 420, 280
+                    self.canvas._rebuild()
+                APP.processEvents()
+                item = self.canvas._items[0]
+                self.assertEqual(item.cursor().shape(), Qt.SizeAllCursor, f"{kind}: the move cursor, not a text one")
+                grab = view.mapFromScene(200 + int(data["width"]) // 2, 200 + int(data["height"]) // 2)
+                drag(view, grab, grab + QPoint(100, 60))
+                self.assertEqual((data["x"], data["y"]), (300, 260), f"{kind}{' in a group box' if boxed else ''}")
+        box = self.canvas._current_widgets()[1]                    # the group box: by its title, not its inside
+        drag(view, view.mapFromScene(box["x"] + 60, box["y"] + 8), view.mapFromScene(box["x"] + 80, box["y"] + 28))
+        self.assertEqual((box["x"], box["y"]), (180, 180))
+        empty = view.mapFromScene(box["x"] + 20, box["y"] + 250)  # its empty inside: a rubber band
+        drag(view, empty, empty + QPoint(150, 20))
+        self.assertEqual(self.canvas.selection, [], "nothing lies wholly in the band")
+        self.assertEqual((box["x"], box["y"]), (180, 180))
+
+    def test_a_double_click_goes_to_the_handler_and_a_held_one_drags(self):
+        self.designer.resize(1200, 800)
+        self.designer.show()
+        view = self.canvas.graphics_view
+        data = self.canvas.add_widget_at("io_box", 200, 200, binding_value="speed")
+        APP.processEvents()
+        requested = []
+        self.canvas.handler_requested.connect(requested.append)
+        grab = view.mapFromScene(250, 215)
+        drag(view, grab, grab + QPoint(100, 60), double=True)      # double-click, held, moved: a drag
+        self.assertEqual((data["x"], data["y"]), (300, 260))
+        self.assertEqual(requested, [])
+        grab = view.mapFromScene(350, 275)
+        drag(view, grab, grab, double=True)                         # a double-click: the handler
+        self.assertEqual(requested, [0])
+        self.assertEqual((data["x"], data["y"]), (300, 260))
 
     def test_dropped_signals_become_bound_controls(self):
         self.designer.symbol_list.load_dbc_path(str(DBC))

@@ -6,7 +6,7 @@ import copy
 import time
 
 from PyQt5.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QPalette, QPen, QPolygonF
+from PyQt5.QtGui import QColor, QPainterPath, QPalette, QPen, QPolygonF
 from PyQt5.QtWidgets import (
     QFrame, QGraphicsItem, QGraphicsProxyWidget, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QGroupBox,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QPushButton, QRubberBand, QToolButton, QVBoxLayout,
@@ -30,16 +30,25 @@ class CanvasItem(QGraphicsProxyWidget):
         super().__init__()
         self.canvas, self.index, self.kind = canvas, index, kind
         self.setAcceptHoverEvents(False)
+
+    def show_control(self, widget):
+        """Show a preview of the control. It is a picture to move, whatever it is: the move cursor, not the text
+        cursor an I/O box's line edit would bring, and no keyboard focus."""
+        self.setWidget(widget)
         self.setFlag(QGraphicsItem.ItemIsFocusable, False)
         self.setCursor(Qt.SizeAllCursor)
 
-    def is_container_interior(self, scene_pos):
-        """Inside a group box, away from its title and border: a rubber-band start, not a move."""
-        if self.kind != "group_box":
-            return False
-        local = self.mapFromScene(scene_pos)
+    def shape(self):
+        """What a click hits: all of a control - but only the title and frame of a group box, so the controls
+        inside it can be grabbed even when it was put on the page after them (and lies above them)."""
+        path = QPainterPath()
         rect = self.boundingRect()
-        return rect.adjusted(8, 22, -8, -8).contains(local)
+        path.addRect(rect)
+        if self.kind == "group_box":
+            inside = QPainterPath()
+            inside.addRect(rect.adjusted(8, 22, -8, -8))
+            path = path.subtracted(inside)
+        return path
 
     def mousePressEvent(self, event):
         self.canvas.item_pressed(self, event)
@@ -51,7 +60,8 @@ class CanvasItem(QGraphicsProxyWidget):
         self.canvas.item_released(event)
 
     def mouseDoubleClickEvent(self, event):
-        self.canvas.handler_requested.emit(self.index)
+        # Held and moved, it is a drag like any press; released where it was, it goes to the handler.
+        self.canvas.item_pressed(self, event, double=True)
 
     def wheelEvent(self, event):
         event.ignore()  # scroll the canvas, not the previewed control
@@ -152,10 +162,10 @@ class DroppableGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event):
         self.setFocus()
-        scene_pos = self.mapToScene(event.pos())
+        # The inside of a group box is not part of its shape: a press there reaches the control beneath, or
+        # starts a rubber band.
         top = next((item for item in self.items(event.pos()) if isinstance(item, (CanvasItem, ResizeHandle))), None)
-        if event.button() == Qt.LeftButton and (top is None or (isinstance(top, CanvasItem)
-                                                                 and top.is_container_interior(scene_pos))):
+        if event.button() == Qt.LeftButton and top is None:
             if not event.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
                 self.canvas.set_selection([])
             self._band_origin = event.pos()
@@ -628,7 +638,8 @@ class FormCanvas(QGroupBox):
 
     # --- mouse: select, move, resize ---------------------------------------------------------
 
-    def item_pressed(self, item, event):
+    def item_pressed(self, item, event, double=False):
+        """A press on a control (the second press of a double-click too): select it and get ready to drag."""
         index = item.index
         if event.button() == Qt.RightButton:
             if index not in self.selection:
@@ -636,7 +647,10 @@ class FormCanvas(QGroupBox):
             return
         if event.button() != Qt.LeftButton:
             return
-        if event.modifiers() & Qt.ControlModifier:
+        if double:
+            if index not in self.selection:
+                self.set_selection([index])
+        elif event.modifiers() & Qt.ControlModifier:
             if index in self.selection:
                 self.set_selection([i for i in self.selection if i != index])
                 return
@@ -646,7 +660,8 @@ class FormCanvas(QGroupBox):
         else:
             self.set_selection([i for i in self.selection if i != index] + [index])  # make it primary
         widgets = self._current_widgets()
-        self._drag = {"start": event.scenePos(), "moved": False, "snapshot": self._snapshot(),
+        self._drag = {"start": event.scenePos(), "moved": False, "snapshot": self._snapshot(), "double": double,
+                      "index": index,
                       "origins": {i: (widgets[i].get("x", 0), widgets[i].get("y", 0)) for i in self.selection}}
 
     def item_dragged(self, event):
@@ -677,12 +692,13 @@ class FormCanvas(QGroupBox):
     def item_released(self, event):
         if self._drag is None:
             return
-        moved = self._drag["moved"]
-        self._drag = None
-        if moved:
+        drag, self._drag = self._drag, None
+        if drag["moved"]:
             self._fit_scene()
             self._update_tool_states()
             self.geometry_changed.emit(self._current_widgets()[self.selected_index])
+        elif drag["double"]:
+            self.handler_requested.emit(drag["index"])              # a double-click, not a drag
 
     def resize_started(self):
         data = self._current_widgets()[self.selected_index]
@@ -883,7 +899,7 @@ class FormCanvas(QGroupBox):
             widget.setFixedSize(max(MIN_SIZE[0], int(data.get("width", 100))), max(MIN_SIZE[1], int(data.get("height", 30))))
             widget.setAttribute(Qt.WA_TransparentForMouseEvents)
             item = CanvasItem(self, i, kind)
-            item.setWidget(widget)
+            item.show_control(widget)
             item.setPos(data.get("x", 0), data.get("y", 0))
             item.setZValue(i)
             self.scene.addItem(item)
