@@ -568,10 +568,24 @@ Idle (DID 0x0110)
 * uint16 speed
 ```
 
+— or in braces, as in C, on one line or on several; a `;` ends a field, and so does the end of a line:
+
+```
+MyList { uint32 data1; uint8 data2; }
+
+Idle (DID 0x0110) {
+    uint16 speed;
+    uint8 gear;
+}
+```
+
 - A field is *type name*, or *type name[count]* for an array. The types: `uint8` to `uint64`, `int8` to
   `int64`, `float32`, `float64`, `bool` and `char` (`char name[16]` is a text of 16 bytes) — and their C
-  names (`uint32_t`, `unsigned int`, `float`, `double`...), so a `struct` pasted from a C header works too.
-  The `*` (or `-`) in front is optional; `//` and `#` start a comment.
+  names (`uint32_t`, `unsigned int`, `float`, `double`...), so a `struct` pasted from a C header works too
+  (`struct Name { ... };`, `typedef struct { ... } Name;`, `int16 x, y, z;`). The `*` (or `-`) in front is
+  optional; `//` and `#` start a comment, `/* ... */` is one, over several lines too.
+- A variable holds fields, not other variables: a field whose type is another variable (`MyList rows[4];`)
+  or a `struct` inside the braces is said to be wrong, with its line.
 - In brackets after the name, where it lives in the ECU: **DID 0x0110** (read with ReadDataByIdentifier,
   written with WriteDataByIdentifier) or **memory 0x20001000** (ReadMemoryByAddress, WriteMemoryByAddress,
   4-byte address and size) — and **little-endian** when the ECU keeps it so; big-endian otherwise. Without
