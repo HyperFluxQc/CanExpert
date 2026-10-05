@@ -15,6 +15,7 @@ import threading
 import time
 from collections import deque
 
+from canexpert.can_bus import OffTheBus
 from canexpert.timing import Waiter, precise_switching, raise_priority
 
 MIN_CYCLE = 0.001      # a cycle of zero would send as fast as the thread runs
@@ -107,6 +108,13 @@ class CyclicSender:
         self._waiter = Waiter() if spin is None else Waiter(spin)
         self._thread = None
         self._closed = False
+        self._paused = False
+
+    def pause(self, paused=True):
+        """Paused, nothing is sent and every key keeps its rhythm, to go on where it was (the kill switch);
+        a key is not stopped for it."""
+        self._paused = bool(paused)
+        self._waiter.wake()
 
     def set(self, key, cycle: float, frame):
         """Send frame() every cycle seconds - at once for a new key; a key already sent keeps its rhythm."""
@@ -171,12 +179,16 @@ class CyclicSender:
             with self._lock:
                 due = [(key, frame) for key, (cycle, frame) in self._entries.items()
                        if self._schedule.due(key, cycle, now)]
+            if self._paused:
+                continue                                    # their turn passes; nothing goes out
             for key, frame in due:
                 try:
                     message = frame()
                     if message is None:
                         continue
                     self._send(*message)
+                except OffTheBus:
+                    continue                                # the kill switch: this one is not sent; the next may be
                 except Exception as exc:                    # not connected, adapter error, a frame that is wrong
                     self.remove(key)
                     self._failed(key, exc)

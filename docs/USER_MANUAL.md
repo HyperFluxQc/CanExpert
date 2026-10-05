@@ -163,10 +163,11 @@ More in *The Variables tab*, under *Form Designer*.
 
 ### ...leave the bus to another tool
 
-1. Press **Kill CAN** (Ctrl+F9). CAN Expert stops everything it sends — the session, TesterPresent, the
-   Transmit window, scans — and closes the adapter. The status bar says **Off the bus**.
+1. Press **Kill CAN** (Ctrl+F9). CAN Expert closes the adapter and sends nothing more — no TesterPresent,
+   no Transmit window message, no script frame. The database stays loaded; the status bar says **Off the
+   bus**.
 2. Let the other tool, or the other tester, work: CAN Expert does not touch the bus, even if you restart it.
-3. Press **Kill CAN** again to come back; then connect as usual.
+3. Press **Kill CAN** again to come back: the adapter opens again and the session goes on where it was.
 
 More in *Connecting*.
 
@@ -279,14 +280,23 @@ the same as pressing Connect.
 TesterPresent, so the CAN Channels tree still shows which ones answer (see *Checking ECUs*).
 
 **Kill CAN** (Ctrl+F9) is the kill switch: it takes CAN Expert off the bus at once, for another tool — or
-another tester — to have the bus and the ECU to itself. The session ends (its script stops without its
-`@on_stop` handlers, which could send), the ECU check, the Transmit window's messages and simulated nodes
-and any scan stop, and every adapter CAN Expert opened is closed: from then on it sends nothing and
-receives nothing. The button stays pressed in, the status bar says **Off the bus**, and nothing opens the
-adapter again — not Connect, not the ECU check, not a scan, not the bit rate search — until you press it
-again. CAN Expert remembers it: closed off the bus, it starts off the bus, without checking any ECU. Pressed
-again, it is back on the bus and checks the ECUs as at startup. What the ECU was asked to send by itself
-(periodic data, events) stops with its diagnostic session, a few seconds later, since nothing keeps it open.
+another tester — to have the bus and the ECU to itself. Every adapter CAN Expert opened is closed: from
+then on it sends nothing and receives nothing. **The database stays loaded**: the panel, its script and the
+windows stay as they are, and only the communication stops —
+
+- no TesterPresent; the Transmit window's messages and simulated nodes wait, still switched on;
+- what the script sends — frames, UDS requests — is refused, and the Write window says so once; the script
+  goes on running;
+- a reflash, a test run and a scan stop, and so does the ECU check;
+- the channel shows **[Off the bus]**, and the status bar says **Off the bus**.
+
+Nothing opens an adapter again — not Connect, not the ECU check, not a scan, not the bit rate search —
+until you press it again. Then the adapter is opened again and everything goes on where it was:
+TesterPresent, the Transmit window's messages, the script's frames. **Disconnect** still closes the
+database while CAN Expert is off the bus (the script's `@on_stop` frames are refused too). CAN Expert
+remembers the switch: closed off the bus, it starts off the bus, without checking any ECU. What the ECU was
+asked to send by itself (periodic data, events) stops with its diagnostic session, a few seconds later,
+since nothing keeps it open.
 
 While you are connected, the **status bar** says how things stand:
 

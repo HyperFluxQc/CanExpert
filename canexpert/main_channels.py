@@ -95,7 +95,7 @@ class Channels:
         if load_setup(self._settings, cfg).listen_only:
             label += " [listen-only]"
         if self.connected_channel_config and channel_key(cfg) == channel_key(self.connected_channel_config):
-            label += " [Connected]"
+            label += " [Off the bus]" if self.offline else " [Connected]"
         elif self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
             label += " [Checking ECUs]"
         return label
@@ -110,7 +110,10 @@ class Channels:
             item.setFont(0, font)
 
     def _channel_checked(self, key):
-        """True while ECU replies on this channel are being watched: a database session or the ECU check."""
+        """True while ECU replies on this channel are being watched: a database session or the ECU check - not
+        off the bus (Kill CAN), when the adapter is closed."""
+        if self.offline:
+            return False
         if self.can_bus is not None and self.connected_channel_config is not None:
             if key == channel_key(self.connected_channel_config):
                 return True

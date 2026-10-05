@@ -894,36 +894,53 @@ def ready(api):
         spin_until(lambda: False, seconds)
         self.assertEqual([hex(frame.arbitration_id) for frame in self.drain()], [], "nothing sent any more")
 
-    def test_the_kill_switch_takes_can_expert_off_the_bus(self):
+    def test_the_kill_switch_takes_can_expert_off_the_bus_and_keeps_the_database(self):
         from canexpert.channel_setup import load_setup
         from canexpert.transmit_window import default_row
         (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_timer(0.05)
+def beat(api):
+    api.can.send(0x321, [0xBE])             # the script sends on its own
+
 @on_stop
 def goodbye(api):
-    api.can.send(0x321, [0xDE, 0xAD])       # what a stopping script may send
+    api.can.send(0x322, [0xDE, 0xAD])       # and when it stops
 """)
         kill = self.window._toolbar_actions["kill"]
         self.assertEqual((kill.text(), kill.shortcut().toString()), ("Kill CAN", "Ctrl+F9"))
         self.assertTrue(kill.isCheckable() and not kill.isChecked())
         self.window.on_connect_clicked()                             # a session, and a message every 10 ms
+        write = self.window.open_write()
         messages = self.window.open_transmit().messages
         messages.rows = [default_row("Beat", 0x123, b"\x01", 10)]
         messages.rows[0]["enabled"] = True
         messages._fill_table()
         messages._sync_cyclic()
-        self.assertTrue(spin_until(lambda: any(frame.arbitration_id == 0x123 for frame in self.drain())))
+        seen = set()
+        everything = {0x123, 0x321, 0x7E0}                          # the Transmit window, the script, TesterPresent
+        self.assertTrue(spin_until(lambda: seen.update(f.arbitration_id for f in self.drain()) or everything <= seen))
+        database, panel, runtime = self.window.app_database, self.window.panel, self.window.script_runtime
+
         kill.trigger()                                                # Kill CAN
         self.assertTrue(self.window.offline and kill.isChecked())
-        self.assertNotIn(0x321, [frame.arbitration_id for frame in self.drain()], "no @on_stop: it could send")
-        self.assertIsNone(self.window.can_bus)
-        self.assertFalse(messages.rows[0]["enabled"], "the Transmit window's messages stop")
-        self.assert_quiet()
-        self.assertIn("Off the bus", self.window.status_label.text())
+        self.assert_quiet()                                           # nothing at all goes out
+        self.assertIs(self.window.app_database, database, "the database stays loaded...")
+        self.assertIs((self.window.panel, self.window.script_runtime)[0], panel)
+        self.assertIs(self.window.script_runtime, runtime, "...and its script runs on")
+        self.assertTrue(messages.rows[0]["enabled"], "the Transmit window's message waits, switched on")
+        refused = lambda: [line for line in write.lines() if "off the bus" in line]    # noqa: E731
+        self.assertTrue(spin_until(refused))
+        spin_until(lambda: False, 0.3)
+        self.assertEqual(len(refused()), 1, "the script's refused frames said once, not at every try")
+        self.assertIn("database stays loaded", self.window.status_label.text())
+        channel = self.window.channel_items[can_bus.channel_key(self.window.connected_channel_config)]
+        self.assertIn("[Off the bus]", channel.text(0))
+        self.assertFalse(channel.font(0).bold(), "not in use: the adapter is closed")
         self.assertFalse(self.window._toolbar_actions["connect"].isEnabled())
+        self.assertTrue(self.window._toolbar_actions["disconnect"].isEnabled(), "the database can still be closed")
         calls = len(self.bus_calls)                                   # nothing opens the adapter
         self.window.on_connect_clicked()
         self.window.check_ecus(self.window.selected_channel_config)
-        self.window.disconnect_database()
         with self.assertRaises(ValueError):
             self.window._scan_bus(self.window.selected_channel_config)
         setup = ChannelSetupDialog(self.window.selected_channel_config,
@@ -933,23 +950,38 @@ def goodbye(api):
         self.assertFalse(setup.detect_btn.isEnabled(), "nor the bit rate search")
         self.assertEqual(len(self.bus_calls), calls)
         self.assertIsNone(self.window.ecu_monitor)
-        self.assert_quiet(0.2)
+
+        kill.trigger()                                                # released: the same session goes on
+        self.assertFalse(self.window.offline or kill.isChecked())
+        self.assertEqual(len(self.bus_calls), calls + 1, "the adapter opened again")
+        seen.clear()
+        self.assertTrue(spin_until(lambda: seen.update(f.arbitration_id for f in self.drain()) or everything <= seen),
+                        f"all of it again: {sorted(map(hex, seen))}")
+        self.assertIs(self.window.app_database, database)
+        self.assertIn("Back on the bus", self.window.status_label.text())
+        self.assertIn("[Connected]", self.window.channel_items[
+            can_bus.channel_key(self.window.connected_channel_config)].text(0))
+
+        kill.trigger()                                                # Disconnect while off the bus
+        self.window.disconnect_database()
+        self.assertIsNone(self.window.can_bus)
+        self.assertIsNone(self.window.app_database)
+        self.assert_quiet()                                           # not @on_stop's frame, not the ECU check
+        self.assertIsNone(self.window.ecu_monitor)
         again = main.MainWindow()                                     # kept: it starts off the bus
         self.addCleanup(again.close)
         self.assertTrue(again.offline and again._toolbar_actions["kill"].isChecked())
         again.selected_channel_config = self.window.selected_channel_config
         again.on_connect_clicked()
         self.assertIsNone(again.can_bus)
-        kill.trigger()                                                # released: back on the bus
-        self.assertFalse(self.window.offline or kill.isChecked())
+        kill.trigger()                                                # released without a session: the ECU check
         self.assertFalse(self.settings.value("offline", True, type=bool))
-        self.assertTrue(self.window._toolbar_actions["connect"].isEnabled())
-        self.window.check_ecus(self.window.selected_channel_config)   # the ECU check, and a scan...
+        self.window.check_ecus(self.window.selected_channel_config)
         self.assertIsNotNone(self.window.ecu_monitor)
         scan = self.window.open_ecu_scan(self.window.selected_channel_config)
         self.addCleanup(scan.close)
         self.assertIsNotNone(scan.start())
-        self.window.set_offline(True)                                 # ...stop too
+        self.window.set_offline(True)                                 # a scan and the ECU check stop too
         self.assertIsNone(self.window.ecu_monitor)
         self.assertFalse(scan.scanner.isRunning())
         self.assertEqual(scan.status.text(), "The scan stopped: CAN Expert went off the bus (Kill CAN)")

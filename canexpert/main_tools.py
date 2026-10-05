@@ -281,6 +281,7 @@ class ToolWindows:
         if created:
             # Closing the window stops what it sends; a tab of another window in front of it does not.
             self.tool_panes["transmit"].viewToggled.connect(lambda shown, p=pane: None if shown else p.stop_sending())
+            pane.pause_sending(self.offline)              # opened off the bus (Kill CAN): nothing until it is off
         if nodes:
             pane.show_nodes()
         return pane

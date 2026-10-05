@@ -132,6 +132,67 @@ class UnsolicitedAssembler:
         self.send(can.Message(arbitration_id=self.request_id, data=data, is_extended_id=self.extended))
 
 
+class OffTheBus(can.CanOperationError):
+    """A send while CAN Expert is off the bus (Kill CAN): nothing went out."""
+
+
+OFF_THE_BUS = "CAN Expert is off the bus (Kill CAN): nothing is sent"
+
+
+class SwitchedBus:
+    """The session's adapter behind the kill switch. cut_off() closes the adapter: a send then raises OffTheBus and a
+    read waits and gets nothing. restore(bus) puts a newly opened adapter in its place. The CAN worker, the script's
+    mailbox and the windows keep this object throughout, so the session goes on where it was."""
+
+    def __init__(self, bus):
+        self._bus = self._last = bus
+        self._lock = threading.Lock()
+
+    @property
+    def cut(self) -> bool:
+        """Off the bus: no adapter open."""
+        return self._bus is None
+
+    def cut_off(self):
+        with self._lock:
+            bus, self._bus = self._bus, None
+        if bus is not None:
+            bus.shutdown()
+
+    def restore(self, bus):
+        with self._lock:
+            self._bus = self._last = bus
+
+    def send(self, message, timeout=None):
+        bus = self._bus
+        if bus is None:
+            raise OffTheBus(OFF_THE_BUS)
+        try:
+            bus.send(message, timeout)
+        except Exception:
+            if self._bus is not bus:                # closed under the send by the switch
+                raise OffTheBus(OFF_THE_BUS) from None
+            raise
+
+    def recv(self, timeout=None):
+        bus = self._bus
+        if bus is None:
+            time.sleep(min(0.05, timeout if timeout is not None else 0.05))
+            return None
+        try:
+            return bus.recv(timeout)
+        except Exception:
+            if self._bus is not bus:                # closed under the read by the switch
+                return None
+            raise
+
+    def shutdown(self):
+        self.cut_off()
+
+    def __getattr__(self, name):                    # listen_only, state...: the adapter's
+        return getattr(self._last, name)
+
+
 class CanWorker(QThread):
     """Reads the bus and delivers every frame to the GUI (message_received) and to the mailboxes; sends
     TesterPresent at the configuration's interval, deferred while a mailbox is in a UDS exchange.
@@ -200,6 +261,10 @@ class CanWorker(QThread):
     def remove_mailbox(self, mailbox):
         self.mailboxes = [m for m in self.mailboxes if m is not mailbox]
 
+    @property
+    def off_the_bus(self) -> bool:
+        return bool(getattr(self.bus, "cut", False))
+
     def run(self):
         cfg = self.config
         heartbeat = bytes([2, 0x3E, 0])
@@ -214,7 +279,8 @@ class CanWorker(QThread):
                 self._take_unread()
                 now = time.monotonic()
                 exchange = any(m.in_transaction for m in self.mailboxes) or (self.assembler and self.assembler.busy)
-                if now >= next_heartbeat and exchange:
+                quiet = self.off_the_bus                          # the kill switch
+                if now >= next_heartbeat and (exchange or quiet):
                     next_heartbeat = now + 0.05  # a request interleaved with a multi-frame exchange would abort it
                 elif now >= next_heartbeat:
                     self.bus.send(can.Message(arbitration_id=cfg["request_id"], data=heartbeat,
@@ -223,7 +289,8 @@ class CanWorker(QThread):
                     next_heartbeat = now + cfg["tester_present_interval_seconds"]
                 if now >= next_status:
                     next_status = now + STATUS_INTERVAL
-                    self.bus_status.emit({"state": self.state(), "error_frames": self.error_frames})
+                    self.bus_status.emit({"state": "off the bus" if self.off_the_bus else self.state(),
+                                          "error_frames": self.error_frames})
                 message = self.bus.recv(timeout=min(0.05, max(0.001, next_heartbeat - time.monotonic())))
                 if message is not None and message.is_error_frame:
                     self.error_frames += 1
@@ -237,6 +304,8 @@ class CanWorker(QThread):
                         self._unsolicited_frame(message)
                     self.message_received.emit({"timestamp": message.timestamp, "arbitration_id": message.arbitration_id,
                                                 "is_extended_frame": message.is_extended_id, "data": list(message.data)})
+            except OffTheBus:
+                continue                         # a flow control caught by the switch: nothing to send it on
             except Exception as exc:
                 self.error_occurred.emit(f"CAN session failed: {exc}")
                 self.running = False

@@ -113,6 +113,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.active_config = None
         self.worker = None          # the session's CanWorker while connected
         self.can_bus = None
+        self._reopen_bus = None     # opens the session's adapter again, as at Connect (the kill switch)
         self.app_database = None
         self.connected_channel_config = None
         self.selected_channel_config = None

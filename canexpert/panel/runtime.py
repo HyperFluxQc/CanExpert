@@ -25,6 +25,7 @@ from canexpert.sysvars import SystemVariables
 from canexpert.j1939.pgn import TOOL_ADDRESS
 from canexpert.j1939.transport import J1939Assembler, J1939Link
 from canexpert.panel.variables import Variable, suggest
+from canexpert.can_bus import OffTheBus
 from canexpert.uds.client import FUNCTIONS, UdsFunctions, uds_request, unsolicited_kind
 
 # The CAPL-style event decorators a script's globals hold (ScriptRuntime._namespace).
@@ -471,6 +472,7 @@ class ScriptRuntime(QObject):
         self._j1939 = J1939Assembler()  # 29-bit frames back into J1939 messages, for @on_pgn
         self.event_handlers = {}        # service answered by the event (or "*") -> [handler]
         self.variables = {}             # the panel's structured variables: name -> Variable (set_variables)
+        self._off_bus_said = False      # a send refused by the kill switch was said (_off_the_bus)
         self.variable_handlers = {}     # variable name (or "*") -> [handler], for @on_variable
         self.namespace = {}             # the script's globals, for the Write window's watch
         self.hidden_names = set()       # the names CAN Expert put there
@@ -540,8 +542,21 @@ class ScriptRuntime(QObject):
     def _call(self, callback, *args):
         try:
             callback(*args)
+        except OffTheBus as exc:
+            self._off_the_bus(exc)
         except Exception as exc:
             self.say("error", f"Script callback failed: {exc}")
+
+    def _off_the_bus(self, exc):
+        """A frame or request of the script refused by the kill switch: said once, not at every try."""
+        if not self._off_bus_said:
+            self._off_bus_said = True
+            self.say("warning", f"{exc} - the script goes on; its frames and requests go out again once Kill CAN "
+                                "is released")
+
+    def bus_restored(self):
+        """Back on the bus (Kill CAN released): a refused send is said again, should there be one."""
+        self._off_bus_said = False
 
     def _adapt(self, fn):
         """Call fn with the arguments it declares; a first parameter named api receives the script API."""
@@ -780,7 +795,10 @@ class ScriptRuntime(QObject):
             self.flashing_available.emit(self.flash_function is not None)
             startup = namespace.get("DatabaseMainFunction")
             if startup:
-                startup(self.api)
+                try:
+                    startup(self.api)
+                except OffTheBus as exc:            # the kill switch: the script goes on to its events
+                    self._off_the_bus(exc)
             for handler in list(self.start_handlers):
                 self._call(handler)
             while not self.stop_event.is_set():
@@ -868,13 +886,9 @@ class ScriptRuntime(QObject):
                 self.values[name] = value
             self.value_changed.emit(name, value)
 
-    def stop(self, run_stop_handlers=True):
-        """Stop the script. Its @on_stop handlers run first, while the bus is still usable (a bounded wait for a
-        busy script) - unless run_stop_handlers is False (the kill switch): then the bus is revoked at once."""
-        if not run_stop_handlers:
-            self.api.set_bus(None)
-        if run_stop_handlers and self.stop_handlers and self.thread is not None and self.thread.is_alive() and \
-                not self.stop_event.is_set():
+    def stop(self):
+        # @on_stop handlers run first, while the bus is still usable (bounded wait for a busy script).
+        if self.stop_handlers and self.thread is not None and self.thread.is_alive() and not self.stop_event.is_set():
             self._stop_done.clear()
             self.post("stop", None, None)
             self._stop_done.wait(1.0)

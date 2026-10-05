@@ -11,7 +11,7 @@ import can
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QInputDialog, QMessageBox
 
-from canexpert.can_bus import CanWorker, ReceiveMailbox, channel_key
+from canexpert.can_bus import CanWorker, ReceiveMailbox, SwitchedBus, channel_key
 from canexpert.channel_setup import load_setup, open_configured
 from canexpert.config import uds_transport, validate_config
 from canexpert.j1939_window import address_setting
@@ -54,7 +54,9 @@ class Session:
             panel_failure = False
             cfg = self.selected_channel_config
             setup = load_setup(self._settings, cfg)
-            self.can_bus = open_configured(cfg, config["bitrate"], setup, config)
+            # Behind the kill switch: Kill CAN closes the adapter and opens it again, the session going on.
+            self.can_bus = SwitchedBus(open_configured(cfg, config["bitrate"], setup, config))
+            self._reopen_bus = lambda c=dict(cfg), b=config["bitrate"], s=setup, f=config: open_configured(c, b, s, f)
             if setup.describe():
                 self.log_verbose(f"Channel setup: {setup.describe()}")
             self.session_config = config
@@ -180,11 +182,13 @@ class Session:
         self._set_status(error, "red")
 
     def set_offline(self, offline: bool):
-        """The kill switch (Kill CAN, Ctrl+F9). On: CAN Expert off the bus at once - the Transmit window's
-        messages and nodes, any ECU scan, the session (its script stopped without its @on_stop handlers, which
-        could send) and the ECU check stop, every adapter is closed, and nothing opens one again until the switch
-        is released: not Connect, not the ECU check, not a scan. Kept in the settings, so CAN Expert starts off
-        the bus if it was left so. Off: back on the bus, and the ECU check starts again as at startup."""
+        """The kill switch (Kill CAN, Ctrl+F9). On: CAN Expert off the bus at once, the database staying loaded -
+        the session's adapter is closed (SwitchedBus), so nothing is sent or received: no TesterPresent, the
+        Transmit window's messages and nodes paused, the script's frames and requests refused while it goes on
+        running; a reflash, a test run and any ECU scan stop, and so does the ECU check. Nothing opens an adapter
+        until the switch is released: not Connect, not the ECU check, not a scan. Kept in the settings, so CAN
+        Expert starts off the bus if it was left so. Off: the session's adapter is opened again and all of it goes
+        on where it was; without a session, the ECU check starts again as at startup."""
         from canexpert.ecu_scan import EcuScanDialog
         offline = bool(offline)
         action = self._toolbar_actions["kill"]
@@ -193,28 +197,55 @@ class Session:
             return
         self.offline = offline
         self._settings.setValue(OFFLINE_SETTING, offline)
+        transmit = self.tool_widget("transmit")
+        if transmit is not None:
+            transmit.pause_sending(offline)
         if offline:
-            transmit = self.tool_widget("transmit")
-            if transmit is not None:
-                transmit.stop_sending()
             for scan in self.findChildren(EcuScanDialog):
                 scan.halt("CAN Expert went off the bus (Kill CAN)")
-            if self.can_bus is not None:
-                self.on_disconnect_clicked(hard=True)
+            self._stop_bus_work()
             self.stop_ecu_monitor()
+            if self.can_bus is not None:
+                self.can_bus.cut_off()
+                self.status_strip.set_bus("off the bus")
             self._toolbar_actions["connect"].setEnabled(False)
-            self.log_verbose("Kill CAN: off the bus - nothing is sent or received until it is released")
-            self._set_status("Off the bus: CAN Expert sends and receives nothing (Kill CAN, Ctrl+F9, to go back on)",
-                             "red")
-        else:
+            kept = " The database stays loaded." if self.can_bus is not None else ""
+            self.log_verbose(f"Kill CAN: off the bus - nothing is sent or received until it is released.{kept}")
+            self._set_status(f"Off the bus: nothing is sent or received{' - the database stays loaded' if kept else ''}"
+                             " (Kill CAN, Ctrl+F9, to go back on)", "red")
+        elif self.can_bus is not None:
+            try:
+                self.can_bus.restore(self._reopen_bus())
+            except Exception as exc:                     # the adapter is gone, or busy elsewhere
+                self.on_disconnect_clicked()
+                self.log_verbose(f"Kill CAN released, but the adapter could not be opened again: {exc}")
+                self._set_status(f"Back on the bus failed: {exc} - the session is closed", "red")
+            else:
+                if self.script_runtime is not None:
+                    self.script_runtime.bus_restored()
+                self.log_verbose("Kill CAN released: back on the bus, the session going on")
+                self._set_status(f"Back on the bus — {Path(self.app_database['source_path']).name}"
+                                 if self.app_database else "Back on the bus", "green")
             self._toolbar_actions["connect"].setEnabled(self.can_bus is None)
+        else:
+            self._toolbar_actions["connect"].setEnabled(True)
             self.log_verbose("Kill CAN released: back on the bus")
             self._set_status("Back on the bus", "gray")
             self.check_last_channel()
         self._label_channels()
+        self._update_nodes()
 
-    def on_disconnect_clicked(self, hard=False):
-        """End the session. hard (the kill switch): its script is stopped without its @on_stop handlers."""
+    def _stop_bus_work(self):
+        """What cannot go on off the bus: a reflash (cancelled) and a test run (stopped)."""
+        if self.flash_runner is not None:
+            self.flash_runner.cancel()
+        if self.script_runtime is not None and self.flash_dialog is not None:
+            self.script_runtime.cancel_flash()
+        tests = self.tool_widget("tests")
+        if tests is not None:
+            tests.stop()
+
+    def on_disconnect_clicked(self):
         self.session_generation += 1
         self._watch_keys(False)
         if self.flash_runner is not None:
@@ -225,7 +256,7 @@ class Session:
         self._close_flash_dialog()
         self.toolbar_buttons.set_available("flashing", False)
         if self.script_runtime:
-            self.script_runtime.stop(run_stop_handlers=not hard)   # @on_stop handlers, then the bus revoked
+            self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
             self.script_runtime = None
         if self.worker is not None:
             self.worker.stop()
