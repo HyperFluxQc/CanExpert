@@ -988,6 +988,36 @@ def goodbye(api):
         self.assert_quiet()
         self.window.set_offline(False)
 
+    def test_no_tester_present_while_flashing(self):
+        import threading
+        from canexpert.flash_sequence import FlashProfile
+        from canexpert.flashing import load_firmware
+        from canexpert.simulator.ecu import DummyEcu, EcuConfig
+        stop = threading.Event()
+        ecu_bus = can.Bus(interface="virtual", channel=self.channel)
+        ecu = DummyEcu(ecu_bus, EcuConfig(erase_seconds=0.3, broadcast_interval=0), log=lambda text: None)
+        threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
+        self.addCleanup(lambda: (stop.set(), time.sleep(0.05), ecu_bus.shutdown()))
+
+        def tester_present(frames):
+            return [f for f in frames if f.arbitration_id == 0x7E0 and bytes(f.data[:3]) == b"\x02\x3E\x00"]
+
+        self.window.on_connect_clicked()
+        self.assertTrue(spin_until(lambda: tester_present(self.drain())), "TesterPresent while connected")
+        import shutil
+        copy = self.root / "demo_app.s19"                           # its report is written beside it
+        shutil.copy(Path(__file__).resolve().parent.parent / "examples" / "firmware" / "demo_app.s19", copy)
+        firmware = load_firmware(copy)
+        results, during = [], []
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+            self.window.start_built_in_flash(firmware, FlashProfile())
+            self.assertTrue(spin_until(lambda: during.extend(self.drain()) or results, 30))
+        self.assertTrue(results[0][0], results)
+        self.assertGreater(len(during), 20, "the reflash went out")
+        self.assertEqual(tester_present(during), [], "and nothing else: no TesterPresent")
+        self.assertTrue(spin_until(lambda: tester_present(self.drain())), "TesterPresent again once it is over")
+        self.window.on_disconnect_clicked()
+
     def test_the_toolbar_buttons_can_be_shown_or_hidden(self):
         from PyQt5.QtCore import Qt
         buttons = self.window.toolbar_buttons

@@ -120,6 +120,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.script_runtime = None
         self.flash_dialog = None
         self.flash_runner = None   # the built-in flashing sequence while it runs
+        self._tester_present_paused = False   # the session's TesterPresent, paused for a reflash
         self.script_flash = False  # whether the panel script offers a Flashing(api, firmware)
         self._auto_minimized = []  # dock title bars minimized on connect, restored on disconnect
         self._left_split = None    # Configuration / CAN Channels heights before they were minimized
@@ -820,6 +821,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         if self.active_session() is None or self.flash_dialog is not None:
             return
         self.flash_runner = FlashRunner(self.active_session, self)
+        self._pause_tester_present()
         self.flash_runner.logged.connect(self.log_verbose)
         self.flash_runner.progress.connect(self._on_flash_progress)
         self.flash_runner.finished.connect(self._on_flash_finished)
@@ -834,9 +836,24 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         if self.script_runtime is None:
             return
         self._toolbar_actions["flashing"].setEnabled(False)
+        self._pause_tester_present()
         self.flash_dialog = progress_dialog(self, firmware, self.script_runtime.cancel_flash)
         self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in {len(firmware.segments)} segment(s)")
         self.script_runtime.start_flash(firmware)
+
+    def _pause_tester_present(self):
+        """A reflash: the session sends no TesterPresent until it is over, so the ECU - its bootloader - gets the
+        flashing sequence alone (_on_flash_finished resumes it)."""
+        if self.worker is not None and not self._tester_present_paused:
+            self.worker.pause_tester_present(True)
+            self._tester_present_paused = True
+            self.log_verbose("Flashing: no TesterPresent until it is over")
+
+    def _resume_tester_present(self):
+        if self._tester_present_paused:
+            self._tester_present_paused = False
+            if self.worker is not None:
+                self.worker.pause_tester_present(False)
 
     def _on_flash_progress(self, done, total, text):
         update_progress(self.flash_dialog, done, total, text)
@@ -846,6 +863,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         close_progress(dialog)
 
     def _on_flash_finished(self, ok, text):
+        self._resume_tester_present()
         self._close_flash_dialog()
         self.flash_runner = None
         self._set_flashing_available(self.script_flash)

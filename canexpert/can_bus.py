@@ -218,6 +218,7 @@ class CanWorker(QThread):
         self.bus, self.config = bus, config  # config: validated (canexpert.config.validate_config)
         self.running = True
         self.tester_present = tester_present   # off in tests that must see no heartbeat on the bus
+        self._paused = 0                       # pause_tester_present() calls not yet undone
         self.report_unsolicited = unsolicited  # off where nothing listens, and on a listen-only channel
         self.error_frames = 0
         self.mailboxes = []
@@ -261,6 +262,15 @@ class CanWorker(QThread):
     def remove_mailbox(self, mailbox):
         self.mailboxes = [m for m in self.mailboxes if m is not mailbox]
 
+    def pause_tester_present(self, paused=True):
+        """No TesterPresent while paused - during a reflash the ECU gets the flashing sequence alone. Pauses add
+        up: each one is undone with pause_tester_present(False)."""
+        self._paused = max(0, self._paused + (1 if paused else -1))
+
+    @property
+    def tester_present_paused(self) -> bool:
+        return self._paused > 0
+
     @property
     def off_the_bus(self) -> bool:
         return bool(getattr(self.bus, "cut", False))
@@ -279,7 +289,7 @@ class CanWorker(QThread):
                 self._take_unread()
                 now = time.monotonic()
                 exchange = any(m.in_transaction for m in self.mailboxes) or (self.assembler and self.assembler.busy)
-                quiet = self.off_the_bus                          # the kill switch
+                quiet = self._paused > 0 or self.off_the_bus      # a reflash, or the kill switch
                 if now >= next_heartbeat and (exchange or quiet):
                     next_heartbeat = now + 0.05  # a request interleaved with a multi-frame exchange would abort it
                 elif now >= next_heartbeat:

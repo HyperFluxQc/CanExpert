@@ -247,6 +247,7 @@ class Session:
 
     def on_disconnect_clicked(self):
         self.session_generation += 1
+        self._tester_present_paused = False     # paused for a reflash: the worker goes with the session
         self._watch_keys(False)
         if self.flash_runner is not None:
             self.flash_runner.cancel()      # the bus is about to go away under it
