@@ -91,9 +91,11 @@ class FormDesignerTest(unittest.TestCase):
         self.designer.show()
         view = self.canvas.graphics_view
         for kind in (kind for kind, control in CONTROLS.items() if control.in_palette and kind != "group_box"):
-            for boxed in (False, True):
+            # A read-only control is a disabled widget: it moves all the same, and keeps its read-only look.
+            read_only_case = [(False, True)] if CONTROLS[kind].interactive else []
+            for boxed, read_only in [(False, False), *read_only_case, (True, False)]:
                 self.canvas.load_from_data({})
-                data = self.canvas.add_widget_at(kind, 200, 200)
+                data = self.canvas.add_widget_at(kind, 200, 200, **({"read_only": True} if read_only else {}))
                 if boxed:                               # a group box put around it afterwards lies above it
                     box = self.canvas.add_widget_at("group_box", 160, 160)
                     box["width"], box["height"] = 420, 280
@@ -103,7 +105,10 @@ class FormDesignerTest(unittest.TestCase):
                 self.assertEqual(item.cursor().shape(), Qt.SizeAllCursor, f"{kind}: the move cursor, not a text one")
                 grab = view.mapFromScene(200 + int(data["width"]) // 2, 200 + int(data["height"]) // 2)
                 drag(view, grab, grab + QPoint(100, 60))
-                self.assertEqual((data["x"], data["y"]), (300, 260), f"{kind}{' in a group box' if boxed else ''}")
+                where = " in a group box" if boxed else " (read-only)" if read_only else ""
+                self.assertEqual((data["x"], data["y"]), (300, 260), f"{kind}{where}")
+                if read_only and kind != "io_box":
+                    self.assertFalse(item.widget().isEnabled(), f"{kind}: greyed out, as on the panel")
         box = self.canvas._current_widgets()[1]                    # the group box: by its title, not its inside
         drag(view, view.mapFromScene(box["x"] + 60, box["y"] + 8), view.mapFromScene(box["x"] + 80, box["y"] + 28))
         self.assertEqual((box["x"], box["y"]), (180, 180))

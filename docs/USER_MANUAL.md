@@ -521,8 +521,9 @@ New, Open and closing the window ask whether to save changes first.
   indicator, trend, output box) and decorations (label, group box, picture).
 - Load a **DBC** to get the signal list, then drag a signal onto the page: the control is bound to it and
   takes its unit and value table.
-- **Move** a control by holding the left button anywhere on it and dragging — an I/O box too, and a
-  control inside a group box, whichever was put on the page first. A group box itself moves by its title or
+- **Move** a control by holding the left button anywhere on it and dragging — an I/O box too, a read-only
+  control (greyed out, as it will be on the panel) and a control inside a group box, whichever was put on the
+  page first. A group box itself moves by its title or
   its frame; pressing inside it, where nothing is, starts a selection rectangle. A **double-click** goes to
   the control's handler; double-click and keep the button down to drag instead.
 - **Duplicate** (Ctrl+D) and **Copy**/**Paste** give each copy a name of its own, so the script, its
