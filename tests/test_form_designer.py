@@ -9,11 +9,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PyQt5.QtCore import QEvent, QPoint, QRectF, Qt
-from PyQt5.QtGui import QKeyEvent, QMouseEvent
+from PyQt5.QtGui import QKeyEvent, QMouseEvent, QTextCursor
 from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from canexpert.designer.form_designer import FormDesigner
 from canexpert.designer.side_panels import DraggablePaletteItem, control_name, default_handler_name
+from canexpert.designer.text_editor import TextEditor
 from canexpert.panel.database import parse_application_database
 from canexpert.panel.controls import CONTROLS
 
@@ -393,6 +394,55 @@ class FormDesignerTest(unittest.TestCase):
         self.designer.go_to_problem(problem)
         self.assertIs(tabs.currentWidget(), self.designer.variables_page)
         self.assertEqual(self.designer.variables_edit.textCursor().blockNumber(), 1)
+
+    def test_find_replace_and_line_numbers_in_the_script_and_the_variables(self):
+        actions, tabs = self.designer.text_actions, self.designer.design_tabs
+        self.assertEqual({key: action.shortcut().toString() for key, action in actions.items()},
+                         {"find": "Ctrl+F", "replace": "Ctrl+H", "next": "F3", "previous": "Shift+F3",
+                          "line": "Ctrl+G", "comment": "Ctrl+/"})
+        self.assertTrue(all(action in self.designer.menus["edit"].actions() for action in actions.values()))
+        self.assertFalse(any(action.isEnabled() for action in actions.values()), "the Form tab: no text to search")
+        tabs.setCurrentWidget(self.designer.code_page)
+        self.assertTrue(all(action.isEnabled() for action in actions.values()))
+        code, bar = self.designer.code_editor, self.designer.code_pane.find_bar
+        code.setPlainText("def on_start(api):\n    api.log('start')\n")
+        code.moveCursor(QTextCursor.Start)
+        actions["find"].trigger()                                       # Ctrl+F
+        self.assertTrue(bar.is_open and not bar.replacing)
+        bar.find_edit.setText("api")
+        self.assertEqual((code.textCursor().selectedText(), code.textCursor().blockNumber()), ("api", 0))
+        actions["next"].trigger()                                       # F3
+        self.assertEqual(code.textCursor().blockNumber(), 1)
+        actions["previous"].trigger()                                   # Shift+F3
+        self.assertEqual(code.textCursor().blockNumber(), 0)
+        actions["replace"].trigger()                                    # Ctrl+H: the Replace line too
+        self.assertTrue(bar.replacing)
+        bar.replace_edit.setText("panel")
+        bar.replace_all()
+        self.assertEqual(code.toPlainText(), "def on_start(panel):\n    panel.log('start')\n")
+        bar.close_bar()
+        actions["next"].trigger()                                       # F3 with the bar closed: it opens
+        self.assertTrue(bar.is_open)
+        actions["comment"].trigger()                                    # Ctrl+/
+        self.assertTrue(code.toPlainText().startswith("# def on_start(panel):"))
+
+        tabs.setCurrentWidget(self.designer.variables_page)            # the Variables tab: the same editor
+        variables = self.designer.variables_edit
+        self.assertIsInstance(variables, TextEditor)
+        self.assertGreater(variables.viewportMargins().left(), 0, "with line numbers")
+        variables.setPlainText("MyList { uint32 data1; uint8 data2; }")
+        variables.moveCursor(QTextCursor.Start)
+        actions["find"].trigger()
+        variables_bar = self.designer.variables_pane.find_bar
+        self.assertTrue(variables_bar.is_open)
+        variables_bar.find_edit.setText("uint")
+        self.assertEqual(variables_bar.status.text(), "1 of 2")
+        with patch("canexpert.designer.text_editor.QInputDialog.getInt", return_value=(1, True)):
+            actions["line"].trigger()                                   # Ctrl+G
+        actions["comment"].trigger()
+        self.assertEqual(variables.toPlainText(), "// MyList { uint32 data1; uint8 data2; }", "its comments: //")
+        tabs.setCurrentWidget(self.designer.database_page)
+        self.assertFalse(actions["find"].isEnabled())
 
     def test_closing_the_designer_closes_its_test_panels(self):
         self.designer.show()

@@ -513,7 +513,7 @@ script's `@on_key` handlers only hear keys pressed in the main window.
 | Menu | What it holds |
 |---|---|
 | **File** | **New** (Ctrl+N), **Open...** (Ctrl+O), **Open from the Databases folder** (each family's newest version first), **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S, offering today's version of the family), **Close**. |
-| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. |
+| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. In the Python script and the Variables: **Find...** (Ctrl+F), **Find and replace...** (Ctrl+H), **Find next** (F3), **Find previous** (Shift+F3), **Go to line...** (Ctrl+G), **Comment / uncomment lines** (Ctrl+/). |
 | **Arrange** | Align, make the same size, distribute, bring to front, send to back, and the grid. |
 | **Page** | Add, rename and remove pages. |
 | **Script** | **Check syntax** (F7), **Handler of the selected control** (F4). |
@@ -599,6 +599,20 @@ the script tab opens with the function created for you.
 **The script tab** — the editor has completion (Ctrl+Space) for the API, your control names and DBC
 signals, a syntax check, and the **UDS functions** panel listing every ISO 14229 service with its
 documentation; double-click one to insert a call.
+
+**Editing the script and the variables** — both editors have line numbers, and:
+
+- **Find** (Ctrl+F): a bar opens under the editor, with the selected word in it. Every match is highlighted as
+  you type and the next one selected; **Enter** or **F3** goes to the next one, **Shift+Enter** or
+  **Shift+F3** to the one before, wrapping around at the end. The bar counts them (`3 of 12`). **Match
+  case**, **Whole words** (`speed`, not `speed_max`) and **Regex** — a Python regular expression — refine it.
+  **Esc** closes the bar.
+- **Find and replace** (Ctrl+H): the bar with a **Replace** line. **Replace** (or Enter in it) replaces the
+  selected match and goes to the next; **Replace all** replaces every one, and one **Undo** (Ctrl+Z) puts
+  them all back. With **Regex**, `\1` in the replacement is what the first group found:
+  `api\.log\((\w+)\)` → `print(\1)`.
+- **Go to line** (Ctrl+G), **Tab** and **Shift+Tab** to indent and unindent the selected lines, and
+  **Comment / uncomment lines** (Ctrl+/: `#` in the script, `//` in the variables).
 
 **The Database tab** — what the panel is and where it goes:
 - **Database ID**: the file name, `family_YYYY-MM-DD`. The line under it says where it will be saved and how
@@ -1534,7 +1548,8 @@ them break security access and flashing.
 
 The keys work in floating windows too. The toolbar buttons show theirs in their tooltips. In the Form
 Designer, **F1** opens its own section, **F5** tests the panel with the simulated ECU and **F7** checks the
-script. Plain letters and **F5** are left to the panel script's `@on_key`: keys CAN Expert uses itself
+script; in its script and variables, **Ctrl+F** finds, **Ctrl+H** replaces, **F3** and **Shift+F3** go to
+the next and the previous match, and **Ctrl+G** goes to a line. Plain letters and **F5** are left to the panel script's `@on_key`: keys CAN Expert uses itself
 do not reach the script.
 
 ## Where things are kept
