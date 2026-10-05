@@ -107,8 +107,9 @@ class FormDesignerTest(unittest.TestCase):
                 drag(view, grab, grab + QPoint(100, 60))
                 where = " in a group box" if boxed else " (read-only)" if read_only else ""
                 self.assertEqual((data["x"], data["y"]), (300, 260), f"{kind}{where}")
-                if read_only and kind != "io_box":
-                    self.assertFalse(item.widget().isEnabled(), f"{kind}: greyed out, as on the panel")
+                if read_only:                           # as on the panel: greyed out, an I/O box text to copy
+                    self.assertTrue(item.widget().isReadOnly() if kind == "io_box" else not item.widget().isEnabled(),
+                                    kind)
         box = self.canvas._current_widgets()[1]                    # the group box: by its title, not its inside
         drag(view, view.mapFromScene(box["x"] + 60, box["y"] + 8), view.mapFromScene(box["x"] + 80, box["y"] + 28))
         self.assertEqual((box["x"], box["y"]), (180, 180))
