@@ -628,6 +628,10 @@ documentation; double-click one to insert a call.
 - **Go to line** (Ctrl+G), **Tab** and **Shift+Tab** to indent and unindent the selected lines, and
   **Comment / uncomment lines** (Ctrl+/: `#` in the script, `//` in the variables).
 
+[![Find in the script](images/find_replace.png)](images/find_replace.png)
+
+*Find (Ctrl+F) in the showcase panel's script: every match highlighted, the selected one counted.*
+
 **The Database tab** — what the panel is and where it goes:
 - **Database ID**: the file name, `family_YYYY-MM-DD`. The line under it says where it will be saved and how
   a configuration finds it — a configuration whose *Database family* is `engine` loads the newest `engine_`
