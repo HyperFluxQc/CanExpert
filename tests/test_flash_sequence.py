@@ -14,7 +14,7 @@ import can
 from PyQt5.QtWidgets import QApplication, QDialog
 
 from canexpert import flashing
-from canexpert.can_bus import CanWorker
+from canexpert.can_bus import CanWorker, ReceiveMailbox
 from canexpert.config import validate_config
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import (FlashCancelled, FlashError, FlashProfile, FlashRun, memory_record,
@@ -142,7 +142,8 @@ class SlowBus:
 
 
 class TesterPresentPauseTest(unittest.TestCase):
-    """No TesterPresent while a reflash holds the worker's no_tester_present() - and again however it ends."""
+    """No TesterPresent while a reflash holds the worker's no_tester_present() - and again however it ends - nor
+    while an exchange runs: one on its way when either begins is out first."""
 
     def setUp(self):
         self.bus = SlowBus()
@@ -189,6 +190,30 @@ class TesterPresentPauseTest(unittest.TestCase):
         self.bus.go.set()
         thread.join(2)
         self.assertEqual(self.heartbeats(times["start"], times["end"]), [], "...so none goes out during it")
+
+    def test_an_exchange_beginning_waits_for_a_tester_present_on_its_way(self):
+        # Otherwise it could land between the frames of a multi-frame request, and the ECU drop the request.
+        mailbox = ReceiveMailbox(self.bus)
+        self.worker.add_mailbox(mailbox)
+        self.assertTrue(spin_until(self.heartbeats, 2))
+        self.bus.go.clear()
+        self.assertTrue(self.bus.held.wait(2), "a TesterPresent held on its way out")
+        times = {}
+
+        def exchange():
+            with mailbox.transaction():
+                times["start"] = time.monotonic()
+                time.sleep(0.2)
+                times["end"] = time.monotonic()
+
+        thread = threading.Thread(target=exchange)
+        thread.start()
+        time.sleep(0.1)
+        self.assertNotIn("start", times, "the exchange waits for it to be out...")
+        self.bus.go.set()
+        thread.join(2)
+        self.assertEqual(self.heartbeats(times["start"], times["end"]), [], "...and none goes out during it")
+        self.assertTrue(spin_until(lambda: self.heartbeats(times["end"]), 2), "TesterPresent again after it")
 
 
 class MemoryRecordTest(unittest.TestCase):

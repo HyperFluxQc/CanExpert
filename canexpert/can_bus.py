@@ -8,7 +8,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import can
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -229,6 +229,7 @@ class CanWorker(QThread):
             self.assembler = UnsolicitedAssembler(uds_transport(config), self._send_flow_control)
 
     def add_mailbox(self, mailbox):
+        mailbox.heartbeat = self._heartbeat    # an exchange beginning waits for a TesterPresent on its way
         mailbox.unsolicited = self.report
         mailbox.unread = self._unread.put
         self.mailboxes = [*self.mailboxes, mailbox]
@@ -297,9 +298,13 @@ class CanWorker(QThread):
             try:
                 self._take_unread()
                 now = time.monotonic()
-                exchange = any(m.in_transaction for m in self.mailboxes) or (self.assembler and self.assembler.busy)
                 sent = False
-                with self._heartbeat:                       # a no_tester_present() beginning waits for it
+                # Deciding and sending a TesterPresent is one step: an exchange or a no_tester_present() beginning
+                # waits for it, so none lands between the frames of a multi-frame request (where the ECU would
+                # drop the request).
+                with self._heartbeat:
+                    exchange = any(m.in_transaction for m in self.mailboxes) or (self.assembler and
+                                                                                 self.assembler.busy)
                     quiet = self._paused > 0 or self.off_the_bus      # a reflash, or the kill switch
                     if now >= next_heartbeat and (exchange or quiet):
                         next_heartbeat = now + 0.05  # a request interleaved with a multi-frame exchange would abort it
@@ -364,14 +369,17 @@ class ReceiveMailbox:
         # exchange's end hands the frames it left unread.
         self.unsolicited = None
         self.unread = None
+        self.heartbeat = None                 # the worker's TesterPresent lock (add_mailbox)
 
     @contextmanager
     def transaction(self):
         """Mark a request/response exchange; the CAN worker defers TesterPresent meanwhile and leaves the
-        frames to this mailbox. At the end, the frames still queued - they came after the answer - go back to
-        the worker, which then reads them as it reads every frame between exchanges."""
-        with self._count_lock:
-            self._transactions += 1
+        frames to this mailbox. A TesterPresent on its way when it begins is out first, and none follows until it
+        ends. At the end, the frames still queued - they came after the answer - go back to the worker, which then
+        reads them as it reads every frame between exchanges."""
+        with self.heartbeat or nullcontext():
+            with self._count_lock:
+                self._transactions += 1
         try:
             yield
         finally:
