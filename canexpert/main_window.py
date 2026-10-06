@@ -218,9 +218,11 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
             ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
              self.disconnect_database),
-            ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - the session, the ECU check, the "
-             "Transmit window's\nmessages and nodes and any scan stop, and nothing opens the adapter until it is "
-             "pressed again.\nFor another tool, or another tester, to have the bus to itself", self.set_offline),
+            ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - nothing is sent or received until "
+             "it is pressed again.\nThe database stays loaded and its script goes on; TesterPresent and the "
+             "Transmit window's messages wait;\na reflash, a test run, a scan and the ECU check stop. Pressed "
+             "again, the rest goes on where it was.\nFor another tool, or another tester, to have the bus to "
+             "itself", self.set_offline),
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),

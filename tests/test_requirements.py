@@ -909,6 +909,7 @@ def goodbye(api):
         kill = self.window._toolbar_actions["kill"]
         self.assertEqual((kill.text(), kill.shortcut().toString()), ("Kill CAN", "Ctrl+F9"))
         self.assertTrue(kill.isCheckable() and not kill.isChecked())
+        self.assertIn("The database stays loaded and its script goes on", kill.toolTip(), "the tooltip says so")
         self.window.on_connect_clicked()                             # a session, and a message every 10 ms
         write = self.window.open_write()
         messages = self.window.open_transmit().messages
