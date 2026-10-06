@@ -599,8 +599,9 @@ class FormDesigner(QDialog):
                        "name[count]</i> for an array (uint8 to uint64, int8 to int64, float32, float64, bool, "
                        "char) - or in braces: <i>MyList { uint32 data1; uint8 data2; }</i>. In brackets after the "
                        "name, where it lives in the ECU - <i>DID 0x0110</i> or <i>memory 0x20001000</i> - and "
-                       "<i>little-endian</i> if it is. A struct pasted from a C header works too. A <b>Variable List</b> shows one, a control named after a field (Calib Data.FOC[3]) "
-                       "shows that field, and the script has it as <i>api.var(\"Calib Data\")</i>.")
+                       "<i>little-endian</i> if it is. A struct pasted from a C header works too. A <b>Variable "
+                       "List</b> shows one, a control named after a field (Calib Data.FOC[3]) shows that field, and "
+                       "the script has it as <i>api.var(\"Calib Data\")</i>.")
         guide.setWordWrap(True)
         guide.setStyleSheet("color: gray;")
         layout.addWidget(guide)
