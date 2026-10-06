@@ -167,6 +167,9 @@ class CodeEditor(TextEditor):
         if popup.isVisible() and event.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Tab, Qt.Key_Escape):
             event.ignore()  # the completer handles these
             return
+        if self.block_key(event):           # block editing: no completion on the way
+            popup.hide()
+            return
         if event.key() == Qt.Key_Space and event.modifiers() & Qt.ControlModifier:
             self._show_completions(forced=True)
             return

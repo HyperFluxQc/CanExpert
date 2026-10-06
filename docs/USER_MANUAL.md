@@ -513,7 +513,7 @@ script's `@on_key` handlers only hear keys pressed in the main window.
 | Menu | What it holds |
 |---|---|
 | **File** | **New** (Ctrl+N), **Open...** (Ctrl+O), **Open from the Databases folder** (each family's newest version first), **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S, offering today's version of the family), **Close**. |
-| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. In the Python script and the Variables: **Find...** (Ctrl+F), **Find and replace...** (Ctrl+H), **Find next** (F3), **Find previous** (Shift+F3), **Go to line...** (Ctrl+G), **Comment / uncomment lines** (Ctrl+/). |
+| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. In the Python script and the Variables: **Find...** (Ctrl+F), **Find and replace...** (Ctrl+H), **Find next** (F3), **Find previous** (Shift+F3), **Go to line...** (Ctrl+G), **Comment / uncomment lines** (Ctrl+/), **Block selection mode** (Alt+Shift+A). |
 | **Arrange** | Align, make the same size, distribute, bring to front, send to back, and the grid. |
 | **Page** | Add, rename and remove pages. |
 | **Script** | **Check syntax** (F7), **Handler of the selected control** (F4). |
@@ -626,7 +626,16 @@ documentation; double-click one to insert a call.
   them all back. With **Regex**, `\1` in the replacement is what the first group found:
   `api\.log\((\w+)\)` → `print(\1)`.
 - **Go to line** (Ctrl+G), **Tab** and **Shift+Tab** to indent and unindent the selected lines, and
-  **Comment / uncomment lines** (Ctrl+/: `#` in the script, `//` in the variables).
+  **Comment / uncomment lines** (Ctrl+/: `#` in the script, `//` in the variables). **Ctrl+A** selects
+  everything.
+- **Block editing** — a block of columns over several lines, as in Notepad++ or Visual Studio: hold **Alt**
+  and drag, or press **Shift+Alt+arrows**. What you type then goes on every line of it, at the same column;
+  **Backspace**, **Delete** and **Tab** too. With a block of zero width — a caret on several lines — that is
+  how a prefix goes in front of many lines at once. A line too short to reach the block is filled with
+  spaces. **Ctrl+C** copies the block, and a block copied pastes as a block (lines are added at the end when
+  there are too few); a line of text pasted into a block goes on every line of it. One **Ctrl+Z** undoes what
+  was typed. **Esc**, a click, or any other key ends the block. **Edit → Block selection mode**
+  (Alt+Shift+A) makes a plain drag and **Shift+arrows** select blocks, without Alt.
 
 [![Find in the script](images/find_replace.png)](images/find_replace.png)
 
@@ -1568,8 +1577,9 @@ them break security access and flashing.
 The keys work in floating windows too. The toolbar buttons show theirs in their tooltips. In the Form
 Designer, **F1** opens its own section, **F5** tests the panel with the simulated ECU and **F7** checks the
 script; in its script and variables, **Ctrl+F** finds, **Ctrl+H** replaces, **F3** and **Shift+F3** go to
-the next and the previous match, and **Ctrl+G** goes to a line. Plain letters and **F5** are left to the panel script's `@on_key`: keys CAN Expert uses itself
-do not reach the script.
+the next and the previous match, **Ctrl+G** goes to a line, and **Alt + drag** or **Shift+Alt+arrows** select
+a block of columns (**Alt+Shift+A**: Block selection mode). Plain letters and **F5** are left to the panel
+script's `@on_key`: keys CAN Expert uses itself do not reach the script.
 
 ## Where things are kept
 

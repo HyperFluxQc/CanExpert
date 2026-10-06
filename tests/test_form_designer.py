@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from PyQt5.QtCore import QEvent, QPoint, QRectF, Qt
 from PyQt5.QtGui import QKeyEvent, QMouseEvent, QTextCursor
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from canexpert.designer.form_designer import FormDesigner
@@ -399,7 +400,7 @@ class FormDesignerTest(unittest.TestCase):
         actions, tabs = self.designer.text_actions, self.designer.design_tabs
         self.assertEqual({key: action.shortcut().toString() for key, action in actions.items()},
                          {"find": "Ctrl+F", "replace": "Ctrl+H", "next": "F3", "previous": "Shift+F3",
-                          "line": "Ctrl+G", "comment": "Ctrl+/"})
+                          "line": "Ctrl+G", "comment": "Ctrl+/", "block": "Alt+Shift+A"})
         self.assertTrue(all(action in self.designer.menus["edit"].actions() for action in actions.values()))
         self.assertFalse(any(action.isEnabled() for action in actions.values()), "the Form tab: no text to search")
         tabs.setCurrentWidget(self.designer.code_page)
@@ -441,6 +442,18 @@ class FormDesignerTest(unittest.TestCase):
             actions["line"].trigger()                                   # Ctrl+G
         actions["comment"].trigger()
         self.assertEqual(variables.toPlainText(), "// MyList { uint32 data1; uint8 data2; }", "its comments: //")
+        actions["block"].trigger()                                      # Block selection mode, in both editors
+        self.assertTrue(variables.block_mode and code.block_mode)
+        variables.setPlainText("uint8 a;\nuint8 b;")
+        variables.moveCursor(QTextCursor.Start)
+        for _ in range(5):
+            QTest.keyClick(variables, Qt.Key_Right, Qt.ShiftModifier)  # Shift + arrows: a block
+        QTest.keyClick(variables, Qt.Key_Down, Qt.ShiftModifier)
+        self.assertEqual(variables.block_text(), "uint8\nuint8")
+        self.designer._edit("delete")                                   # Edit > Delete: its columns
+        self.assertEqual(variables.toPlainText(), " a;\n b;")
+        actions["block"].trigger()
+        self.assertFalse(variables.block_mode or code.block_mode)
         tabs.setCurrentWidget(self.designer.database_page)
         self.assertFalse(actions["find"].isEnabled())
 

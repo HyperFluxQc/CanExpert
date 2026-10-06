@@ -1,17 +1,17 @@
-"""The Form Designer's text editors: line numbers, indenting, comments, Go to line - and the find bar: Find,
-Replace, Replace all, match case, whole words, regular expressions, its keys."""
+"""The Form Designer's text editors: line numbers, indenting, comments, Go to line, block (column) editing - and
+the find bar: Find, Replace, Replace all, match case, whole words, regular expressions, its keys."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import unittest
 from unittest.mock import patch
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QTextCursor
+from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtGui import QMouseEvent, QTextCursor
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QDialog, QInputDialog, QVBoxLayout
 
 from canexpert.designer.code_editor import CodeEditor
-from canexpert.designer.text_editor import EditorPane, TextEditor
+from canexpert.designer.text_editor import BLOCK_MIME, EditorPane, TextEditor
 
 APP = QApplication.instance() or QApplication([])
 
@@ -206,6 +206,182 @@ class TextEditorTest(unittest.TestCase):
             self.editor.ask_line()
         self.assertEqual(self.editor.textCursor().blockNumber() + 1, 42)
         self.assertEqual(ask.call_args[0][2], "Line (1 to 100):")
+
+
+ALT_SHIFT = Qt.ShiftModifier | Qt.AltModifier
+FIELDS = "uint8 a;\nuint16 bb;\nuint32 ccc;\nx"
+
+
+class BlockEditingTest(unittest.TestCase):
+    """Block (column) editing: a block of columns over several lines, and what is done in it done on each one."""
+
+    def setUp(self):
+        self.editor = TextEditor()
+        self.editor.resize(600, 300)
+        self.editor.show()
+        self.editor.setPlainText(FIELDS)
+
+    def tearDown(self):
+        self.editor.close()
+
+    def place(self, line, index):
+        cursor = self.editor.textCursor()
+        cursor.setPosition(self.editor.document().findBlockByNumber(line).position() + index)
+        self.editor.setTextCursor(cursor)
+
+    def keys(self, key, count, modifiers=ALT_SHIFT):
+        for _ in range(count):
+            QTest.keyClick(self.editor, key, modifiers)
+
+    def lines(self):
+        return self.editor.toPlainText().split("\n")
+
+    def uint_block(self):
+        """The block over "uint" on the first three lines."""
+        self.place(0, 0)
+        self.keys(Qt.Key_Right, 4)
+        self.keys(Qt.Key_Down, 2)
+        self.assertEqual(self.editor.block_text(), "uint\nuint\nuint")
+
+    def test_shift_alt_arrows_select_a_block_and_what_is_typed_goes_on_every_line(self):
+        self.place(0, 0)
+        self.keys(Qt.Key_Down, 2)
+        block = self.editor.block
+        self.assertEqual((block.top, block.bottom, block.left, block.right), (0, 2, 0, 0), "a caret on three lines")
+        QTest.keyClicks(self.editor, "// ")
+        self.assertEqual(self.lines(), ["// uint8 a;", "// uint16 bb;", "// uint32 ccc;", "x"])
+        self.editor.undo()
+        self.assertEqual(self.editor.toPlainText(), FIELDS, "what was typed in a row: one undo step")
+        self.assertIsNone(self.editor.block, "Undo ends the block")
+
+    def test_a_block_of_columns_is_replaced_on_every_line(self):
+        self.uint_block()
+        QTest.keyClicks(self.editor, "s")
+        self.assertEqual(self.lines()[:3], ["s8 a;", "s16 bb;", "s32 ccc;"])
+        block = self.editor.block
+        self.assertEqual((block.left, block.right), (1, 1), "then a caret after it on every line")
+
+    def test_short_lines_backspace_and_delete(self):
+        self.editor.setPlainText("ab\nabcdef\nabcd")
+        self.place(0, 2)
+        self.keys(Qt.Key_Right, 2)                                  # past the end of the first line
+        self.keys(Qt.Key_Down, 2)
+        self.assertEqual(self.editor.block_text(), "\ncd\ncd", "past the end of a line, nothing of it")
+        QTest.keyClick(self.editor, Qt.Key_Delete)                  # the columns go
+        self.assertEqual(self.lines(), ["ab", "abef", "ab"])
+        QTest.keyClicks(self.editor, "X")
+        self.assertEqual(self.lines(), ["abX", "abXef", "abX"])
+        QTest.keyClick(self.editor, Qt.Key_Backspace)
+        self.assertEqual(self.lines(), ["ab", "abef", "ab"])
+        QTest.keyClick(self.editor, Qt.Key_Delete)                  # a caret: the character after it
+        self.assertEqual(self.lines(), ["ab", "abf", "ab"])
+        self.editor.setPlainText("a\nabcdef")
+        self.place(1, 4)
+        self.keys(Qt.Key_Up, 1)
+        QTest.keyClicks(self.editor, "|")
+        self.assertEqual(self.lines(), ["a   |", "abcd|ef"], "a short line filled with spaces up to the block")
+
+    def test_copy_cut_and_paste_a_block(self):
+        self.uint_block()
+        QTest.keyClick(self.editor, Qt.Key_C, Qt.ControlModifier)
+        data = QApplication.clipboard().mimeData()
+        self.assertEqual(data.text(), "uint\nuint\nuint")
+        self.assertTrue(data.hasFormat(BLOCK_MIME))
+        QTest.keyClick(self.editor, Qt.Key_X, Qt.ControlModifier)
+        self.assertEqual(self.lines(), ["8 a;", "16 bb;", "32 ccc;", "x"])
+        QTest.keyClick(self.editor, Qt.Key_Escape)
+        self.assertIsNone(self.editor.block)
+        self.place(0, 0)
+        QTest.keyClick(self.editor, Qt.Key_V, Qt.ControlModifier)   # a block copied pastes as a block
+        self.assertEqual(self.editor.toPlainText(), FIELDS)
+        self.editor.undo()
+        self.assertEqual(self.lines(), ["8 a;", "16 bb;", "32 ccc;", "x"], "one undo step")
+        self.place(3, 1)
+        self.editor.paste()                                         # the Edit menu's Paste: the same
+        self.assertEqual(self.lines(), ["8 a;", "16 bb;", "32 ccc;", "xuint", " uint", " uint"],
+                         "lines added where there are too few")
+
+    def test_text_pasted_in_a_block(self):
+        self.place(0, 0)
+        self.keys(Qt.Key_Down, 2)
+        QApplication.clipboard().setText("const ")
+        QTest.keyClick(self.editor, Qt.Key_V, Qt.ControlModifier)   # one line: on every line
+        self.assertEqual(self.lines()[:3], ["const uint8 a;", "const uint16 bb;", "const uint32 ccc;"])
+        QApplication.clipboard().setText("1\n2\n3")
+        QTest.keyClick(self.editor, Qt.Key_V, Qt.ControlModifier)   # as many lines as it has: one on each
+        self.assertEqual(self.lines()[:3], ["const 1uint8 a;", "const 2uint16 bb;", "const 3uint32 ccc;"])
+
+    def test_alt_drag_selects_a_block(self):
+        editor = self.editor
+        viewport = editor.viewport()
+
+        def point(line, column):
+            rect = editor.cursorRect(QTextCursor(editor.document().findBlockByNumber(line)))
+            return QPoint(int(rect.left() + column * editor._char_width()), rect.center().y())
+
+        def mouse(kind, where, modifiers=Qt.AltModifier, buttons=Qt.LeftButton):
+            QApplication.sendEvent(viewport, QMouseEvent(kind, where, Qt.LeftButton, buttons, modifiers))
+
+        mouse(QEvent.MouseButtonPress, point(0, 0))
+        mouse(QEvent.MouseMove, point(1, 2), buttons=Qt.LeftButton)
+        mouse(QEvent.MouseMove, point(2, 4), buttons=Qt.LeftButton)
+        mouse(QEvent.MouseButtonRelease, point(2, 4), buttons=Qt.NoButton)
+        self.assertEqual(editor.block_text(), "uint\nuint\nuint")
+        self.assertFalse(editor.grab().isNull(), "painted")
+        mouse(QEvent.MouseButtonPress, point(1, 1), Qt.NoModifier)  # a click without Alt ends it
+        mouse(QEvent.MouseButtonRelease, point(1, 1), Qt.NoModifier, Qt.NoButton)
+        self.assertIsNone(editor.block)
+        self.assertEqual(editor.textCursor().blockNumber(), 1)
+        editor.block_mode = True                                    # block selection mode: a plain drag
+        mouse(QEvent.MouseButtonPress, point(0, 0), Qt.NoModifier)
+        mouse(QEvent.MouseMove, point(1, 4), Qt.NoModifier, Qt.LeftButton)
+        mouse(QEvent.MouseButtonRelease, point(1, 4), Qt.NoModifier, Qt.NoButton)
+        self.assertEqual(editor.block_text(), "uint\nuint")
+        self.keys(Qt.Key_Down, 1, Qt.ShiftModifier)                 # and Shift + arrows
+        self.assertEqual(editor.block_text(), "uint\nuint\nuint")
+
+    def test_what_ends_a_block(self):
+        self.uint_block()
+        QTest.keyClick(self.editor, Qt.Key_Right)                   # a key that is not block editing's...
+        self.assertIsNone(self.editor.block)
+        self.assertEqual(self.editor.textCursor().positionInBlock(), 5, "...does what it does")
+        self.uint_block()
+        QTest.keyClick(self.editor, Qt.Key_A, Qt.ControlModifier)   # Ctrl+A: everything selected
+        self.assertIsNone(self.editor.block)
+        self.assertEqual(self.editor.textCursor().selectedText().replace("\u2029", "\n"), FIELDS)
+        self.uint_block()
+        QTest.keyClick(self.editor, Qt.Key_Shift)                   # a modifier alone: it stays
+        self.assertIsNotNone(self.editor.block)
+        self.editor.go_to_line(4)                                   # anything else moving the cursor
+        self.assertIsNone(self.editor.block)
+
+    def test_tabs_and_wide_characters_keep_their_columns(self):
+        self.editor.setPlainText("\tab\n    cd\n\U0001F680 ef")
+        self.place(1, 4)
+        self.keys(Qt.Key_Up, 1)
+        QTest.keyClicks(self.editor, "|")
+        self.assertEqual(self.lines()[:2], ["\t|ab", "    |cd"], "a tab reaches the next tab stop")
+        self.place(2, 3)                                            # after the rocket and the space (Qt: 3)
+        self.keys(Qt.Key_Right, 1)
+        self.assertEqual(self.editor.block_text(), "e")
+        QTest.keyClicks(self.editor, "E")
+        self.assertEqual(self.lines()[2], "\U0001F680 Ef")
+
+    def test_the_script_editor_completes_nothing_in_a_block(self):
+        editor = CodeEditor()
+        self.addCleanup(editor.close)
+        editor.show()
+        editor.setPlainText("log(1)\nlog(2)")
+        cursor = editor.textCursor()
+        cursor.setPosition(0)
+        editor.setTextCursor(cursor)
+        QTest.keyClick(editor, Qt.Key_Down, ALT_SHIFT)
+        QTest.keyClicks(editor, "api.")
+        self.assertEqual(editor.toPlainText(), "api.log(1)\napi.log(2)")
+        self.assertFalse(editor.completer.popup().isVisible())
+        QTest.keyClick(editor, Qt.Key_Return)                       # Enter: the block ends, a new line as ever
+        self.assertIsNone(editor.block)
+        self.assertEqual(editor.blockCount(), 3)
 
 
 if __name__ == "__main__":

@@ -421,6 +421,14 @@ class FormDesigner(QDialog):
                 ("comment", "Co&mment / uncomment lines", "Ctrl+/",
                  "Make the selected lines comments, or code again")):
             self.text_actions[key] = self._action(menu, text, lambda k=key: self._text_command(k), shortcut, tip)
+        block = self.text_actions["block"] = menu.addAction("&Block selection mode")
+        block.setCheckable(True)
+        block.setShortcut(QKeySequence("Alt+Shift+A"))
+        tip = ("A drag, or Shift + arrows, selects a block of columns - Alt + drag and Shift + Alt + arrows always "
+               "do: what is typed then goes on every line of it")
+        block.setStatusTip(tip)
+        block.setToolTip(tip)
+        block.toggled.connect(self._set_block_mode)
         menu.aboutToShow.connect(self._update_edit_menu)
 
         menu = self.menus["arrange"] = bar.addMenu("&Arrange")
@@ -508,17 +516,23 @@ class FormDesigner(QDialog):
         else:
             editor.toggle_comment()
 
+    def _set_block_mode(self, on):
+        for editor in (self.code_editor, self.variables_edit):
+            editor.block_mode = on
+            if not on:
+                editor.end_block()
+
     def _update_text_actions(self):
         for action in self.text_actions.values():
             action.setEnabled(self._text_pane() is not None)
 
     def _edit_target(self):
-        """What the Edit menu acts on: a focused text field, else the script or the form in front."""
+        """What the Edit menu acts on: a focused text field, else the script, the variables or the form in front."""
         focus = QApplication.focusWidget()
         if isinstance(focus, (QLineEdit, QPlainTextEdit)) and self.isAncestorOf(focus):
             return focus
-        if self.design_tabs.currentWidget() is self.code_page:
-            return self.code_editor
+        if self._text_pane() is not None:                   # the script's editor, or the variables'
+            return self._text_pane().editor
         return self.canvas if self.design_tabs.currentWidget() is self.canvas else None
 
     def _edit(self, key):
@@ -532,6 +546,8 @@ class FormDesigner(QDialog):
             if key == "delete":
                 if isinstance(target, QLineEdit):
                     target.del_()
+                elif isinstance(target, TextEditor):
+                    target.remove_selected()            # a block's columns too
                 else:
                     target.textCursor().removeSelectedText()
             elif key != "duplicate":
