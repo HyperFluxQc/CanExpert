@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 
@@ -162,6 +163,10 @@ class TestPanelDialog(QDialog):
 
     def remove_mailbox(self, mailbox):
         self._mailboxes = [item for item in self._mailboxes if item is not mailbox]
+
+    def no_tester_present(self):
+        """The test panel sends no TesterPresent: nothing to pause while it flashes."""
+        return nullcontext()
 
     # --- flashing ---
 

@@ -2,6 +2,7 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import json
+import queue
 import tempfile
 import time
 import unittest
@@ -55,6 +56,20 @@ def Flashing(api, firmware):
     api.ui.set_value("status", f"{firmware.segments[0][0]:X}:{firmware.size}")
     return True
 '''
+
+
+# A Flashing() that takes half a second - about eight TesterPresent intervals - sending a frame now and then.
+SLOW_FLASH_SCRIPT = '''
+def Flashing(api, firmware):
+    for step in range(10):
+        api.can.send(0x123, [step])
+        api.sleep(0.05)
+    return True
+'''
+
+
+def tester_present_frames(frames):
+    return [frame for frame in frames if frame.arbitration_id == 0x7E0 and bytes(frame.data[:3]) == b"\x02\x3E\x00"]
 
 
 # What the main window sends by default: TesterPresent filled to 8 bytes with 0xCC.
@@ -999,10 +1014,7 @@ def goodbye(api):
         ecu = DummyEcu(ecu_bus, EcuConfig(erase_seconds=0.3, broadcast_interval=0), log=lambda text: None)
         threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
         self.addCleanup(lambda: (stop.set(), time.sleep(0.05), ecu_bus.shutdown()))
-
-        def tester_present(frames):
-            return [f for f in frames if f.arbitration_id == 0x7E0 and bytes(f.data[:3]) == b"\x02\x3E\x00"]
-
+        tester_present = tester_present_frames
         self.window.on_connect_clicked()
         self.assertTrue(spin_until(lambda: tester_present(self.drain())), "TesterPresent while connected")
         import shutil
@@ -1014,9 +1026,42 @@ def goodbye(api):
             self.window.start_built_in_flash(firmware, FlashProfile())
             self.assertTrue(spin_until(lambda: during.extend(self.drain()) or results, 30))
         self.assertTrue(results[0][0], results)
-        self.assertGreater(len(during), 20, "the reflash went out")
-        self.assertEqual(tester_present(during), [], "and nothing else: no TesterPresent")
+        requests = [index for index, frame in enumerate(during) if frame.arbitration_id == 0x7E0
+                    and not tester_present([frame])]
+        self.assertGreater(len(requests), 20, "the reflash went out")
+        # From its first request to its last - before it began, a TesterPresent was still due
+        self.assertEqual(tester_present(during[requests[0]:requests[-1] + 1]), [], "and nothing else: no TesterPresent")
         self.assertTrue(spin_until(lambda: tester_present(self.drain())), "TesterPresent again once it is over")
+        self.window.on_disconnect_clicked()
+
+    def test_no_tester_present_while_the_scripts_flashing_runs(self):
+        from canexpert.flashing import Firmware
+        (self.databases / 'panel_2026-09-18_script.py').write_text(SCRIPT + SLOW_FLASH_SCRIPT)
+        self.window.on_connect_clicked()
+        self.assertTrue(spin_until(lambda: tester_present_frames(self.drain())), "TesterPresent while connected")
+        firmware = Firmware("app.s19", [(0x1000, b"\x01\x02\x03")])
+        results, during = [], []
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+            self.window.start_flashing(firmware)
+            self.assertTrue(spin_until(lambda: during.extend(self.drain()) or results, 10))
+        self.assertEqual(results, [(True, "Flashing complete")])
+        flashing = [index for index, frame in enumerate(during) if frame.arbitration_id == 0x123]
+        self.assertEqual(len(flashing), 10, "Flashing() ran")
+        self.assertEqual(tester_present_frames(during[flashing[0]:flashing[-1] + 1]), [],
+                         "and no TesterPresent while it did")
+        self.assertTrue(spin_until(lambda: tester_present_frames(self.drain())), "TesterPresent again after it")
+
+        # A flash that cannot start - its request dropped - ends at once: the dialog closes, TesterPresent goes on.
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))), \
+                patch.object(self.window.script_runtime.events, "put_nowait", side_effect=queue.Full):
+            self.window.start_flashing(firmware)
+        self.assertEqual(len(results), 2)
+        self.assertFalse(results[1][0])
+        self.assertIn("could not start", results[1][1])
+        self.assertIsNone(self.window.flash_dialog)
+        self.assertTrue(self.window._toolbar_actions["flashing"].isEnabled())
+        self.drain()
+        self.assertTrue(spin_until(lambda: tester_present_frames(self.drain())), "TesterPresent was never paused")
         self.window.on_disconnect_clicked()
 
     def test_the_toolbar_buttons_can_be_shown_or_hidden(self):

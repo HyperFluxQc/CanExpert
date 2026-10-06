@@ -1023,7 +1023,8 @@ offers whichever are available.
 3. Watch the progress dialog; **Cancel** stops after the block being sent.
 
 While it flashes — either way — CAN Expert sends **no TesterPresent**: the ECU's bootloader gets the
-flashing sequence and nothing else in between. TesterPresent goes on once it is over.
+flashing sequence and nothing else in between. TesterPresent goes on once it is over, however it ends:
+finished, failed or cancelled. A flash that cannot start ends at once, with its reason.
 
 **Sequence settings...** opens what the built-in sequence uses, and every part of it can be changed to
 match your ECU: the session numbers, whether DTCs and normal messages are switched off, the

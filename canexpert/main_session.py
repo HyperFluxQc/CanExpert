@@ -81,6 +81,7 @@ class Session:
             if self.sysvars is not None:
                 self.sysvars.reset()               # every variable back to its initial value
             runtime = ScriptRuntime(mailbox, config, self.panel.values(), self, sysvars=self.sysvars)
+            runtime.no_tester_present = worker.no_tester_present     # while its Flashing() runs
             runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
             runtime.message.connect(lambda level, text, g=generation: self.write_message(level, text)
                                     if g == self.session_generation else None)
@@ -247,7 +248,6 @@ class Session:
 
     def on_disconnect_clicked(self):
         self.session_generation += 1
-        self._tester_present_paused = False     # paused for a reflash: the worker goes with the session
         self._watch_keys(False)
         if self.flash_runner is not None:
             self.flash_runner.cancel()      # the bus is about to go away under it
