@@ -60,6 +60,20 @@ Current thread 0x00007f (most recent call first):
 """
 
 
+# PyQt aborts on a Python exception raised in a Qt slot, after printing it: the reason is above the crash.
+SLOT_CRASH = """test_first (test_c.Case) ... ok
+test_setup (test_c.Case) ... Traceback (most recent call last):
+  File "/work/canexpert/simulation_window.py", line 263, in _on_cyclic_failed
+    self.status.setText(f"{name}: {why}")
+RuntimeError: wrapped C/C++ object of type QLabel has been deleted
+Unhandled Python exception
+Fatal Python error: Aborted
+
+Current thread 0x00007f (most recent call first):
+  File "/work/tests/test_c.py", line 63 in wait
+"""
+
+
 class PackagingTest(unittest.TestCase):
     def test_the_version_is_one_windows_can_hold(self):
         self.assertRegex(canexpert.__version__, r"^\d+\.\d+\.\d+$")
@@ -135,6 +149,16 @@ class AnnotationsTest(unittest.TestCase):
         (title, message), = self.module.annotations(CRASH)
         self.assertEqual(title, "Crash while running test_floats (test_b.Case)")
         self.assertIn("drop_empty_floating", message)
+
+    def test_a_crash_keeps_what_was_printed_before_it(self):
+        (title, message), = self.module.annotations(SLOT_CRASH)
+        self.assertEqual(title, "Crash while running test_setup (test_c.Case)")
+        self.assertTrue(message.startswith("Printed before the crash:\nTraceback (most recent call last):"))
+        self.assertIn("RuntimeError: wrapped C/C++ object of type QLabel has been deleted", message)
+        self.assertIn("Unhandled Python exception", message)
+        self.assertIn("line 63 in wait", message, "and the stack after it")
+        (_title, message), = self.module.annotations(CRASH)
+        self.assertNotIn("Printed before", message, "nothing printed: nothing said")
 
     def test_messages_keep_their_lines_in_one_annotation(self):
         line = self.module.escape("a%b\nc")
