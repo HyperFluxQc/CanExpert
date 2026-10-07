@@ -529,6 +529,27 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertIn("WriteVIN:", console.log.toPlainText())
         self.assertEqual(self.window.worker.mailboxes[1:], [])
 
+    def test_the_script_reads_what_a_frame_shows_on_the_panel(self):
+        dbc = Path(__file__).resolve().parents[1] / "DBC" / "dummy_ecu.dbc"
+        (self.databases / "panel_2026-09-18.xml").write_text(f'''<application_database dbc_path="{dbc.as_posix()}">
+<pages><page name="Main">
+<value id="1" label="Temp" binding_type="dbc" binding_value="EngineData.Temperature" x="10" y="10"/>
+<value id="2" label="Copy" binding_value="copy" x="10" y="50"/>
+</page></pages></application_database>''')
+        (self.databases / "panel_2026-09-18_script.py").write_text('''
+@on_message(0x300)
+def copy(api, frame):
+    api.ui.set_value("copy", api.ui.get_value("Temp"))
+''')
+        self.window.on_connect_clicked()
+        self.assertIsNotNone(self.window.script_runtime)
+        for raw, shown in ((0x012C, "30 degC"), (0x0136, "31 degC")):
+            self.ecu.send(can.Message(arbitration_id=0x300, data=raw.to_bytes(2, "big") + bytes(6),
+                                      is_extended_id=False))
+            self.assertTrue(spin_until(lambda shown=shown: self.window.panel.widgets["copy"].text() == shown),
+                            self.window.panel.widgets["copy"].text())
+        self.window.on_disconnect_clicked()
+
     def test_flashing_button_calls_database_flashing(self):
         from canexpert.flashing import Firmware
         item, action = self.window.flashing_toolbar_item, self.window._toolbar_actions["flashing"]

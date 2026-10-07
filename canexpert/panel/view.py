@@ -45,6 +45,7 @@ class PanelView(QWidget):
         self.page_windows = []          # (page name, PanelWindow), in the database's order
         self.variables = {item.name: item for item in database.get("variables", ())}
         self._var_lists = {}            # variable name -> the keys of the Variable Lists showing it
+        self._touched = set()           # the controls set since changed_values() was last asked
         source = database.get("source_path")
         base_dir = Path(source).parent if source else None
         dbc_path = database.get("dbc_path")
@@ -113,6 +114,13 @@ class PanelView(QWidget):
     def values(self):
         return {key: self.controls[key].get_value(widget) for key, widget in self.widgets.items()}
 
+    def changed_values(self) -> dict:
+        """The values of the controls set since the last call - by a frame's signals, by the script - for the
+        script's copy of the panel after each frame: values() whole, a frame at a time, cost a quarter of the time
+        a busy bus takes. What the user changes reaches the script with its own event (control_changed)."""
+        touched, self._touched = self._touched, set()
+        return {key: self.controls[key].get_value(self.widgets[key]) for key in touched}
+
     def set_value(self, name, value):
         """A control's value - or a structured variable's: the whole of it (a dict) or a field ("Calib Data.FOC[3]"),
         shown in its Variable Lists and in the controls named after its fields."""
@@ -131,6 +139,7 @@ class PanelView(QWidget):
 
     def _set_widget(self, name, value):
         widget = self.widgets[name]
+        self._touched.add(name)
         blocker = QSignalBlocker(widget)
         try:
             self.controls[name].set_value(widget, self.definitions[name], value)

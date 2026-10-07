@@ -190,6 +190,23 @@ class PanelControlsTest(unittest.TestCase):
         QTest.keyClick(typed, Qt.Key_Return)
         self.assertEqual(changed, [("typed", "abcd"), ("typed", "xyz")], "Enter sends it, changed or not - once")
 
+    def test_the_values_a_frame_or_the_script_changed_and_only_those(self):
+        path = Path(tempfile.mkdtemp()) / "panel.xml"
+        path.write_text(f'''<application_database dbc_path="{DBC.as_posix()}"><pages><page>
+<value label="temperature" binding_type="dbc" binding_value="EngineData.Temperature"/>
+<value label="status" binding_value="status"/>
+<io_box label="input" binding_value="input" value_type="string"/>
+</page></pages></application_database>''', encoding="utf-8")
+        panel = PanelView(parse_application_database(path), lambda *args: None, self.fail)
+        self.assertEqual(panel.changed_values(), {})
+        panel.on_message(0x300, bytes([0x01, 0x2C, 0, 0, 0, 0, 0, 0]))   # EngineData: 30 degC
+        self.assertEqual(panel.changed_values(), {"temperature": "30 degC"}, "what the frame changed")
+        self.assertEqual(panel.changed_values(), {}, "once")
+        panel.on_message(0x123, bytes(8))                                  # a frame no control shows
+        self.assertEqual(panel.changed_values(), {})
+        panel.set_value("status", "ready")                                 # the script's
+        self.assertEqual(panel.changed_values(), {"status": "ready"})
+
     def test_panel_uses_dbc_metadata_order_and_raw_mappings(self):
         folder = Path(tempfile.mkdtemp())
         path = folder / "panel.xml"

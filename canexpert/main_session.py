@@ -439,6 +439,8 @@ class Session:
             except Exception as exc:
                 self.log_verbose(f"Panel decode: {exc}")
         if self.script_runtime:
-            with self.script_runtime.lock:
-                self.script_runtime.values.update(self.panel.values() if self.panel else {})
+            changed = self.panel.changed_values() if self.panel else {}
+            if changed:                           # what the frame changed on the panel, for api.ui.get_value()
+                with self.script_runtime.lock:
+                    self.script_runtime.values.update(changed)
             self.script_runtime.post("can", can_id, data)

@@ -231,8 +231,10 @@ class TestPanelDialog(QDialog):
             self.mailbox.push(message)
             for mailbox in list(self._mailboxes):
                 mailbox.push(message)
-            with self.runtime.lock:
-                self.runtime.values.update(self.panel.values())
+            changed = self.panel.changed_values()
+            if changed:
+                with self.runtime.lock:
+                    self.runtime.values.update(changed)
             self.runtime.post("can", message.arbitration_id, data)
 
     def done(self, result):
