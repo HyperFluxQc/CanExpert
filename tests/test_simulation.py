@@ -120,6 +120,18 @@ class SimulationWindowTest(unittest.TestCase):
         self.assertEqual(len(self.sent), sent)
         self.assertEqual(self.window.messages["EngineData"]["sent"], sent, "counted when it stopped")
 
+    def test_closing_stops_it_even_never_shown(self):
+        item = self.window._items["EngineData"]
+        item.setText(COL_CYCLE, "5000")                         # a long cycle: the thread waits 5 s at a time
+        item.setCheckState(COL_NAME, Qt.Checked)
+        self.window.start_btn.setChecked(True)
+        self.assertTrue(spin_until(lambda: len(self.sent) >= 1), "sent at once")
+        self.window.close()                                     # never shown, so never hidden
+        self.assertFalse(self.window.start_btn.isChecked())
+        self.assertEqual(self.window.cyclic.keys(), [])
+        self.assertTrue(spin_until(lambda: self.window.cyclic._thread is None, 0.5),
+                        "its sending thread ends at once, not at the end of its wait")
+
     def test_a_whole_node_can_be_ticked_at_once(self):
         node = self.window.tree.findItems("DummyECU", Qt.MatchExactly, COL_NAME)[0]
         self.window.tree.setCurrentItem(node)
@@ -219,6 +231,16 @@ class TransmitPaneTest(unittest.TestCase):
         self.assertTrue(self.pane.messages.rows[0]["enabled"])
         self.assertTrue(self.pane.nodes.start_btn.isChecked())
         self.pane.stop_sending()
+        self.assertFalse(self.pane.messages.rows[0]["enabled"])
+        self.assertFalse(self.pane.nodes.start_btn.isChecked())
+
+    def test_closing_the_window_on_its_own_stops_both(self):
+        from canexpert.transmit_window import default_row
+        self.pane.messages.rows = [default_row("Start", 0x200, b"\x01", 50)]
+        self.pane.messages._fill_table()
+        self.pane.messages.rows[0]["enabled"] = True
+        self.pane.nodes.start_btn.setChecked(True)
+        self.pane.close()
         self.assertFalse(self.pane.messages.rows[0]["enabled"])
         self.assertFalse(self.pane.nodes.start_btn.isChecked())
 

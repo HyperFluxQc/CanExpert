@@ -51,3 +51,8 @@ class TransmitPane(QDialog):
         """Nothing keeps sending once the window is closed."""
         self.messages.stop_all()
         self.nodes.start_btn.setChecked(False)
+
+    def closeEvent(self, event):
+        """Closed on its own - not as the main window's pane, which stop_sending() stops - it stops too."""
+        self.stop_sending()
+        super().closeEvent(event)

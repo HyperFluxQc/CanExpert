@@ -480,3 +480,10 @@ class TransmitWindow(QDialog):
         if getattr(self, "stop_when_hidden", False):
             self.stop_all()
         super().hideEvent(event)
+
+    def closeEvent(self, event):
+        """Closed, every cyclic row stops - also when the window was never shown, and so is never hidden: its
+        sending thread would go on for as long as the program runs."""
+        if getattr(self, "stop_when_hidden", False):
+            self.stop_all()
+        super().closeEvent(event)

@@ -135,12 +135,14 @@ class CyclicSender:
             self._entries.pop(key, None)
             self._stats.pop(key, None)
             self._schedule.drop(key)
+        self._waiter.wake()         # the thread looks again at once: with nothing left to send, it ends
 
     def clear(self):
         with self._lock:
             self._entries.clear()
             self._stats.clear()
             self._schedule.clear()
+        self._waiter.wake()
 
     def keys(self) -> list:
         with self._lock:

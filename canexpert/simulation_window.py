@@ -326,3 +326,10 @@ class SimulationWindow(QDialog):
         if getattr(self, "stop_when_hidden", False):
             self.start_btn.setChecked(False)
         super().hideEvent(event)
+
+    def closeEvent(self, event):
+        """Closed, the simulation stops - also when the window was never shown, and so is never hidden: its
+        sending thread would go on for as long as the program runs."""
+        if getattr(self, "stop_when_hidden", False):
+            self.start_btn.setChecked(False)
+        super().closeEvent(event)
