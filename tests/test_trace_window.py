@@ -1,14 +1,17 @@
-"""The Trace window: symbolic rows, filters, time modes, find and export."""
+"""The Trace window: symbolic rows, filters, time modes, find and export - and a full trace that drops its oldest
+rows instead of rebuilding them all."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import csv
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication
 
+from canexpert import trace_window
 from canexpert.symbols import SymbolDatabases
 from canexpert.trace_window import COL_DATA, COL_DIR, COL_ID, COL_NAME, COL_TIME, TraceWindow, parse_filter
 
@@ -147,6 +150,84 @@ class TraceWindowTest(unittest.TestCase):
         self.assertEqual(plain.tree.topLevelItem(0).text(COL_NAME), "")
         plain.symbols.set_paths([str(DBC)])                   # changed() rebuilds the rows
         self.assertEqual(plain.tree.topLevelItem(0).text(COL_NAME), "EngineData")
+
+
+class FullTraceTest(unittest.TestCase):
+    """A trace that keeps ten frames: once full, the oldest rows go and the new ones come - the rows as a rebuild
+    would make them, without one."""
+
+    def setUp(self):
+        patcher = patch.object(trace_window, "MAX_ROWS", 10)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.trace = TraceWindow(symbols=SymbolDatabases([str(DBC)], settings=STORE))
+        self.addCleanup(self.trace.close)
+        self.rebuilds = []
+        rebuild = self.trace.rebuild
+        self.trace.rebuild = lambda: (self.rebuilds.append(True), rebuild())
+
+    def add(self, first, count, can_ids=(0x300,)):
+        for index in range(first, first + count):
+            self.trace.add_frame(2000.0 + index, "RX", can_ids[index % len(can_ids)], bytes([index]))
+        self.trace.flush()
+
+    def rows(self):
+        tree = self.trace.tree
+        return [[tree.topLevelItem(row).text(column) for column in range(tree.columnCount())]
+                for row in range(tree.topLevelItemCount())]
+
+    def assert_as_rebuilt(self, message):
+        rows = self.rows()
+        self.trace.rebuild()
+        self.assertEqual(rows, self.rows(), message)
+
+    def test_the_oldest_rows_go_and_no_rebuild(self):
+        self.trace.time_combo.setCurrentText("Delta")
+        self.add(0, 10)
+        self.rebuilds.clear()
+        self.add(10, 4)                                         # four more: the four oldest go
+        self.assertEqual(self.rebuilds, [], "no rebuild")
+        self.assertEqual(len(self.rows()), 10)
+        self.assertEqual(self.rows()[0][COL_DATA], "04")
+        self.assertEqual(self.rows()[0][COL_TIME], "0.000000", "the first frame kept: no frame before it now")
+        self.assertEqual(self.rows()[-1][COL_DATA], "0D")
+        self.assert_as_rebuilt("as a rebuild makes them")
+
+    def test_a_filter_drops_only_the_rows_it_showed(self):
+        self.trace.filter_edit.setText("300")                   # 0x301 frames hidden
+        self.add(0, 10, (0x300, 0x301))
+        self.rebuilds.clear()
+        self.add(10, 5, (0x300, 0x301))
+        self.assertEqual(self.rebuilds, [])
+        self.assertEqual([row[COL_DATA] for row in self.rows()], ["06", "08", "0A", "0C", "0E"])
+        self.assert_as_rebuilt("as a rebuild makes them")
+
+    def test_markers_stay_and_new_ones_need_no_rebuild(self):
+        self.add(0, 10)
+        self.trace.add_marker(2009.5, "after the rows")          # newer than every row: added below them
+        self.add(10, 1)
+        self.trace.add_marker(2003.5, "among the rows")          # among them: the one rebuild there is
+        self.trace.flush()
+        self.assertEqual(len(self.rebuilds), 1)
+        self.add(11, 6)                                         # the frames on both sides of it go; it stays
+        self.assertEqual(len(self.rebuilds), 1)
+        names = [row[COL_NAME] for row in self.rows()]
+        self.assertEqual(names.count("Marker: among the rows"), 1)
+        self.assertEqual(names.index("Marker: after the rows"), 4)
+        self.assert_as_rebuilt("as a rebuild makes them")
+
+    def test_the_transport_view_is_rebuilt_only_for_the_frames_it_joins(self):
+        self.trace.set_diagnostic_ids({0x7E0, 0x7E8})
+        self.trace.transport_btn.setChecked(True)
+        self.rebuilds.clear()
+        self.add(0, 5, (0x123,))                                # nothing it joins: no rebuild...
+        self.assertEqual(self.rebuilds, [])
+        self.assertIn("from 5 frame(s)", self.trace.status.text(), "...the count goes on")
+        self.trace.add_frame(2010.0, "TX", 0x7E0, b"\x02\x3e\x00")
+        self.trace.add_frame(2010.1, "RX", 0x7E8, b"\x02\x7e\x00")
+        self.trace.flush()
+        self.assertEqual(len(self.rebuilds), 1)
+        self.assertIn("2 of 2 diagnostic message(s) from 7 frame(s)", self.trace.status.text())
 
 
 class SymbolDatabaseTest(unittest.TestCase):

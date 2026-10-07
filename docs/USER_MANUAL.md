@@ -401,7 +401,8 @@ only a placeholder.
 | **DLC / Data** | Length and bytes. |
 
 A row with a name has an arrow: open it to see the decoded signals with their units. Signals are decoded
-only for rows you actually open, so a busy bus stays responsive.
+only for rows you actually open, so a busy bus stays responsive. The Trace keeps the last 20 000 frames:
+once it holds that many, the oldest leave the top as new ones arrive at the bottom.
 
 The toolbar has **Clear**, **Pause** (freezes the view while recording continues), **Follow** (keeps the
 newest frame in view) and **Colour** (gives each identifier its own colour).
