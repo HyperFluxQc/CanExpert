@@ -178,6 +178,7 @@ CanExpert/
 │   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox
 │   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
+│   ├── lazy.py                 # Libraries imported when first used, not at startup
 │   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
 │   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
 │   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable

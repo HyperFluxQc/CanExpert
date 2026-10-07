@@ -1,9 +1,11 @@
-"""What the Windows build and CI rely on: the version, the icons, the startup check of a built program, and the
-annotations a failed CI run leaves on the pull request."""
+"""What the Windows build and CI rely on: the version, the icons, the startup check of a built program, the
+libraries imported only when first used, and the annotations a failed CI run leaves on the pull request."""
 import importlib.util
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -79,6 +81,43 @@ class PackagingTest(unittest.TestCase):
         self.assertIn('"docs/images"', spec, "the manual's pictures go with it")
         build = (ROOT / "tools" / "build_windows.py").read_text(encoding="utf-8")
         self.assertIn('"CanExpert.exe", "DummyECU.exe", "TestExpert.exe"', build)
+
+
+class StartupTest(unittest.TestCase):
+    """numpy, pyqtgraph and odxtools are imported where they are first used: half a second less to start."""
+
+    def test_starting_imports_none_of_them(self):
+        code = ("import sys, canexpert.main_window; "
+                "print(sorted(name for name in ('numpy', 'odxtools', 'pyqtgraph') if name in sys.modules))")
+        result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120,
+                                env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
+        self.assertEqual(result.stdout.strip(), "[]", result.stderr)
+
+    def test_a_lazy_module_is_imported_at_its_first_use(self):
+        from canexpert.lazy import LazyModule, installed
+        loads = []
+        module = LazyModule(lambda: loads.append(True) or __import__("json"))
+        self.assertEqual(loads, [], "not yet")
+        self.assertEqual(module.dumps([1]), "[1]")
+        self.assertEqual(module.loads("2"), 2)
+        self.assertEqual(loads, [True], "once")
+        self.assertTrue(installed("json"))
+        self.assertFalse(installed("no_such_module_anywhere"))
+
+    def test_the_build_still_finds_them(self):
+        # PyInstaller packs what import statements name: the late imports are still statements, in functions.
+        for path, module in (("canexpert/panel/controls.py", "pyqtgraph"), ("canexpert/can_logger.py", "numpy"),
+                             ("canexpert/can_logger.py", "pyqtgraph"), ("canexpert/odx_services.py", "odxtools")):
+            source = (ROOT / path).read_text(encoding="utf-8")
+            self.assertRegex(source, rf"(?m)^ +(import {module}$|from {module} import )", f"{module} in {path}")
+
+    def test_a_trend_and_the_logger_bring_them_in(self):
+        from canexpert.can_logger import pg as logger_pg
+        from canexpert.panel.controls import TrendWidget
+        trend = TrendWidget(10, "#1f77b4")
+        self.addCleanup(trend.deleteLater)
+        self.assertIsNotNone(trend.plot, "a trend draws with pyqtgraph")
+        self.assertTrue(callable(logger_pg.mkPen))
 
 
 class AnnotationsTest(unittest.TestCase):

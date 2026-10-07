@@ -934,7 +934,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
                 
 def startup_problems() -> list[str]:
     """What a built CAN Expert would miss at run time (--smoke-test): the manual, the icon, the example DBC
-    read by cantools, a python-can bus, odxtools. An empty list when all is there."""
+    read by cantools, a python-can bus, odxtools, pyqtgraph and numpy - the last three imported only when first
+    used, so a build without them would start all the same. An empty list when all is there."""
     from canexpert.paths import DBC_DIR, DOCS_DIR
     problems = []
     if not (DOCS_DIR / "USER_MANUAL.md").exists():
@@ -951,10 +952,11 @@ def startup_problems() -> list[str]:
         can.Bus(interface="virtual", channel="smoke-test").shutdown()
     except Exception as exc:
         problems.append(f"python-can: {exc}")
-    try:
-        __import__("odxtools")                  # imported only to see that it is there
-    except Exception as exc:
-        problems.append(f"odxtools: {exc}")
+    for module in ("odxtools", "pyqtgraph", "numpy"):
+        try:
+            __import__(module)                  # imported only to see that it is there
+        except Exception as exc:
+            problems.append(f"{module}: {exc}")
     return problems
 
 

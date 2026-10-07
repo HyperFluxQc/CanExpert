@@ -40,12 +40,17 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from canexpert.lazy import LazyModule, installed
 from canexpert.panel.variables import convert
 
-try:
-    import pyqtgraph as pg
-except ImportError:
-    pg = None
+
+def _import_pyqtgraph():
+    import pyqtgraph
+    return pyqtgraph
+
+
+# Imported by the first trend shown, not when CAN Expert starts; None when it is not installed.
+pg = LazyModule(_import_pyqtgraph) if installed("pyqtgraph") and installed("numpy") else None
 
 ACCENT = "#0f6cbd"  # Windows 11 accent blue
 STATE_COLORS = ["#5f6368", "#2e7d32", "#f9a825", "#c62828", "#1565c0", "#6a1b9a", "#00838f", "#ef6c00"]
