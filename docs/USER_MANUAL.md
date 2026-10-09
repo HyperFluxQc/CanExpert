@@ -219,10 +219,14 @@ Options inside the windows work the same way: a button that switches something o
 Trace window, the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for
 as long as that option is active, so you can see at a glance what is switched on.
 
-At startup CAN Expert selects the receiver you used last and starts asking its ECUs whether they are there
-(see *Checking ECUs* below) — unless it was closed off the bus (**Kill CAN**, see *Connecting*). The receiver
-CAN Expert is using — connected, or checking its ECUs — is in **bold**; one it used before is not, once it is
-no longer in use.
+**Double-click a receiver** to choose it: it goes **bold**, CAN Expert starts asking its ECUs whether they
+are there (see *Checking ECUs* below), and once one answers, the database Connect would load appears under
+it. The receiver chosen before is not bold any more, and its ECUs and database go from the tree. A single
+click only selects a receiver; **Connect** uses the one in bold. If a database is connected on another
+receiver, CAN Expert asks before disconnecting it.
+
+At startup CAN Expert chooses again the receiver you used last and checks its ECUs — unless it was closed off
+the bus (**Kill CAN**, see *Connecting*); off the bus, none is in bold.
 
 ## Configurations
 
@@ -273,8 +277,8 @@ window says where, as the Form Designer's check does (see *Checking a panel*). *
 that loads but has problems connects, and the window lists them — once for each version of its files,
 not at every Connect. Each problem is written to the Log as well.
 
-**Double-clicking** a receiver, an ECU under it, or the database offered under it connects straight away —
-the same as pressing Connect.
+**Double-clicking** an ECU, or the database offered under the chosen receiver, connects straight away — the
+same as pressing Connect. Double-clicking a receiver chooses it (see *The main window*).
 
 **Disconnect** stops the script and the session's traffic. CAN Expert then goes on checking the ECUs with
 TesterPresent, so the CAN Channels tree still shows which ones answer (see *Checking ECUs*).
@@ -329,7 +333,8 @@ Under each receiver, every ECU that answers appears with its status:
 
 This keeps working **after Disconnect**: the channel is marked **[Checking ECUs]** and TesterPresent
 carries on, so the list keeps telling you which ECUs are alive. **Right-click a channel** to *Stop
-checking ECUs*, or to *Check ECUs* with the selected configuration without connecting.
+checking ECUs*, or to *Check ECUs* with the selected configuration without connecting — which chooses it, as
+a double-click does.
 
 Under a responding ECU, CAN Expert also lists the database that configuration would load
 ("showcase_2026-09-18 — double-click to load"). Double-click it to connect and load the panel.

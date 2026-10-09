@@ -63,7 +63,8 @@ class Session:
             transport = uds_transport(config)
             self._diagnostic_answers = (transport["response_id"], transport["extended"], transport["address_byte"])
             self.connected_channel_config = dict(cfg)
-            self._remember_channel(cfg)
+            self._remember_channel(cfg)                 # the chosen interface, in bold
+            self._forget_nodes(keep=channel_key(cfg))   # what other interfaces showed goes
             self.session_generation += 1
             generation = self.session_generation
             self.clock.begin(time.time())            # a new measurement: relative times count from here

@@ -258,8 +258,8 @@ class RequirementsTest(unittest.TestCase):
     def test_the_channel_used_last_is_remembered_shown_in_bold_and_checked_at_startup(self):
         first, second = self.channels({"interface": "kvaser", "channel": 0}, {"interface": "kvaser", "channel": 1})
         self.assertFalse(first.font(0).bold())
-        self.window.on_channel_selected(second)
-        self.window.on_connect_clicked()                                     # channel 1 is now the one used
+        self.window.on_channel_double_clicked(second)                        # chosen...
+        self.window.on_connect_clicked()                                     # ...and used
         self.assertIsNotNone(self.window.can_bus)
         self.window.on_disconnect_clicked()
         self.window.close()
@@ -273,37 +273,65 @@ class RequirementsTest(unittest.TestCase):
         heartbeat = self.ecu.recv(1.0)
         self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, PADDED_TESTER_PRESENT))
 
-    def test_only_the_channel_in_use_is_in_bold(self):
+    def test_the_interface_chosen_is_in_bold_with_what_answers_on_it(self):
         self.channels({"interface": "kvaser", "channel": 0}, {"interface": "kvaser", "channel": 1})
         first, second = ("kvaser", 0, "", ""), ("kvaser", 1, "", "")
-        window = self.window
+        window, items = self.window, self.window.channel_items
 
         def bold():
-            return [key for key, item in window.channel_items.items() if item.font(0).bold()]
+            return [key for key, item in items.items() if item.font(0).bold()]
+
+        def under(key):
+            """The lines under an interface: its ECUs and the database Connect would load."""
+            return [items[key].child(index).text(0) for index in range(items[key].childCount())]
+
+        def offered(key):
+            self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))  # an answer
+            return any("double-click to load" in line for line in under(key))
 
         self.assertEqual(bold(), [])
-        window.on_channel_selected(window.channel_items[first])
-        window.on_connect_clicked()                                    # connected on the first
-        self.assertEqual(bold(), [first])
-        window.disconnect_database()                                   # its ECUs still checked: still in use
-        self.assertEqual(bold(), [first])
-        window.on_channel_selected(window.channel_items[second])
-        window.on_connect_clicked()                                    # another interface: the first is not in use
-        self.assertEqual(bold(), [second])
-        self.assertNotIn(first, window.database_items, "nor its database offered")
-        window.on_disconnect_clicked()                                 # nothing in use
+        window.on_channel_selected(items[first])                       # a click only shows it
         self.assertEqual(bold(), [])
-        window.check_ecus(window.channel_items[first].data(0, Qt.UserRole))
+        self.assertIn("Double-click", window.status_label.text())
+        window.on_channel_double_clicked(items[first])                 # a double-click chooses it
         self.assertEqual(bold(), [first])
-        window.set_offline(True)                                       # Kill CAN: nothing in use
-        self.assertEqual(bold(), [])
-        window.set_offline(False)                                      # back: the ECU check of the one used last
+        self.assertEqual(window.monitor_channel["channel"], 0, "its ECUs checked")
+        self.assertTrue(spin_until(lambda: offered(first)))
+        self.assertTrue(any("ECU 0x7E8" in line for line in under(first)))
+
+        window.on_channel_double_clicked(items[second])                # another interface chosen
+        self.assertEqual(bold(), [second], "the one chosen before is not in bold any more...")
+        self.assertEqual(under(first), [], "...nor its ECU and database under it")
+        self.assertEqual(under(second), [], "nothing has answered on the new one yet")
+        self.assertEqual(window.monitor_channel["channel"], 1)
+        self.assertTrue(spin_until(lambda: offered(second)), "once an ECU answers, its database is offered")
+
+        database = next(items[second].child(index) for index in range(items[second].childCount())
+                        if "double-click to load" in items[second].child(index).text(0))
+        window.on_channel_double_clicked(database)                     # the database line: Connect
+        self.assertIsNotNone(window.can_bus)
         self.assertEqual(bold(), [second])
+        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.No) as question:
+            window.on_channel_double_clicked(items[first])             # connected: asked first
+        self.assertIn("Disconnect it and use kvaser channel 0?", question.call_args[0][2])
+        self.assertIsNotNone(window.can_bus, "No: still connected")
+        self.assertEqual(bold(), [second])
+        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+            window.on_channel_double_clicked(items[first])
+        self.assertIsNone(window.can_bus, "Yes: disconnected...")
+        self.assertEqual(bold(), [first], "...and the other one chosen")
+        self.assertEqual(under(second), [])
+        self.assertEqual(window.monitor_channel["channel"], 0)
+        window.set_offline(True)                                       # Kill CAN: none in bold
+        self.assertEqual(bold(), [])
+        window.set_offline(False)                                      # back: the one chosen, checked again
+        self.assertEqual(bold(), [first])
+        self.assertIsNotNone(window.ecu_monitor)
 
     def test_a_responding_ecu_offers_its_database_for_a_double_click(self):
         channel = self.channels({"interface": "kvaser", "channel": 0})[0]
         key = can_bus.channel_key(channel.data(0, Qt.UserRole))
-        self.window.check_ecus(channel.data(0, Qt.UserRole))
+        self.window.on_channel_double_clicked(channel)                       # chosen: its ECUs checked
         self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))
         self.assertTrue(spin_until(lambda: self.window.database_items))
         entry = next(iter(self.window.database_items.values()))
