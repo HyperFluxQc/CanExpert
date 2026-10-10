@@ -146,6 +146,15 @@ class Channels:
             item.setForeground(0, QColor(colour))
             item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))
         self._update_databases(responding)
+        self._update_database_buttons()
+
+    def _session_ecu_responding(self) -> bool:
+        """An ECU of the database session answers now: Read, Write and Reflash can be used. Not off the bus."""
+        if self.offline or self.can_bus is None or self.connected_channel_config is None:
+            return False
+        channel, now = channel_key(self.connected_channel_config), time.monotonic()
+        return any(key[0] == channel and now - state["last_seen"] <= state["timeout"]
+                   for key, state in self.node_states.items())
 
     def _update_databases(self, responding):
         """Offer the database that Connect would load under every channel with a responding ECU."""
@@ -259,10 +268,19 @@ class Channels:
                          f"0x{config['request_id']:X} every {config['tester_present_interval_seconds']:g} s "
                          f"(right-click the channel to stop)")
 
+    def monitor_session(self):
+        """(bus, worker, configuration) of the ECU check while it runs - what Flashing uses without a database;
+        else None."""
+        if self.offline or self.monitor_bus is None or self.ecu_monitor is None or self.monitor_config is None:
+            return None
+        return self.monitor_bus, self.ecu_monitor, self.monitor_config
+
     def stop_ecu_monitor(self):
         worker, bus = self.ecu_monitor, self.monitor_bus
         if worker is None:
             return
+        if self.flash_runner is not None and self.can_bus is None:
+            self.flash_runner.cancel()      # a Flashing without a database runs over the check
         self.ecu_monitor = self.monitor_bus = None
         worker.stop()
         try:

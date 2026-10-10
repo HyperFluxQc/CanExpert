@@ -85,7 +85,7 @@ class TestPanelDialog(QDialog):
         import can
         from canexpert.can_bus import ReceiveMailbox
         from canexpert.config import validate_config
-        from canexpert.panel.runtime import ScriptRuntime
+        from canexpert.panel.runtime import TOOLBAR_FUNCTIONS, ScriptRuntime
         from canexpert.panel.view import PanelView
         self.setWindowTitle(f"Test panel - {database.get('name', '')}")
         enable_maximize(self)
@@ -131,7 +131,17 @@ class TestPanelDialog(QDialog):
         self.flash_dialog = None
         self.runtime.flash_progress.connect(lambda done, total, text: update_progress(self.flash_dialog, done, total, text))
         self.runtime.flash_finished.connect(self._flash_finished)
+        # The main window's Read and Write: the script's Read(api) and Write(api), against the simulated ECU.
+        self.function_buttons = {}
+        for name in TOOLBAR_FUNCTIONS:
+            button = QPushButton(name)
+            button.setToolTip(f"The script's {name}(api), as the main window's {name} button runs it")
+            button.clicked.connect(lambda _checked=False, n=name: self.call_function(n))
+            self.function_buttons[name] = button
+        self.runtime.function_finished.connect(self._function_finished)
         bar = QHBoxLayout()
+        for button in self.function_buttons.values():
+            bar.addWidget(button)
         bar.addWidget(self.flash_button)
         bar.addStretch()
         layout.addLayout(bar)
@@ -203,6 +213,19 @@ class TestPanelDialog(QDialog):
         self._log(f"Flashing {Path(firmware.path).name}: {firmware.size} bytes in {len(firmware.segments)} segment(s)")
         self.runtime.start_flash(firmware)
 
+    def call_function(self, name):
+        """Read or Write: the script's function on its thread, the buttons greyed until it ends."""
+        if not self.runtime.call_function(name):
+            self._function_finished(name, False, f"{name} could not start: the script is not running")
+            return
+        for button in self.function_buttons.values():
+            button.setEnabled(False)
+
+    def _function_finished(self, _name, _ok, text):
+        for button in self.function_buttons.values():
+            button.setEnabled(True)
+        self._log(text)
+
     def _flash_finished(self, ok, text):
         dialog, self.flash_dialog = self.flash_dialog, None
         close_progress(dialog)
@@ -243,6 +266,10 @@ class TestPanelDialog(QDialog):
         if self.flash_runner is not None:
             self.flash_runner.cancel()                    # the bus is about to go away under it
         self._pump.stop()
+        try:
+            self.runtime.flash_finished.disconnect(self._flash_finished)   # a Flashing() stopped: closed, not failed
+        except TypeError:                                 # closed before
+            pass
         self.runtime.stop()
         self.mailbox.close()
         self._stop.set()

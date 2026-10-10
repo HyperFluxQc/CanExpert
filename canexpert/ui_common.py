@@ -80,7 +80,7 @@ def fit_new_window(window, anchor=None):
 class ToolbarButtons:
     """Which buttons a toolbar shows: every one unless it was unticked - right-click the toolbar, or the window's
     View menu - and kept so in the settings (key: a JSON list of the hidden ones). A window can also take a button
-    away for a while (set_available: Flashing while nothing is connected); it shows again only if it is ticked.
+    away for a while (set_available: Reflash until a database's ECU answers); it shows again only if it is ticked.
     Separators with nothing shown on one side go too. A hidden button's action still works from the menus and
     its key."""
 
@@ -175,6 +175,13 @@ _PATHS = {
     "flashing": '<path d="M12 3v8m-3.5-3.5L12 11l3.5-3.5"/>'
                 '<rect x="5" y="14" width="14" height="7" rx="1.5"/>'
                 '<path d="M8 21v2m4-2v2m4-2v2M9 17.5h6"/>',
+    # The database's Read, Write and Reflash: an arrow out of the ECU, one into it, and the ECU flashed again.
+    "ecu_read": '<rect x="3" y="6" width="9" height="12" rx="1.5"/><path d="M1 10h2M1 14h2M6 4v2M9 4v2M6 18v2M9 18v2"/>'
+                '<path d="M14.5 12H22m-3-3 3 3-3 3"/>',
+    "ecu_write": '<rect x="12" y="6" width="9" height="12" rx="1.5"/><path d="M21 10h2M21 14h2M15 4v2M18 4v2M15 18v2'
+                 'M18 18v2"/><path d="M1.5 12H9m-3-3 3 3-3 3"/>',
+    "reflash": '<path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 3v4h-4"/>'
+               '<rect x="9" y="9" width="6" height="6" rx="1"/><path d="M11 7.5V9m2-1.5V9m-2 6v1.5m2-1.5v1.5"/>',
     "trace": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 13h10M7 16.5h6"/>',
     "transmit": '<path d="M12 3v10"/><path d="M8.5 6.5 12 3l3.5 3.5"/>'
                 '<path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
@@ -215,6 +222,9 @@ _COLORS = {
     "logger": ("#1566ae", "#7ac4ff"),
     "diagnostics": ("#a6600b", "#f6c16b"),
     "flashing": ("#b42318", "#ff9c8a"),
+    "ecu_read": ("#0369a1", "#7dd3fc"),
+    "ecu_write": ("#c2410c", "#fdba74"),
+    "reflash": ("#be123c", "#fda4af"),
     "trace": ("#1f6feb", "#8ab4ff"),
     "transmit": ("#b45309", "#fbbf24"),
     "console": ("#7c3aed", "#c4b5fd"),

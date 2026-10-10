@@ -153,6 +153,9 @@ More in *Building a form*, under *Form Designer*.
 2. On the **Form** tab, drop a **Variable List** and choose the variable in Properties.
 3. **Test panel...** (or connect): **Read** fills the list; double-click a value to change it; **Write** sends
    the variable back. Writing usually needs the extended session and, for memory, security access.
+4. For one button that does it all, give the script a `Read(api)` and a `Write(api)`: the toolbar's **Read**
+   and **Write** run them (see *Read, Write and Reflash*). The calibration example's take both variables at
+   once, its `Write()` taking the extended session and security access itself.
 
 [![A Variable List read from the Dummy ECU](images/variables.png)](images/variables.png)
 
@@ -208,8 +211,9 @@ meanwhile.
 
 **Choosing the toolbar's buttons** — right-click the toolbar (or *View → Toolbar buttons*) and untick the
 buttons you do not use; tick them again, or **Show all**, to bring them back. The choice is kept for the
-next start. A hidden button's command is still in the menus, with its key. **Flashing** shows only while
-connected — and only if it is ticked.
+next start. A hidden button's command is still in the menus, with its key. **Read**, **Write** and
+**Reflash** show only once a connected database's ECU answers, and **Flashing** only while no database is
+connected — each only if it is ticked.
 
 Configuration, CAN Channels and Log are fixed panels around the workspace. Each has a **–** button to
 shrink it to a strip and **×** to close it; the *File* menu brings a closed one back. While a database
@@ -320,6 +324,33 @@ measurement started (**Relative**) for the lines of the Write window and the UDS
 starts when you connect, start the ECU check or replay a file, and the Trace's *Relative* time and the
 CAN Logger's time axis count from the same moment, so a line in the console, a row in the Trace and a
 point on a graph line up.
+
+### Read, Write and Reflash
+
+Beside **Kill CAN** is a group of three buttons that belong to the database:
+
+| | |
+|---|---|
+| **Read** | Runs the database script's `Read(api)` — whatever reading the ECU means for that panel. |
+| **Write** | Runs the database script's `Write(api)`. |
+| **Reflash** | Flashes the ECU over the database: with the script's `Flashing(api, firmware)` or the built-in sequence (see *Firmware flashing*). |
+
+They appear once a database is connected **and** its ECU has answered. They are greyed out while the ECU
+does not answer — *Lost connection* in CAN Channels, or off the bus with Kill CAN — and while one of them,
+or a flashing, runs; they are back as soon as it answers again. Disconnect, and they go.
+
+Each of them **refreshes the database** first. When the Databases folder holds a newer one of the
+configuration's family — a later date in its name — or the loaded one was saved since, its panel or its
+script (from the Form Designer, say), that one is loaded in its place before the command runs. The session
+goes on meanwhile: the adapter stays open and TesterPresent keeps the ECU in its session; the panel is
+built again and the new script started, the old one's `@on_stop` handlers first. The Log says *Database
+refreshed*. When nothing is newer, nothing restarts. A newer database that cannot be loaded leaves the
+loaded one running: the Panel check window says why, and the command is not run.
+
+How it ended is in the status bar — *Read complete — showcase_2026-10-01.xml*, with the database that ran
+it — in the Write window, and in the Log when it failed. `Read` and `Write` fail when they return `False`
+or a negative answer of the ECU, or raise an error; a script without them says so, and so does the
+button's tooltip. See *Writing panel scripts*.
 
 ### Checking ECUs
 
@@ -690,9 +721,10 @@ warnings do not stop it. **Open** says why a file cannot be opened — the line,
 probably meant — and a file that opens with problems lists them, ready to put right and save.
 
 **Test panel...** runs the panel against a simulated ECU on a virtual bus, without touching your hardware.
-Its **Flashing...** opens the same dialog as the main window's Flashing button (see *Firmware flashing*):
+Its **Flashing...** opens the same dialog as the main window's Reflash button (see *Firmware flashing*):
 the script's `Flashing` when it defines one, or the built-in sequence, with its settings, progress and
-report.
+report. Its **Read** and **Write** run the script's `Read` and `Write` as the main window's buttons do, and
+the window's log says how they ended.
 
 ## Writing panel scripts
 
@@ -762,6 +794,22 @@ def typed(api, variable, field):           # field: "Axis", "FOC[3]"
 ```
 
 A value that does not fit its type (`calib.Axis = -1` for a `uint32`) raises an error that says so.
+
+The toolbar's **Read** and **Write** run the script's `Read` and `Write` (see *Read, Write and Reflash*),
+and **Reflash** its `Flashing(api, firmware)` (see *Firmware flashing*):
+
+```python
+def Read(api):                             # the toolbar's Read
+    api.ui.set_value("vin", RDBI(0xF190).text)
+    return api.var("Calib Data").read()    # False, a negative answer or an error: it failed
+
+def Write(api):                            # the toolbar's Write
+    DSC(0x03)
+    SecurityUnlock(0x01, lambda seed: bytes(b ^ 0xA5 for b in seed))
+    return api.var("Calib Data").write()
+```
+
+They run on the script's thread, after the events that came before them.
 
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.
@@ -1022,11 +1070,18 @@ traffic by parameter group, and the CAN Logger plots the signals of a J1939 DBC 
 
 ## Firmware flashing
 
-While connected, the **Flashing** toolbar button appears. There are two ways to flash, and the button
-offers whichever are available.
+Two toolbar buttons flash an ECU:
 
-1. Press **Flashing** and choose an S-record (`.s19`, `.s28`, `.s37`) or Intel HEX (`.hex`) file.
-2. The dialog lists the file, its size and the address ranges to be written, and asks how to flash it:
+- **Reflash**, while a database is connected and its ECU answers (see *Read, Write and Reflash*). It
+  refreshes the database first, then offers both ways of flashing below.
+- **Flashing**, while no database is connected. It flashes with the built-in sequence over the ECU check of
+  the chosen receiver (see *Checking ECUs*), to the ECU of the configuration the check uses: double-click
+  a receiver first — the button is greyed out until its ECUs are being checked.
+
+1. Press **Reflash** (or **Flashing**) and choose an S-record (`.s19`, `.s28`, `.s37`) or Intel HEX (`.hex`)
+   file.
+2. The dialog names the ECU — the configuration, with its request and response identifiers — lists the
+   file, its size and the address ranges to be written, and asks how to flash it:
    - **With the panel script's `Flashing(api, firmware)`** — offered when the loaded database's script
      defines one. What happens is then entirely up to the script, which is the way to handle a
      bootloader that does something unusual.
@@ -1625,8 +1680,12 @@ problems before you connect.
 **The Trace shows identifiers but no names** — no symbol database describes those messages. Add the DBC
 under *Tools → Symbol databases...*.
 
-**The Flashing button stays greyed out** — flashing needs a connection; connect first. A script without
-`Flashing(api, firmware)` only means the built-in sequence is the one offered.
+**Read, Write and Reflash are not on the toolbar** — they appear once a database is connected and its
+ECU has answered; greyed out, the ECU does not answer (or CAN Expert is off the bus). A script without
+`Flashing(api, firmware)` only means Reflash offers the built-in sequence.
+
+**The Flashing button stays greyed out** — without a database, it flashes over the ECU check: double-click a
+receiver in CAN Channels so its ECUs are checked. With a database connected, **Reflash** flashes instead.
 
 **Graphs stay empty** — the Logger only draws signals from the loaded DBC that are actually received, and
 only while you are connected.

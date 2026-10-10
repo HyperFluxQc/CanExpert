@@ -103,7 +103,7 @@ def main_check():
         samples = lambda: getattr(logger._series.get("EngineData.Temperature"), "n", 0)  # noqa: E731
         check("CAN Logger records a live DBC signal", spin(lambda: samples() > 3, 8), f"{samples()} samples")
 
-        check("Flashing enabled by the panel script", spin(lambda: window._toolbar_actions["flashing"].isEnabled()))
+        check("Reflash enabled once the ECU answers", spin(lambda: window._toolbar_actions["reflash"].isEnabled()))
         firmware = load_firmware(REPO / "examples" / "firmware" / "demo_app.hex")
         results = []
         with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):

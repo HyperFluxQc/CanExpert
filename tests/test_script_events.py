@@ -11,7 +11,7 @@ import can
 import cantools
 from PyQt5.QtWidgets import QApplication
 
-from canexpert.can_bus import ReceiveMailbox
+from canexpert.can_bus import ReceiveMailbox, SwitchedBus
 from canexpert.config import diagnostic_request_id, validate_config
 from canexpert.panel.runtime import ScriptRuntime
 
@@ -149,6 +149,108 @@ class ScriptEventsTest(unittest.TestCase):
         self.runtime.stop()
         message = self.peer.recv(1.0)
         self.assertEqual((message.arbitration_id, bytes(message.data)), (0x7FF, bytes([0xEE] + [0] * 7)))
+
+
+FUNCTIONS_SCRIPT = '''
+def Read(api):
+    api.ui.set_value("read", True)
+
+def Write():
+    raise ValueError("refused")
+
+def Flashing(api, firmware):
+    return True
+'''
+
+
+class ToolbarFunctionsTest(unittest.TestCase):
+    """Read() and Write(): what the main window's Read and Write buttons run on the script's thread."""
+
+    def setUp(self):
+        self.bus = SwitchedBus(can.Bus(interface="virtual", channel="functions-" + str(uuid.uuid4())))
+        self.addCleanup(self.bus.shutdown)
+        self.runtime = ScriptRuntime(ReceiveMailbox(self.bus), validate_config({"name": "t", "timeout_ms": 50}), {},
+                                     None)
+        self.addCleanup(self.runtime.stop)
+        self.values, self.finished, self.available, self.logs = {}, [], [], []
+        self.runtime.value_changed.connect(lambda name, value: self.values.__setitem__(name, value))
+        self.runtime.function_finished.connect(lambda *outcome: self.finished.append(outcome))
+        self.runtime.functions_available.connect(self.available.append)
+        self.runtime.logged.connect(self.logs.append)
+
+    def start(self, source):
+        path = Path(tempfile.mkdtemp()) / "script.py"
+        path.write_text(source)
+        self.runtime.start(path)
+        self.assertTrue(self.runtime.loaded.wait(2), "the script defined its functions")
+
+    def wait(self, predicate, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            APP.processEvents()
+            if predicate():
+                return
+            time.sleep(0.005)
+        self.fail("condition not reached")
+
+    def test_the_functions_run_and_say_how_they_ended(self):
+        self.start(FUNCTIONS_SCRIPT)
+        self.assertEqual(self.runtime.functions(), {"Read", "Write"}, "Flashing() is Reflash's, not one of them")
+        self.wait(lambda: self.available == [{"Read", "Write"}])
+        self.assertTrue(self.runtime.call_function("Read"))
+        self.wait(lambda: self.finished)
+        self.assertEqual(self.finished.pop(), ("Read", True, "Read complete"))
+        self.assertTrue(self.values.get("read"), "with the script API, as Read(api) asks")
+        self.runtime.call_function("Write")             # Write() takes no api: it is called without one
+        self.wait(lambda: self.finished)
+        self.assertEqual(self.finished.pop(), ("Write", False, "Write() failed: refused"))
+
+    def test_a_function_the_script_does_not_define_is_said_so(self):
+        self.start("def Read(api):\n    return False\n")
+        self.assertEqual(self.runtime.functions(), {"Read"})
+        for name in ("Write", "Read", "DatabaseMainFunction"):      # only Read and Write are called this way
+            self.runtime.call_function(name)
+        self.wait(lambda: len(self.finished) == 3)
+        self.assertEqual(self.finished, [
+            ("Write", False, "The database script does not define Write(api)"),
+            ("Read", False, "Read() reported failure"),
+            ("DatabaseMainFunction", False, "The database script does not define DatabaseMainFunction(api)")])
+
+    def test_a_negative_answer_returned_is_a_failure_with_its_reason(self):
+        self.start("def Read(api):\n    return RDBI(0xF190)\n")          # nobody answers on this bus
+        self.runtime.call_function("Read")
+        self.wait(lambda: self.finished)
+        self.assertEqual(self.finished, [("Read", False, "Read(): no response")])
+
+    def test_off_the_bus_a_function_stops_and_says_why(self):
+        self.start("def Write(api):\n    api.can.send(0x100, [1])\n")
+        self.bus.cut_off()                              # Kill CAN
+        self.runtime.call_function("Write")
+        self.wait(lambda: self.finished)
+        name, ok, text = self.finished[0]
+        self.assertEqual((name, ok), ("Write", False))
+        self.assertTrue(text.startswith("Write() stopped: CAN Expert is off the bus"), text)
+
+    def test_a_script_that_ends_answers_every_call_still_waiting(self):
+        self.start("import sys\nimport threading\ngate = threading.Event()\n\n"
+                   "def Read(api):\n    gate.wait(2)\n    sys.exit()\n\n"
+                   "def Write(api):\n    pass\n")
+        self.assertTrue(self.runtime.call_function("Read"))
+        self.assertTrue(self.runtime.call_function("Write"))      # waiting behind Read()
+        self.runtime.namespace["gate"].set()
+        self.wait(lambda: len(self.finished) == 2)
+        self.assertEqual(self.finished, [("Read", False, "Read() stopped: the database script stopped"),
+                                         ("Write", False, "Write could not start: the database script stopped")])
+        self.assertFalse(self.runtime.call_function("Read"), "nothing takes a call any more")
+
+    def test_without_a_script_no_event_waits_for_one(self):
+        self.runtime.start(Path(tempfile.mkdtemp()) / "no_script.py")
+        self.assertTrue(self.runtime.loaded.is_set())
+        self.assertFalse(self.runtime.call_function("Read"))
+        for _ in range(3000):                           # more than the queue holds: no "queue full" each time
+            self.runtime.post("can", 0x100, b"\x01")
+        APP.processEvents()
+        self.assertEqual(self.logs, [])
 
 
 if __name__ == "__main__":

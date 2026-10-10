@@ -5,6 +5,7 @@ status strip and every open tool window. What a check of the panel finds is show
 when the panel is the reason, else the panel's problems, once for each version of its files.
 """
 import time
+from datetime import date
 from pathlib import Path
 
 import can
@@ -16,7 +17,7 @@ from canexpert.channel_setup import load_setup, open_configured
 from canexpert.config import uds_transport, validate_config
 from canexpert.j1939_window import address_setting
 from canexpert.panel.check import ERROR, FORM, Problem, check_panel_file, script_file, summary
-from canexpert.panel.database import parse_application_database, select_database
+from canexpert.panel.database import parse_application_database, select_database, split_database_id
 from canexpert.panel.problems_dialog import ProblemsDialog
 from canexpert.panel.runtime import ScriptRuntime
 from canexpert.transport_settings import apply_transport, load_transport
@@ -25,6 +26,27 @@ from canexpert.workspace import fit_on_screen
 
 MARKER_HISTORY = 1000              # markers kept for a window opened later
 OFFLINE_SETTING = "offline"        # settings: the kill switch was on - CAN Expert starts off the bus
+SCRIPT_LOAD_WAIT = 3.0             # seconds a refreshed database's script is given to define its functions
+
+
+def database_version(path) -> tuple:
+    """What tells one version of a panel database from another: the file, and when it and its script were
+    last written."""
+    path = Path(path).resolve()
+    stamps = []
+    for item in (path, script_file(path)):
+        try:
+            stamps.append(item.stat().st_mtime_ns)
+        except OSError:                             # no script, or the file gone
+            stamps.append(None)
+    return (str(path), *stamps)
+
+
+def database_rank(path) -> tuple:
+    """Where a database file stands among the versions of its family, as select_database() orders them: its
+    date (an undated one before all), then its name."""
+    path = Path(path)
+    return split_database_id(path.stem)[1] or date.min, path.name
 
 
 class Session:
@@ -32,7 +54,7 @@ class Session:
 
     def on_connect_clicked(self):
         """Connect: load the active configuration's panel database and run its script on the bus."""
-        if self.can_bus is not None:
+        if self.can_bus is not None or self.flash_dialog is not None:   # a Flashing over the ECU check runs
             return
         if self.offline:
             self._set_status("Off the bus: release Kill CAN (Ctrl+F9) to connect", "red")
@@ -70,8 +92,6 @@ class Session:
             self.clock.begin(time.time())            # a new measurement: relative times count from here
             worker = CanWorker(self.can_bus, config, tester_present=not setup.listen_only,
                                unsolicited=not setup.listen_only)
-            mailbox = ReceiveMailbox(self.can_bus, worker.message_sent.emit)
-            worker.add_mailbox(mailbox)
             worker.message_received.connect(lambda msg, g=generation: self.on_can_message(msg) if g == self.session_generation else None)
             worker.message_sent.connect(lambda stamp, cid, data, extended, g=generation: self.dispatch_frame(stamp, "TX", cid, data, extended) if g == self.session_generation else None)
             worker.error_occurred.connect(lambda error, g=generation: self._session_failed(error) if g == self.session_generation else None)
@@ -81,34 +101,18 @@ class Session:
             self.worker = worker
             if self.sysvars is not None:
                 self.sysvars.reset()               # every variable back to its initial value
-            runtime = ScriptRuntime(mailbox, config, self.panel.values(), self, sysvars=self.sysvars)
-            runtime.no_tester_present = worker.no_tester_present     # while its Flashing() runs
-            runtime.value_changed.connect(lambda name, value, g=generation: self.panel.set_value(name, value) if g == self.session_generation and self.panel else None)
-            runtime.message.connect(lambda level, text, g=generation: self.write_message(level, text)
-                                    if g == self.session_generation else None)
-            runtime.flashing_available.connect(lambda ok, g=generation: self._set_flashing_available(ok) if g == self.session_generation else None)
-            runtime.flash_progress.connect(lambda done, total, text, g=generation: self._on_flash_progress(done, total, text) if g == self.session_generation else None)
-            runtime.j1939.address = address_setting(self._settings)        # the J1939 window's
-            runtime.marker_requested.connect(lambda when, text, g=generation: self.add_marker(when, text)
-                                             if g == self.session_generation else None)   # api.marker()
-            runtime.flash_finished.connect(lambda ok, text, g=generation: self._on_flash_finished(ok, text) if g == self.session_generation else None)
-            self.panel.control_changed.connect(lambda name, value: runtime.post("control", name, value))
-            self.script_runtime = runtime
             self._bus_state = None
             self._watch_keys(True)
             worker.start()
-            script_path = Path(database["source_path"]).with_name(Path(database["source_path"]).stem + "_script.py")
-            runtime.dbc = self.panel.dbc
-            runtime.handlers = self.panel.handlers()
-            runtime.set_variables(database.get("variables", []))
+            self._set_flashing_available(False)    # until the script says whether it has a Flashing()
+            self._set_database_functions(frozenset())
             panel_failure = True
-            runtime.start(script_path)
+            self._start_script(database)
             panel_failure = False
+            self._database_version = database_version(database_path)
             self._toolbar_actions["connect"].setEnabled(False)
             self._toolbar_actions["disconnect"].setEnabled(True)
             self.status_strip.connected()
-            self._set_flashing_available(False)
-            self.toolbar_buttons.set_available("flashing", True)
             self.config_list.setEnabled(False)
             self.edit_config_btn.setEnabled(False)          # the configuration in use stays as it is
             self.database_pane.toggleView(True)
@@ -128,6 +132,55 @@ class Session:
             if panel_failure:
                 self.report_panel_problems(database_path, failure=exc)
 
+    def _start_script(self, database):
+        """The database's script on the session, through a mailbox of its own on the CAN worker; the panel is
+        built already. What it says reaches the window while it is the one running: one stopped - Disconnect,
+        or a refreshed database in its place - says nothing more."""
+        mailbox = ReceiveMailbox(self.can_bus, self.worker.message_sent.emit)
+        self.worker.add_mailbox(mailbox)
+        runtime = ScriptRuntime(mailbox, self.session_config, self.panel.values(), self, sysvars=self.sysvars)
+        runtime.mailbox = mailbox
+        runtime.no_tester_present = self.worker.no_tester_present     # while its Flashing() runs
+        runtime.j1939.address = address_setting(self._settings)        # the J1939 window's
+
+        def running(slot):
+            return lambda *arguments: slot(*arguments) if runtime is self.script_runtime else None
+
+        runtime.value_changed.connect(running(lambda name, value: self.panel.set_value(name, value)
+                                              if self.panel else None))
+        runtime.message.connect(running(self.write_message))
+        runtime.flashing_available.connect(running(self._set_flashing_available))
+        runtime.functions_available.connect(running(self._set_database_functions))
+        runtime.flash_progress.connect(running(self._on_flash_progress))
+        runtime.flash_finished.connect(running(self._on_flash_finished))
+        runtime.function_finished.connect(running(self._on_function_finished))
+        runtime.marker_requested.connect(running(self.add_marker))     # api.marker()
+        runtime.dbc = self.panel.dbc
+        runtime.handlers = self.panel.handlers()
+        runtime.set_variables(database.get("variables", []))
+        self.script_runtime = runtime
+        runtime.start(script_file(database["source_path"]))
+        return runtime
+
+    def _stop_script(self):
+        """The running script stopped - its @on_stop handlers first, while the bus is still there - and its
+        mailbox taken off the worker. A Read or Write it was running is over."""
+        runtime, self.script_runtime = self.script_runtime, None
+        self._function_running = None
+        if runtime is None:
+            return
+        runtime.stop()
+        mailbox = getattr(runtime, "mailbox", None)
+        if mailbox is not None:
+            if self.worker is not None:
+                self.worker.remove_mailbox(mailbox)
+            mailbox.close()
+
+    def _panel_input(self, name, value):
+        """A control of the panel changed by the user: to the script running now."""
+        if self.script_runtime is not None:
+            self.script_runtime.post("control", name, value)
+
     def report_panel_problems(self, path, failure=None):
         """What a check of the panel database and its script finds (check.py), in the Panel check window and
         the log. After a Connect the panel stopped: why, in full. After one that worked: its problems - once for
@@ -141,7 +194,7 @@ class Session:
             note = ("Connect stopped here. Double-click a problem to open the panel in the Form Designer at that "
                     "place; put it right, save, and connect again.")
         else:
-            version = (str(path), *(item.stat().st_mtime_ns for item in (path, script_file(path)) if item.exists()))
+            version = database_version(path)
             if not problems or version in self._panels_reported:
                 return None
             self._panels_reported.add(version)
@@ -256,10 +309,10 @@ class Session:
         if tests is not None:
             tests.stop()                    # the running test case ends; its mailboxes close with the worker
         self._close_flash_dialog()
-        self.toolbar_buttons.set_available("flashing", False)
-        if self.script_runtime:
-            self.script_runtime.stop()  # runs @on_stop handlers, then revokes the bus
-            self.script_runtime = None
+        self._stop_script()             # runs @on_stop handlers, then revokes the bus
+        self._ecu_seen = False          # Read, Write and Reflash go with the database
+        self._database_version = None
+        self._set_database_functions(frozenset())
         if self.worker is not None:
             self.worker.stop()
             self.worker = None
@@ -292,6 +345,88 @@ class Session:
         self.on_disconnect_clicked()
         if channel and config:
             self.start_ecu_monitor(channel, config)
+
+    def refresh_database(self) -> bool:
+        """Before Read, Write and Reflash: the database Connect would load now takes the place of the one loaded
+        when it is newer - a later one of the family, or the loaded one written since, its panel or its script.
+        The session goes on: the adapter, the CAN worker and TesterPresent; the panel is built again and the new
+        script started, the old one's @on_stop handlers run first. Nothing restarts when nothing is newer.
+        False when the newer one cannot be loaded - the one loaded stays, and the Panel check window says why -
+        or the session is gone."""
+        loaded = self.app_database
+        if loaded is None or self.active_session() is None:
+            return False
+        try:
+            path = select_database(self.databases_dir, self.session_config["database_family"])
+        except (OSError, ValueError) as exc:
+            self.log_verbose(f"Database selection: {exc}")
+            path = None
+        if path is None or database_version(path) == self._database_version:
+            return True                                 # nothing newer: the one loaded is the one to use
+        if path.resolve() != Path(loaded["source_path"]) and \
+                database_rank(path) <= database_rank(loaded["source_path"]):
+            return True                                 # the one loaded is gone, and those left are older
+        name, loaded_name = path.name, Path(loaded["source_path"]).name
+        try:
+            database = parse_application_database(path)
+            script = script_file(path)
+            if script.exists():                         # a script that does not compile stays out
+                compile(script.read_text(encoding="utf-8-sig"), str(script), "exec")
+            self.build_application_ui(database)
+        except Exception as exc:
+            try:
+                if self.app_database is not loaded:     # the panel was taken down: the loaded one comes back
+                    self.build_application_ui(loaded)
+            except Exception as again:
+                self._session_failed(f"{loaded_name} could not be shown again: {again}")
+                return False
+            self.log_verbose(f"{name} cannot be loaded: {exc}")
+            self._set_status(f"{name} cannot be loaded - {loaded_name} stays: {exc}", "red")
+            self.report_panel_problems(path, failure=exc)
+            return False
+        version = database_version(path)
+        self._stop_script()
+        try:
+            runtime = self._start_script(database)
+        except Exception as exc:                        # unreadable since it was compiled: as at Connect
+            self._session_failed(f"Connection failed: {exc}")
+            self.report_panel_problems(path, failure=exc)
+            return False
+        self._database_version = version
+        runtime.loaded.wait(SCRIPT_LOAD_WAIT)           # Flashing(), Read() and Write(), known before they are used
+        self._set_flashing_available(runtime.flash_function is not None)
+        self._set_database_functions(runtime.functions())
+        self.log_verbose(f"Database refreshed: {path} in place of {loaded_name}" if name != loaded_name else
+                         f"Database refreshed: {name} has changed since it was loaded")
+        self._set_status(f"Connected — {name} (refreshed)", "green")
+        self.report_panel_problems(path)
+        self._update_nodes()
+        return True
+
+    def database_function(self, name) -> bool:
+        """Read or Write on the toolbar: the database refreshed (refresh_database), then its script's Read(api) or
+        Write(api) run on the script's thread. How it ends is said in the status bar, the Write window and, when
+        it failed, the Log."""
+        if self.active_session() is None or self._function_running or self.flash_dialog is not None:
+            return False
+        if not self.refresh_database() or self.script_runtime is None:
+            return False
+        if not self.script_runtime.call_function(name):
+            self._on_function_finished(name, False, f"{name} could not start: the database script is not running")
+            return False
+        self._function_running = name
+        self._set_status(f"{name} running...", "orange")
+        self._update_database_buttons()
+        return True
+
+    def _on_function_finished(self, name, ok, text):
+        self._function_running = None
+        self.write_message("info" if ok else "error", text)     # an error goes to the Log as well
+        if ok:
+            self.log_verbose(text)
+        database = Path(self.app_database["source_path"]).name if self.app_database else ""
+        self._set_status(f"{text} — {database}" if database else text, "green" if ok else "red")  # which one ran it
+        self._update_database_buttons()
 
     def _minimize_side_panels(self):
         """Give the loaded database the room: collapse Configuration, CAN Channels and Log to strips."""

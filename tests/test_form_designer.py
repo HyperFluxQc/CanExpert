@@ -539,6 +539,21 @@ class FormDesignerTest(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_the_test_panel_runs_read_and_write_as_the_main_window_does(self):
+        self.designer.code_editor.setPlainText('def Read(api):\n    return RDBI(0xF190)\n')   # the simulated ECU's VIN
+        dialog = self.designer.test_panel()
+        try:
+            read, write = dialog.function_buttons["Read"], dialog.function_buttons["Write"]
+            read.click()
+            self.assertFalse(read.isEnabled() or write.isEnabled(), "greyed while it runs")
+            self.assertTrue(spin_until(lambda: "Read complete" in dialog.log_view.toPlainText(), 5))
+            self.assertTrue(read.isEnabled() and write.isEnabled())
+            write.click()
+            self.assertTrue(spin_until(lambda: "The database script does not define Write(api)"
+                                       in dialog.log_view.toPlainText()))
+        finally:
+            dialog.close()
+
     def test_test_mode_runs_panel_against_simulated_ecu(self):
         self.designer.symbol_list.load_dbc_path(str(DBC))
         self.designer.dbc_path_edit.setText(str(DBC))

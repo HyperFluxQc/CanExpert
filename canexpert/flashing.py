@@ -364,15 +364,18 @@ class FlashDialog(QDialog):
         layout.addWidget(addresses)
         layout.addSpacing(8)
 
+        # script_available None: no database is connected, so the built-in sequence is the only way.
         self.script_radio = QRadioButton("With the panel script's Flashing(api, firmware)")
-        self.script_radio.setEnabled(script_available)
-        self.script_radio.setChecked(script_available)
+        self.script_radio.setEnabled(bool(script_available))
+        self.script_radio.setChecked(bool(script_available))
+        self.script_radio.setVisible(script_available is not None)
         layout.addWidget(self.script_radio)
-        if not script_available:
+        if script_available is False:
             missing = QLabel("        the panel script does not define Flashing(api, firmware)")
             missing.setStyleSheet("color: gray;")
             layout.addWidget(missing)
-        self.built_in_radio = QRadioButton("With the built-in ISO 14229 sequence")
+        self.built_in_radio = QRadioButton("With the built-in ISO 14229 sequence" if script_available is not None
+                                           else "With the built-in ISO 14229 sequence (no database is connected)")
         self.built_in_radio.setChecked(not script_available)
         layout.addWidget(self.built_in_radio)
         settings_row = QHBoxLayout()
