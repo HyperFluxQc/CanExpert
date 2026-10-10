@@ -39,6 +39,16 @@ class CanvasItem(QGraphicsProxyWidget):
         self.setFlag(QGraphicsItem.ItemIsFocusable, False)
         self.setCursor(Qt.SizeAllCursor)
 
+    def itemChange(self, change, value):
+        # A read-only control is a disabled widget, and Qt disables the item showing it along with it - and a
+        # disabled item gets no mouse at all: it could be neither selected nor moved. The item stays enabled; the
+        # widget stays disabled, so it looks as it will on the panel.
+        if change == QGraphicsItem.ItemEnabledChange:
+            return True
+        if change == QGraphicsItem.ItemEnabledHasChanged:
+            return value
+        return super().itemChange(change, value)
+
     def shape(self):
         """What a click hits: all of a control - but only the title and frame of a group box, so the controls
         inside it can be grabbed even when it was put on the page after them (and lies above them)."""

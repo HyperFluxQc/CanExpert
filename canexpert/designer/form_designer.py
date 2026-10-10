@@ -16,11 +16,12 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from contextlib import nullcontext
 from datetime import date
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFontDatabase, QKeySequence, QTextCursor
+from PyQt5.QtGui import QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QMenuBar, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QStatusBar, QTabWidget,
@@ -29,6 +30,7 @@ from PyQt5.QtWidgets import (
 
 from canexpert.designer.canvas import FormCanvas
 from canexpert.designer.code_editor import CodeEditor, UdsFunctionPanel
+from canexpert.designer.text_editor import EditorPane, TextEditor
 from canexpert.designer.side_panels import (BINDING_TYPE_DBC, BINDING_TYPE_SCRIPT, PropertyEditor, SymbolListPanel,
                                             WidgetPalette, control_name, default_handler_name)
 from canexpert.flash_runner import FlashRunner
@@ -162,6 +164,10 @@ class TestPanelDialog(QDialog):
     def remove_mailbox(self, mailbox):
         self._mailboxes = [item for item in self._mailboxes if item is not mailbox]
 
+    def no_tester_present(self):
+        """The test panel sends no TesterPresent: nothing to pause while it flashes."""
+        return nullcontext()
+
     # --- flashing ---
 
     def open_flashing(self):
@@ -225,8 +231,10 @@ class TestPanelDialog(QDialog):
             self.mailbox.push(message)
             for mailbox in list(self._mailboxes):
                 mailbox.push(message)
-            with self.runtime.lock:
-                self.runtime.values.update(self.panel.values())
+            changed = self.panel.changed_values()
+            if changed:
+                with self.runtime.lock:
+                    self.runtime.values.update(changed)
             self.runtime.post("can", message.arbitration_id, data)
 
     def done(self, result):
@@ -305,8 +313,8 @@ class FormDesigner(QDialog):
         code_bar = QHBoxLayout()
         check_btn = QPushButton("Check syntax")
         check_btn.clicked.connect(self.check_syntax)
-        self.syntax_label = QLabel("Ctrl+Space: complete (API, control names, signals). Double-click a control "
-                                   "on the Form tab to create its handler.")
+        self.syntax_label = QLabel("Ctrl+Space: complete. Ctrl+F: find, Ctrl+H: replace. Double-click a control "
+                                   "on the Form tab for its handler.")
         self.syntax_label.setStyleSheet("color: gray;")
         code_bar.addWidget(check_btn)
         code_bar.addWidget(self.syntax_label, 1)
@@ -314,7 +322,8 @@ class FormDesigner(QDialog):
         self.uds_panel = UdsFunctionPanel()
         self.uds_panel.insert_requested.connect(self.code_editor.insert_snippet)
         code_split = QSplitter(Qt.Horizontal)
-        code_split.addWidget(self.code_editor)
+        self.code_pane = EditorPane(self.code_editor)       # with its find bar
+        code_split.addWidget(self.code_pane)
         code_split.addWidget(self.uds_panel)
         code_split.setStretchFactor(0, 1)
         code_split.setSizes([640, 330])
@@ -345,6 +354,7 @@ class FormDesigner(QDialog):
         self.status.setSizeGripEnabled(False)
         layout = QVBoxLayout()
         layout.setMenuBar(self._menu_bar())
+        self._update_text_actions()
         layout.addWidget(splitter, 1)
         layout.addWidget(self.status)
         self.setLayout(layout)
@@ -402,6 +412,25 @@ class FormDesigner(QDialog):
                 continue
             key, text, shortcut = entry
             self.edit_actions[key] = self._action(menu, text, lambda k=key: self._edit(k), shortcut, canvas_only=True)
+        menu.addSeparator()
+        self.text_actions = {}       # the Python script's and the Variables' editors
+        for key, text, shortcut, tip in (
+                ("find", "&Find...", "Ctrl+F", "Find in the script or the variables, every match highlighted"),
+                ("replace", "Find and r&eplace...", "Ctrl+H", "Replace what is found, one by one or all at once"),
+                ("next", "Find ne&xt", "F3", "The next match"),
+                ("previous", "Find pre&vious", "Shift+F3", "The match before"),
+                ("line", "&Go to line...", "Ctrl+G", "Go to a line by its number"),
+                ("comment", "Co&mment / uncomment lines", "Ctrl+/",
+                 "Make the selected lines comments, or code again")):
+            self.text_actions[key] = self._action(menu, text, lambda k=key: self._text_command(k), shortcut, tip)
+        block = self.text_actions["block"] = menu.addAction("&Block selection mode")
+        block.setCheckable(True)
+        block.setShortcut(QKeySequence("Alt+Shift+A"))
+        tip = ("A drag, or Shift + arrows, selects a block of columns - Alt + drag and Shift + Alt + arrows always "
+               "do: what is typed then goes on every line of it")
+        block.setStatusTip(tip)
+        block.setToolTip(tip)
+        block.toggled.connect(self._set_block_mode)
         menu.aboutToShow.connect(self._update_edit_menu)
 
         menu = self.menus["arrange"] = bar.addMenu("&Arrange")
@@ -465,13 +494,47 @@ class FormDesigner(QDialog):
         bar.setCornerWidget(corner, Qt.TopRightCorner)
         return bar
 
+    def _text_pane(self):
+        """The editor in front, with its find bar: the Python script's or the Variables'; None on the other tabs."""
+        page = self.design_tabs.currentWidget()
+        if page is self.code_page:
+            return self.code_pane
+        return self.variables_pane if page is self.variables_page else None
+
+    def _text_command(self, key):
+        pane = self._text_pane()
+        if pane is None:
+            return
+        bar, editor = pane.find_bar, pane.editor
+        if key in ("find", "replace"):
+            bar.open(replace=key == "replace")
+        elif key in ("next", "previous"):
+            if bar.is_open and bar.find_edit.text():
+                bar.find(backwards=key == "previous")
+            else:
+                bar.open()
+        elif key == "line":
+            editor.ask_line()
+        else:
+            editor.toggle_comment()
+
+    def _set_block_mode(self, on):
+        for editor in (self.code_editor, self.variables_edit):
+            editor.block_mode = on
+            if not on:
+                editor.end_block()
+
+    def _update_text_actions(self):
+        for action in self.text_actions.values():
+            action.setEnabled(self._text_pane() is not None)
+
     def _edit_target(self):
-        """What the Edit menu acts on: a focused text field, else the script or the form in front."""
+        """What the Edit menu acts on: a focused text field, else the script, the variables or the form in front."""
         focus = QApplication.focusWidget()
         if isinstance(focus, (QLineEdit, QPlainTextEdit)) and self.isAncestorOf(focus):
             return focus
-        if self.design_tabs.currentWidget() is self.code_page:
-            return self.code_editor
+        if self._text_pane() is not None:                   # the script's editor, or the variables'
+            return self._text_pane().editor
         return self.canvas if self.design_tabs.currentWidget() is self.canvas else None
 
     def _edit(self, key):
@@ -485,6 +548,8 @@ class FormDesigner(QDialog):
             if key == "delete":
                 if isinstance(target, QLineEdit):
                     target.del_()
+                elif isinstance(target, TextEditor):
+                    target.remove_selected()            # a block's columns too
                 else:
                     target.textCursor().removeSelectedText()
             elif key != "duplicate":
@@ -542,7 +607,7 @@ class FormDesigner(QDialog):
     # --- the Database tab --------------------------------------------------------------------
 
     VARIABLES_EXAMPLE = ("Calib Data (memory 0x20001000, little-endian)\n* uint32 temperature\n* uint32 Axis\n"
-                         "* uint32 FOC[32]\n\nIdle (DID 0x0110)\n* uint16 speed")
+                         "* uint32 FOC[32]\n\nIdle (DID 0x0110) { uint16 speed; uint8 gear; }")
 
     def _variables_page(self):
         """The panel's structured variables (variables.py), written as they are thought of."""
@@ -550,20 +615,19 @@ class FormDesigner(QDialog):
         layout = QVBoxLayout(page)
         guide = QLabel("A variable's name on a line, then its fields, one a line: <i>type name</i>, or <i>type "
                        "name[count]</i> for an array (uint8 to uint64, int8 to int64, float32, float64, bool, "
-                       "char). In brackets after the name, where it lives in the ECU - <i>DID 0x0110</i> or "
-                       "<i>memory 0x20001000</i> - and <i>little-endian</i> if it is. A struct pasted from a C header "
-                       "works too. A <b>Variable List</b> shows one, a control named after a field (Calib Data.FOC[3]) "
-                       "shows that field, and the script has it as <i>api.var(\"Calib Data\")</i>.")
+                       "char) - or in braces: <i>MyList { uint32 data1; uint8 data2; }</i>. In brackets after the "
+                       "name, where it lives in the ECU - <i>DID 0x0110</i> or <i>memory 0x20001000</i> - and "
+                       "<i>little-endian</i> if it is. A struct pasted from a C header works too. A <b>Variable "
+                       "List</b> shows one, a control named after a field (Calib Data.FOC[3]) shows that field, and "
+                       "the script has it as <i>api.var(\"Calib Data\")</i>.")
         guide.setWordWrap(True)
         guide.setStyleSheet("color: gray;")
         layout.addWidget(guide)
-        self.variables_edit = QPlainTextEdit()
-        font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        if "Consolas" in QFontDatabase().families():
-            font.setFamily("Consolas")
-        self.variables_edit.setFont(font)
+        self.variables_edit = TextEditor()
+        self.variables_edit.comment = "//"
         self.variables_edit.setPlaceholderText(self.VARIABLES_EXAMPLE)
-        layout.addWidget(self.variables_edit, 1)
+        self.variables_pane = EditorPane(self.variables_edit)    # with its find bar
+        layout.addWidget(self.variables_pane, 1)
         self.variables_status = QLabel("")
         self.variables_status.setWordWrap(True)
         layout.addWidget(self.variables_status)
@@ -810,6 +874,7 @@ class FormDesigner(QDialog):
         # The palette, the DBC symbols and the properties all act on the form; the others get the room instead.
         page = self.design_tabs.widget(index)
         on_form = page is self.canvas
+        self._update_text_actions()
         if not on_form and not self.symbols_panel.isHidden():
             self.design_sizes = self.design_splitter.sizes()
         self.symbols_panel.setVisible(on_form)
@@ -1091,9 +1156,7 @@ class FormDesigner(QDialog):
         if problem.kind == VARIABLES:
             self.design_tabs.setCurrentWidget(self.variables_page)
             if problem.position:
-                block = self.variables_edit.document().findBlockByNumber(max(0, problem.position[0] - 1))
-                self.variables_edit.setTextCursor(QTextCursor(block))
-                self.variables_edit.setFocus()
+                self.variables_edit.go_to_line(problem.position[0])
             return
         found = self._find_control(problem)
         if found is not None:

@@ -2,6 +2,7 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import json
+import queue
 import tempfile
 import time
 import unittest
@@ -55,6 +56,20 @@ def Flashing(api, firmware):
     api.ui.set_value("status", f"{firmware.segments[0][0]:X}:{firmware.size}")
     return True
 '''
+
+
+# A Flashing() that takes half a second - about eight TesterPresent intervals - sending a frame now and then.
+SLOW_FLASH_SCRIPT = '''
+def Flashing(api, firmware):
+    for step in range(10):
+        api.can.send(0x123, [step])
+        api.sleep(0.05)
+    return True
+'''
+
+
+def tester_present_frames(frames):
+    return [frame for frame in frames if frame.arbitration_id == 0x7E0 and bytes(frame.data[:3]) == b"\x02\x3E\x00"]
 
 
 # What the main window sends by default: TesterPresent filled to 8 bytes with 0xCC.
@@ -243,8 +258,8 @@ class RequirementsTest(unittest.TestCase):
     def test_the_channel_used_last_is_remembered_shown_in_bold_and_checked_at_startup(self):
         first, second = self.channels({"interface": "kvaser", "channel": 0}, {"interface": "kvaser", "channel": 1})
         self.assertFalse(first.font(0).bold())
-        self.window.on_channel_selected(second)
-        self.window.on_connect_clicked()                                     # channel 1 is now the one used
+        self.window.on_channel_double_clicked(second)                        # chosen...
+        self.window.on_connect_clicked()                                     # ...and used
         self.assertIsNotNone(self.window.can_bus)
         self.window.on_disconnect_clicked()
         self.window.close()
@@ -258,37 +273,65 @@ class RequirementsTest(unittest.TestCase):
         heartbeat = self.ecu.recv(1.0)
         self.assertEqual((heartbeat.arbitration_id, bytes(heartbeat.data)), (0x7E0, PADDED_TESTER_PRESENT))
 
-    def test_only_the_channel_in_use_is_in_bold(self):
+    def test_the_interface_chosen_is_in_bold_with_what_answers_on_it(self):
         self.channels({"interface": "kvaser", "channel": 0}, {"interface": "kvaser", "channel": 1})
         first, second = ("kvaser", 0, "", ""), ("kvaser", 1, "", "")
-        window = self.window
+        window, items = self.window, self.window.channel_items
 
         def bold():
-            return [key for key, item in window.channel_items.items() if item.font(0).bold()]
+            return [key for key, item in items.items() if item.font(0).bold()]
+
+        def under(key):
+            """The lines under an interface: its ECUs and the database Connect would load."""
+            return [items[key].child(index).text(0) for index in range(items[key].childCount())]
+
+        def offered(key):
+            self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))  # an answer
+            return any("double-click to load" in line for line in under(key))
 
         self.assertEqual(bold(), [])
-        window.on_channel_selected(window.channel_items[first])
-        window.on_connect_clicked()                                    # connected on the first
-        self.assertEqual(bold(), [first])
-        window.disconnect_database()                                   # its ECUs still checked: still in use
-        self.assertEqual(bold(), [first])
-        window.on_channel_selected(window.channel_items[second])
-        window.on_connect_clicked()                                    # another interface: the first is not in use
-        self.assertEqual(bold(), [second])
-        self.assertNotIn(first, window.database_items, "nor its database offered")
-        window.on_disconnect_clicked()                                 # nothing in use
+        window.on_channel_selected(items[first])                       # a click only shows it
         self.assertEqual(bold(), [])
-        window.check_ecus(window.channel_items[first].data(0, Qt.UserRole))
+        self.assertIn("Double-click", window.status_label.text())
+        window.on_channel_double_clicked(items[first])                 # a double-click chooses it
         self.assertEqual(bold(), [first])
-        window.set_offline(True)                                       # Kill CAN: nothing in use
-        self.assertEqual(bold(), [])
-        window.set_offline(False)                                      # back: the ECU check of the one used last
+        self.assertEqual(window.monitor_channel["channel"], 0, "its ECUs checked")
+        self.assertTrue(spin_until(lambda: offered(first)))
+        self.assertTrue(any("ECU 0x7E8" in line for line in under(first)))
+
+        window.on_channel_double_clicked(items[second])                # another interface chosen
+        self.assertEqual(bold(), [second], "the one chosen before is not in bold any more...")
+        self.assertEqual(under(first), [], "...nor its ECU and database under it")
+        self.assertEqual(under(second), [], "nothing has answered on the new one yet")
+        self.assertEqual(window.monitor_channel["channel"], 1)
+        self.assertTrue(spin_until(lambda: offered(second)), "once an ECU answers, its database is offered")
+
+        database = next(items[second].child(index) for index in range(items[second].childCount())
+                        if "double-click to load" in items[second].child(index).text(0))
+        window.on_channel_double_clicked(database)                     # the database line: Connect
+        self.assertIsNotNone(window.can_bus)
         self.assertEqual(bold(), [second])
+        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.No) as question:
+            window.on_channel_double_clicked(items[first])             # connected: asked first
+        self.assertIn("Disconnect it and use kvaser channel 0?", question.call_args[0][2])
+        self.assertIsNotNone(window.can_bus, "No: still connected")
+        self.assertEqual(bold(), [second])
+        with patch.object(main.QMessageBox, "question", return_value=main.QMessageBox.Yes):
+            window.on_channel_double_clicked(items[first])
+        self.assertIsNone(window.can_bus, "Yes: disconnected...")
+        self.assertEqual(bold(), [first], "...and the other one chosen")
+        self.assertEqual(under(second), [])
+        self.assertEqual(window.monitor_channel["channel"], 0)
+        window.set_offline(True)                                       # Kill CAN: none in bold
+        self.assertEqual(bold(), [])
+        window.set_offline(False)                                      # back: the one chosen, checked again
+        self.assertEqual(bold(), [first])
+        self.assertIsNotNone(window.ecu_monitor)
 
     def test_a_responding_ecu_offers_its_database_for_a_double_click(self):
         channel = self.channels({"interface": "kvaser", "channel": 0})[0]
         key = can_bus.channel_key(channel.data(0, Qt.UserRole))
-        self.window.check_ecus(channel.data(0, Qt.UserRole))
+        self.window.on_channel_double_clicked(channel)                       # chosen: its ECUs checked
         self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))
         self.assertTrue(spin_until(lambda: self.window.database_items))
         entry = next(iter(self.window.database_items.values()))
@@ -513,6 +556,27 @@ VAL_ 256 Enable 0 "Off" 1 "On";
         self.assertIn(reply.hex(" ").upper(), console.log.toPlainText())
         self.assertIn("WriteVIN:", console.log.toPlainText())
         self.assertEqual(self.window.worker.mailboxes[1:], [])
+
+    def test_the_script_reads_what_a_frame_shows_on_the_panel(self):
+        dbc = Path(__file__).resolve().parents[1] / "DBC" / "dummy_ecu.dbc"
+        (self.databases / "panel_2026-09-18.xml").write_text(f'''<application_database dbc_path="{dbc.as_posix()}">
+<pages><page name="Main">
+<value id="1" label="Temp" binding_type="dbc" binding_value="EngineData.Temperature" x="10" y="10"/>
+<value id="2" label="Copy" binding_value="copy" x="10" y="50"/>
+</page></pages></application_database>''')
+        (self.databases / "panel_2026-09-18_script.py").write_text('''
+@on_message(0x300)
+def copy(api, frame):
+    api.ui.set_value("copy", api.ui.get_value("Temp"))
+''')
+        self.window.on_connect_clicked()
+        self.assertIsNotNone(self.window.script_runtime)
+        for raw, shown in ((0x012C, "30 degC"), (0x0136, "31 degC")):
+            self.ecu.send(can.Message(arbitration_id=0x300, data=raw.to_bytes(2, "big") + bytes(6),
+                                      is_extended_id=False))
+            self.assertTrue(spin_until(lambda shown=shown: self.window.panel.widgets["copy"].text() == shown),
+                            self.window.panel.widgets["copy"].text())
+        self.window.on_disconnect_clicked()
 
     def test_flashing_button_calls_database_flashing(self):
         from canexpert.flashing import Firmware
@@ -894,36 +958,54 @@ def ready(api):
         spin_until(lambda: False, seconds)
         self.assertEqual([hex(frame.arbitration_id) for frame in self.drain()], [], "nothing sent any more")
 
-    def test_the_kill_switch_takes_can_expert_off_the_bus(self):
+    def test_the_kill_switch_takes_can_expert_off_the_bus_and_keeps_the_database(self):
         from canexpert.channel_setup import load_setup
         from canexpert.transmit_window import default_row
         (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + """
+@on_timer(0.05)
+def beat(api):
+    api.can.send(0x321, [0xBE])             # the script sends on its own
+
 @on_stop
 def goodbye(api):
-    api.can.send(0x321, [0xDE, 0xAD])       # what a stopping script may send
+    api.can.send(0x322, [0xDE, 0xAD])       # and when it stops
 """)
         kill = self.window._toolbar_actions["kill"]
         self.assertEqual((kill.text(), kill.shortcut().toString()), ("Kill CAN", "Ctrl+F9"))
         self.assertTrue(kill.isCheckable() and not kill.isChecked())
+        self.assertIn("The database stays loaded and its script goes on", kill.toolTip(), "the tooltip says so")
         self.window.on_connect_clicked()                             # a session, and a message every 10 ms
+        write = self.window.open_write()
         messages = self.window.open_transmit().messages
         messages.rows = [default_row("Beat", 0x123, b"\x01", 10)]
         messages.rows[0]["enabled"] = True
         messages._fill_table()
         messages._sync_cyclic()
-        self.assertTrue(spin_until(lambda: any(frame.arbitration_id == 0x123 for frame in self.drain())))
+        seen = set()
+        everything = {0x123, 0x321, 0x7E0}                          # the Transmit window, the script, TesterPresent
+        self.assertTrue(spin_until(lambda: seen.update(f.arbitration_id for f in self.drain()) or everything <= seen))
+        database, panel, runtime = self.window.app_database, self.window.panel, self.window.script_runtime
+
         kill.trigger()                                                # Kill CAN
         self.assertTrue(self.window.offline and kill.isChecked())
-        self.assertNotIn(0x321, [frame.arbitration_id for frame in self.drain()], "no @on_stop: it could send")
-        self.assertIsNone(self.window.can_bus)
-        self.assertFalse(messages.rows[0]["enabled"], "the Transmit window's messages stop")
-        self.assert_quiet()
-        self.assertIn("Off the bus", self.window.status_label.text())
+        self.assert_quiet()                                           # nothing at all goes out
+        self.assertIs(self.window.app_database, database, "the database stays loaded...")
+        self.assertIs((self.window.panel, self.window.script_runtime)[0], panel)
+        self.assertIs(self.window.script_runtime, runtime, "...and its script runs on")
+        self.assertTrue(messages.rows[0]["enabled"], "the Transmit window's message waits, switched on")
+        refused = lambda: [line for line in write.lines() if "off the bus" in line]    # noqa: E731
+        self.assertTrue(spin_until(refused))
+        spin_until(lambda: False, 0.3)
+        self.assertEqual(len(refused()), 1, "the script's refused frames said once, not at every try")
+        self.assertIn("database stays loaded", self.window.status_label.text())
+        channel = self.window.channel_items[can_bus.channel_key(self.window.connected_channel_config)]
+        self.assertIn("[Off the bus]", channel.text(0))
+        self.assertFalse(channel.font(0).bold(), "not in use: the adapter is closed")
         self.assertFalse(self.window._toolbar_actions["connect"].isEnabled())
+        self.assertTrue(self.window._toolbar_actions["disconnect"].isEnabled(), "the database can still be closed")
         calls = len(self.bus_calls)                                   # nothing opens the adapter
         self.window.on_connect_clicked()
         self.window.check_ecus(self.window.selected_channel_config)
-        self.window.disconnect_database()
         with self.assertRaises(ValueError):
             self.window._scan_bus(self.window.selected_channel_config)
         setup = ChannelSetupDialog(self.window.selected_channel_config,
@@ -933,28 +1015,103 @@ def goodbye(api):
         self.assertFalse(setup.detect_btn.isEnabled(), "nor the bit rate search")
         self.assertEqual(len(self.bus_calls), calls)
         self.assertIsNone(self.window.ecu_monitor)
-        self.assert_quiet(0.2)
+
+        kill.trigger()                                                # released: the same session goes on
+        self.assertFalse(self.window.offline or kill.isChecked())
+        self.assertEqual(len(self.bus_calls), calls + 1, "the adapter opened again")
+        seen.clear()
+        self.assertTrue(spin_until(lambda: seen.update(f.arbitration_id for f in self.drain()) or everything <= seen),
+                        f"all of it again: {sorted(map(hex, seen))}")
+        self.assertIs(self.window.app_database, database)
+        self.assertIn("Back on the bus", self.window.status_label.text())
+        self.assertIn("[Connected]", self.window.channel_items[
+            can_bus.channel_key(self.window.connected_channel_config)].text(0))
+
+        kill.trigger()                                                # Disconnect while off the bus
+        self.window.disconnect_database()
+        self.assertIsNone(self.window.can_bus)
+        self.assertIsNone(self.window.app_database)
+        self.assert_quiet()                                           # not @on_stop's frame, not the ECU check
+        self.assertIsNone(self.window.ecu_monitor)
         again = main.MainWindow()                                     # kept: it starts off the bus
         self.addCleanup(again.close)
         self.assertTrue(again.offline and again._toolbar_actions["kill"].isChecked())
         again.selected_channel_config = self.window.selected_channel_config
         again.on_connect_clicked()
         self.assertIsNone(again.can_bus)
-        kill.trigger()                                                # released: back on the bus
-        self.assertFalse(self.window.offline or kill.isChecked())
+        kill.trigger()                                                # released without a session: the ECU check
         self.assertFalse(self.settings.value("offline", True, type=bool))
-        self.assertTrue(self.window._toolbar_actions["connect"].isEnabled())
-        self.window.check_ecus(self.window.selected_channel_config)   # the ECU check, and a scan...
+        self.window.check_ecus(self.window.selected_channel_config)
         self.assertIsNotNone(self.window.ecu_monitor)
         scan = self.window.open_ecu_scan(self.window.selected_channel_config)
         self.addCleanup(scan.close)
         self.assertIsNotNone(scan.start())
-        self.window.set_offline(True)                                 # ...stop too
+        self.window.set_offline(True)                                 # a scan and the ECU check stop too
         self.assertIsNone(self.window.ecu_monitor)
         self.assertFalse(scan.scanner.isRunning())
         self.assertEqual(scan.status.text(), "The scan stopped: CAN Expert went off the bus (Kill CAN)")
         self.assert_quiet()
         self.window.set_offline(False)
+
+    def test_no_tester_present_while_flashing(self):
+        import threading
+        from canexpert.flash_sequence import FlashProfile
+        from canexpert.flashing import load_firmware
+        from canexpert.simulator.ecu import DummyEcu, EcuConfig
+        stop = threading.Event()
+        ecu_bus = can.Bus(interface="virtual", channel=self.channel)
+        ecu = DummyEcu(ecu_bus, EcuConfig(erase_seconds=0.3, broadcast_interval=0), log=lambda text: None)
+        threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
+        self.addCleanup(lambda: (stop.set(), time.sleep(0.05), ecu_bus.shutdown()))
+        tester_present = tester_present_frames
+        self.window.on_connect_clicked()
+        self.assertTrue(spin_until(lambda: tester_present(self.drain())), "TesterPresent while connected")
+        import shutil
+        copy = self.root / "demo_app.s19"                           # its report is written beside it
+        shutil.copy(Path(__file__).resolve().parent.parent / "examples" / "firmware" / "demo_app.s19", copy)
+        firmware = load_firmware(copy)
+        results, during = [], []
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+            self.window.start_built_in_flash(firmware, FlashProfile())
+            self.assertTrue(spin_until(lambda: during.extend(self.drain()) or results, 30))
+        self.assertTrue(results[0][0], results)
+        requests = [index for index, frame in enumerate(during) if frame.arbitration_id == 0x7E0
+                    and not tester_present([frame])]
+        self.assertGreater(len(requests), 20, "the reflash went out")
+        # From its first request to its last - before it began, a TesterPresent was still due
+        self.assertEqual(tester_present(during[requests[0]:requests[-1] + 1]), [], "and nothing else: no TesterPresent")
+        self.assertTrue(spin_until(lambda: tester_present(self.drain())), "TesterPresent again once it is over")
+        self.window.on_disconnect_clicked()
+
+    def test_no_tester_present_while_the_scripts_flashing_runs(self):
+        from canexpert.flashing import Firmware
+        (self.databases / 'panel_2026-09-18_script.py').write_text(SCRIPT + SLOW_FLASH_SCRIPT)
+        self.window.on_connect_clicked()
+        self.assertTrue(spin_until(lambda: tester_present_frames(self.drain())), "TesterPresent while connected")
+        firmware = Firmware("app.s19", [(0x1000, b"\x01\x02\x03")])
+        results, during = [], []
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+            self.window.start_flashing(firmware)
+            self.assertTrue(spin_until(lambda: during.extend(self.drain()) or results, 10))
+        self.assertEqual(results, [(True, "Flashing complete")])
+        flashing = [index for index, frame in enumerate(during) if frame.arbitration_id == 0x123]
+        self.assertEqual(len(flashing), 10, "Flashing() ran")
+        self.assertEqual(tester_present_frames(during[flashing[0]:flashing[-1] + 1]), [],
+                         "and no TesterPresent while it did")
+        self.assertTrue(spin_until(lambda: tester_present_frames(self.drain())), "TesterPresent again after it")
+
+        # A flash that cannot start - its request dropped - ends at once: the dialog closes, TesterPresent goes on.
+        with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))), \
+                patch.object(self.window.script_runtime.events, "put_nowait", side_effect=queue.Full):
+            self.window.start_flashing(firmware)
+        self.assertEqual(len(results), 2)
+        self.assertFalse(results[1][0])
+        self.assertIn("could not start", results[1][1])
+        self.assertIsNone(self.window.flash_dialog)
+        self.assertTrue(self.window._toolbar_actions["flashing"].isEnabled())
+        self.drain()
+        self.assertTrue(spin_until(lambda: tester_present_frames(self.drain())), "TesterPresent was never paused")
+        self.window.on_disconnect_clicked()
 
     def test_the_toolbar_buttons_can_be_shown_or_hidden(self):
         from PyQt5.QtCore import Qt

@@ -113,6 +113,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.active_config = None
         self.worker = None          # the session's CanWorker while connected
         self.can_bus = None
+        self._reopen_bus = None     # opens the session's adapter again, as at Connect (the kill switch)
         self.app_database = None
         self.connected_channel_config = None
         self.selected_channel_config = None
@@ -216,9 +217,11 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             ("connect", "Connect", "Connect to the selected CAN receiver", self.on_connect_clicked),
             ("disconnect", "Disconnect", "Close the database; the ECUs are still checked with TesterPresent",
              self.disconnect_database),
-            ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - the session, the ECU check, the "
-             "Transmit window's\nmessages and nodes and any scan stop, and nothing opens the adapter until it is "
-             "pressed again.\nFor another tool, or another tester, to have the bus to itself", self.set_offline),
+            ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - nothing is sent or received until "
+             "it is pressed again.\nThe database stays loaded and its script goes on; TesterPresent and the "
+             "Transmit window's messages wait;\na reflash, a test run, a scan and the ECU check stop. Pressed "
+             "again, the rest goes on where it was.\nFor another tool, or another tester, to have the bus to "
+             "itself", self.set_offline),
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
@@ -825,7 +828,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self._toolbar_actions["flashing"].setEnabled(False)
         self.flash_dialog = progress_dialog(self, firmware, self.flash_runner.cancel)
         self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in "
-                         f"{len(firmware.segments)} segment(s), built-in sequence")
+                         f"{len(firmware.segments)} segment(s), built-in sequence - no TesterPresent until it is over")
         if not self.flash_runner.start(firmware, profile):
             self._on_flash_finished(False, "Flashing could not be started.")
 
@@ -834,7 +837,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             return
         self._toolbar_actions["flashing"].setEnabled(False)
         self.flash_dialog = progress_dialog(self, firmware, self.script_runtime.cancel_flash)
-        self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in {len(firmware.segments)} segment(s)")
+        self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in {len(firmware.segments)} segment(s) "
+                         "- no TesterPresent until it is over")
         self.script_runtime.start_flash(firmware)
 
     def _on_flash_progress(self, done, total, text):
@@ -930,7 +934,9 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
                 
 def startup_problems() -> list[str]:
     """What a built CAN Expert would miss at run time (--smoke-test): the manual, the icon, the example DBC
-    read by cantools, a python-can bus, odxtools. An empty list when all is there."""
+    read by cantools, a python-can bus, odxtools, pyqtgraph and numpy - the last three imported only when first
+    used, so a build without them would start all the same - and a graph drawn: the build leaves Qt's OpenGL
+    parts out. An empty list when all is there."""
     from canexpert.paths import DBC_DIR, DOCS_DIR
     problems = []
     if not (DOCS_DIR / "USER_MANUAL.md").exists():
@@ -947,10 +953,20 @@ def startup_problems() -> list[str]:
         can.Bus(interface="virtual", channel="smoke-test").shutdown()
     except Exception as exc:
         problems.append(f"python-can: {exc}")
+    for module in ("odxtools", "pyqtgraph", "numpy"):
+        try:
+            __import__(module)                  # imported only to see that it is there
+        except Exception as exc:
+            problems.append(f"{module}: {exc}")
     try:
-        __import__("odxtools")                  # imported only to see that it is there
+        import pyqtgraph                        # a graph drawn, as the trends and the CAN Logger draw theirs
+        plot = pyqtgraph.PlotWidget()
+        plot.plot([0, 1, 2], [0, 1, 0])
+        if plot.grab().isNull():
+            problems.append("pyqtgraph: a graph could not be drawn")
+        plot.deleteLater()
     except Exception as exc:
-        problems.append(f"odxtools: {exc}")
+        problems.append(f"pyqtgraph drawing: {exc}")
     return problems
 
 

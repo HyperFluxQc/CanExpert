@@ -1,19 +1,20 @@
 """
-Python code editor for panel scripts: syntax highlighting, line numbers, current-line highlight,
-auto-indent, and completion of Python keywords, the script API, control names and DBC signals;
-plus the side panel listing the ISO 14229 UDS functions, which inserts calls into the script.
+Python code editor for panel scripts: syntax highlighting, auto-indent, and completion of Python keywords, the
+script API, control names and DBC signals - over TextEditor's line numbers, current line, indenting, comments and
+Find and Replace; plus the side panel listing the ISO 14229 UDS functions, which inserts calls into the script.
 """
 import builtins
 import html
 import keyword
 import re
 
-from PyQt5.QtCore import QRect, QRegularExpression, QSize, QStringListModel, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPalette, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat
-from PyQt5.QtWidgets import (QCompleter, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter,
-                             QTextBrowser, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PyQt5.QtCore import QRegularExpression, QStringListModel, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPalette, QSyntaxHighlighter, QTextCharFormat, QTextCursor
+from PyQt5.QtWidgets import (QCompleter, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSplitter, QTextBrowser,
+                             QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from canexpert import features
+from canexpert.designer.text_editor import TextEditor
 from canexpert.uds.client import EXCLUDED_SERVICES, FUNCTIONS, GROUPS
 
 # What completion offers. The deprecated calls (api.on, api.on_can, api.every, api.uds.rdbi, ...) still
@@ -102,36 +103,14 @@ class PythonHighlighter(QSyntaxHighlighter):
         return self.currentBlockState() == state
 
 
-class _LineNumbers(QWidget):
-    def __init__(self, editor):
-        super().__init__(editor)
-        self.editor = editor
-
-    def sizeHint(self):
-        return QSize(self.editor.line_number_width(), 0)
-
-    def paintEvent(self, event):
-        self.editor.paint_line_numbers(event)
-
-
-class CodeEditor(QPlainTextEdit):
-    """QPlainTextEdit with the extras a script editor needs."""
+class CodeEditor(TextEditor):
+    """The script editor: TextEditor (line numbers, Find and Replace...) with Python's colours, completion and
+    auto-indent."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        font = QFont("Consolas", 10)
-        font.setStyleHint(QFont.Monospace)
-        self.setFont(font)
-        self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
-        self.setLineWrapMode(QPlainTextEdit.NoWrap)
         dark = self.palette().color(QPalette.Base).lightness() < 128
         self.highlighter = PythonHighlighter(self.document(), dark)
-        self._line_numbers = _LineNumbers(self)
-        self.blockCountChanged.connect(self._update_margin)
-        self.updateRequest.connect(self._scroll_line_numbers)
-        self.cursorPositionChanged.connect(self._highlight_current_line)
-        self._update_margin()
-        self._highlight_current_line()
         self._extra_words = []
         self.completer = QCompleter(self)
         self.completer.setWidget(self)
@@ -139,55 +118,6 @@ class CodeEditor(QPlainTextEdit):
         self.completer.setCompletionMode(QCompleter.PopupCompletion)
         self.completer.activated.connect(self._insert_completion)
         self._refresh_completions()
-
-    # --- line numbers ---------------------------------------------------------------
-
-    def line_number_width(self):
-        return 12 + self.fontMetrics().horizontalAdvance("9") * max(3, len(str(self.blockCount())))
-
-    def _update_margin(self, *_):
-        self.setViewportMargins(self.line_number_width(), 0, 0, 0)
-
-    def _scroll_line_numbers(self, rect, dy):
-        if dy:
-            self._line_numbers.scroll(0, dy)
-        else:
-            self._line_numbers.update(0, rect.y(), self._line_numbers.width(), rect.height())
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        contents = self.contentsRect()
-        self._line_numbers.setGeometry(QRect(contents.left(), contents.top(), self.line_number_width(), contents.height()))
-
-    def paint_line_numbers(self, event):
-        painter = QPainter(self._line_numbers)
-        base = self.palette().color(QPalette.Base)
-        painter.fillRect(event.rect(), base.darker(106) if base.lightness() > 128 else base.lighter(125))
-        text_colour = self.palette().color(QPalette.Text)
-        text_colour.setAlpha(120)
-        current = self.textCursor().blockNumber()
-        block = self.firstVisibleBlock()
-        top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
-        height = self.fontMetrics().height()
-        while block.isValid() and top <= event.rect().bottom():
-            if block.isVisible():
-                colour = self.palette().color(QPalette.Text) if block.blockNumber() == current else text_colour
-                painter.setPen(colour)
-                painter.drawText(0, top, self._line_numbers.width() - 6, height, Qt.AlignRight,
-                                 str(block.blockNumber() + 1))
-            top += int(self.blockBoundingRect(block).height())
-            block = block.next()
-
-    def _highlight_current_line(self):
-        selection = QTextEdit.ExtraSelection()
-        colour = self.palette().color(QPalette.Highlight)
-        colour.setAlpha(28)
-        selection.format.setBackground(colour)
-        selection.format.setProperty(QTextFormat.FullWidthSelection, True)
-        selection.cursor = self.textCursor()
-        selection.cursor.clearSelection()
-        self.setExtraSelections([selection])
-        self._line_numbers.update()
 
     # --- completion -----------------------------------------------------------------
 
@@ -237,11 +167,11 @@ class CodeEditor(QPlainTextEdit):
         if popup.isVisible() and event.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Tab, Qt.Key_Escape):
             event.ignore()  # the completer handles these
             return
+        if self.block_key(event):           # block editing: no completion on the way
+            popup.hide()
+            return
         if event.key() == Qt.Key_Space and event.modifiers() & Qt.ControlModifier:
             self._show_completions(forced=True)
-            return
-        if event.key() == Qt.Key_Tab and not event.modifiers():
-            self.insertPlainText("    ")
             return
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             line = self.textCursor().block().text()[:self.textCursor().positionInBlock()]
@@ -278,14 +208,6 @@ class CodeEditor(QPlainTextEdit):
             return True, "No syntax errors", None
         except SyntaxError as exc:
             return False, f"Line {exc.lineno}: {exc.msg}", exc.lineno
-
-    def go_to_line(self, line, column=0):
-        block = self.document().findBlockByNumber(max(0, int(line) - 1))
-        cursor = QTextCursor(block)
-        cursor.movePosition(QTextCursor.Right, QTextCursor.MoveAnchor, min(column, block.length() - 1))
-        self.setTextCursor(cursor)
-        self.centerCursor()
-        self.setFocus()
 
 
 class UdsFunctionPanel(QWidget):

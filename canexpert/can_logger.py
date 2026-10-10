@@ -36,17 +36,26 @@ from PyQt5.QtWidgets import (
 )
 
 from canexpert.j1939.pgn import dbc_pgn, lookup
+from canexpert.lazy import LazyModule, installed
 from canexpert.mdf4 import write_mdf4
 from canexpert.paths import DBC_DIR
 from canexpert.ui_common import SplitterPanel, ToolButtonsMixin, enable_maximize, is_dark_theme
 
-try:
-    import numpy as np
-    import pyqtgraph as pg
-    HAS_PG = True
-except ImportError:
-    np = None
-    HAS_PG = False
+
+def _import_numpy():
+    import numpy
+    return numpy
+
+
+def _import_pyqtgraph():
+    import pyqtgraph
+    return pyqtgraph
+
+
+# Imported when the CAN Logger is first opened, not when CAN Expert starts; None when not installed.
+HAS_PG = installed("numpy") and installed("pyqtgraph")
+np = LazyModule(_import_numpy) if HAS_PG else None
+pg = LazyModule(_import_pyqtgraph) if HAS_PG else None
 
 try:
     import cantools

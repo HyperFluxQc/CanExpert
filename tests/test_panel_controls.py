@@ -134,6 +134,79 @@ class PanelControlsTest(unittest.TestCase):
         panel.widgets["number"].editingFinished.emit()
         self.assertEqual(changed[-1], ("number", 16), "the other formats as before")
 
+    def test_an_io_box_value_is_selected_and_copied(self):
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtTest import QTest
+        path = Path(tempfile.mkdtemp()) / "panel.xml"
+        path.write_text('''<application_database><pages><page>
+<io_box label="shown" binding_type="script" binding_value="shown" read_only="true"/>
+<io_box label="typed" binding_type="script" binding_value="typed" value_type="string" y="40"/>
+</page></pages></application_database>''', encoding="utf-8")
+        changed = []
+        panel = PanelView(parse_application_database(path), lambda *args: None, self.fail)
+        panel.control_changed.connect(lambda name, value: changed.append((name, value)))
+        self.addCleanup(panel.close)
+        panel.show()
+        shown, typed = panel.widgets["shown"], panel.widgets["typed"]
+
+        # Read-only: not greyed out - its text is selected and copied - and nothing is typed into it or sent.
+        self.assertTrue(shown.isEnabled() and shown.isReadOnly())
+        panel.set_value("shown", 1234.5)
+        shown.setFocus()
+        shown.selectAll()
+        shown.copy()
+        self.assertEqual(QApplication.clipboard().text(), "1234.5")
+        QTest.keyClicks(shown, "99")
+        QTest.keyClick(shown, Qt.Key_Return)
+        shown.editingFinished.emit()
+        self.assertEqual(shown.text(), "1234.5")
+        self.assertEqual(changed, [], "a read-only box sends nothing")
+        # The value keeps changing, and what is selected stays selected.
+        panel.set_value("shown", 99.25)
+        self.assertEqual(shown.selectedText(), "99.25", "all of it stays all of it")
+        shown.setSelection(0, 2)
+        panel.set_value("shown", 1000)
+        self.assertEqual(shown.selectedText(), "10", "a part: the same places")
+        shown.setSelection(4, -3)                                   # selected from right to left
+        panel.set_value("shown", 123456)
+        self.assertEqual((shown.selectedText(), shown.cursorPosition()), ("234", 1))
+
+        # A box to type into: clicked into, copied from and left, it sends nothing again.
+        panel.set_value("typed", "abc")
+        typed.setFocus()
+        typed.selectAll()
+        typed.copy()
+        typed.editingFinished.emit()
+        self.assertEqual(changed, [])
+        # Typed into: a value coming meanwhile does not overwrite it; leaving the box sends it.
+        typed.setCursorPosition(3)
+        QTest.keyClicks(typed, "d")
+        panel.set_value("typed", "xyz")
+        self.assertEqual(typed.text(), "abcd")
+        typed.editingFinished.emit()
+        self.assertEqual(changed, [("typed", "abcd")])
+        panel.set_value("typed", "xyz")
+        self.assertEqual(typed.text(), "xyz", "then the values show again")
+        QTest.keyClick(typed, Qt.Key_Return)
+        self.assertEqual(changed, [("typed", "abcd"), ("typed", "xyz")], "Enter sends it, changed or not - once")
+
+    def test_the_values_a_frame_or_the_script_changed_and_only_those(self):
+        path = Path(tempfile.mkdtemp()) / "panel.xml"
+        path.write_text(f'''<application_database dbc_path="{DBC.as_posix()}"><pages><page>
+<value label="temperature" binding_type="dbc" binding_value="EngineData.Temperature"/>
+<value label="status" binding_value="status"/>
+<io_box label="input" binding_value="input" value_type="string"/>
+</page></pages></application_database>''', encoding="utf-8")
+        panel = PanelView(parse_application_database(path), lambda *args: None, self.fail)
+        self.assertEqual(panel.changed_values(), {})
+        panel.on_message(0x300, bytes([0x01, 0x2C, 0, 0, 0, 0, 0, 0]))   # EngineData: 30 degC
+        self.assertEqual(panel.changed_values(), {"temperature": "30 degC"}, "what the frame changed")
+        self.assertEqual(panel.changed_values(), {}, "once")
+        panel.on_message(0x123, bytes(8))                                  # a frame no control shows
+        self.assertEqual(panel.changed_values(), {})
+        panel.set_value("status", "ready")                                 # the script's
+        self.assertEqual(panel.changed_values(), {"status": "ready"})
+
     def test_panel_uses_dbc_metadata_order_and_raw_mappings(self):
         folder = Path(tempfile.mkdtemp())
         path = folder / "panel.xml"

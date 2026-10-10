@@ -150,6 +150,13 @@ class TransmitWindowTest(unittest.TestCase):
         self.window.close()
         self.assertFalse(any(row["enabled"] for row in self.window.rows))
 
+    def test_closing_a_window_never_shown_stops_it_too(self):
+        self.window.add_raw()
+        self.window.table.item(0, COL_ON).setCheckState(Qt.Checked)
+        self.window.close()                               # never shown, so never hidden
+        self.assertFalse(any(row["enabled"] for row in self.window.rows))
+        self.assertEqual(self.window.cyclic.keys(), [])
+
     def test_the_list_is_restored_next_time(self):
         self.window.add_raw()
         self.window.rows[0].update(name="Wake", id=0x2A0, data=b"\x0f")

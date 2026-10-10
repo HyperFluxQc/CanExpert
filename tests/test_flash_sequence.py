@@ -14,7 +14,7 @@ import can
 from PyQt5.QtWidgets import QApplication, QDialog
 
 from canexpert import flashing
-from canexpert.can_bus import CanWorker
+from canexpert.can_bus import CanWorker, ReceiveMailbox
 from canexpert.config import validate_config
 from canexpert.flash_runner import FlashRunner
 from canexpert.flash_sequence import (FlashCancelled, FlashError, FlashProfile, FlashRun, memory_record,
@@ -119,6 +119,101 @@ def image(*segments, name="firmware.s19"):
 
 BARE = FlashProfile(extended_session=0, stop_dtc=False, stop_communication=False, security_level=0,
                     erase_routine=0, check_routine=0, reset_type=0, version_did=0, restore_after=False)
+
+
+class SlowBus:
+    """A bus that can hold a TesterPresent on its way out, and keeps what went out and when."""
+
+    def __init__(self):
+        self.sent = []                              # (time.monotonic(), data)
+        self.go = threading.Event()                 # cleared: the next TesterPresent waits on its way...
+        self.go.set()
+        self.held = threading.Event()               # ...and this says one does
+
+    def send(self, message):
+        if bytes(message.data[:3]) == b"\x02\x3e\x00" and not self.go.is_set():
+            self.held.set()
+            self.go.wait(5)
+        self.sent.append((time.monotonic(), bytes(message.data)))
+
+    def recv(self, timeout=None):
+        time.sleep(timeout or 0)
+        return None
+
+
+class TesterPresentPauseTest(unittest.TestCase):
+    """No TesterPresent while a reflash holds the worker's no_tester_present() - and again however it ends - nor
+    while an exchange runs: one on its way when either begins is out first."""
+
+    def setUp(self):
+        self.bus = SlowBus()
+        config = validate_config({"name": "t", "request_id": 0x7E0, "tester_present_interval_seconds": 0.02,
+                                  "node_timeout_seconds": 1})
+        self.worker = CanWorker(self.bus, config)
+        self.worker.start()
+        self.addCleanup(self.worker.stop)
+
+    def heartbeats(self, after=0.0, before=float("inf")):
+        return [when for when, data in list(self.bus.sent) if data[:3] == b"\x02\x3e\x00" and after < when < before]
+
+    def test_none_while_a_flash_holds_it_and_again_however_the_flash_ends(self):
+        self.assertTrue(spin_until(self.heartbeats, 2), "TesterPresent every 20 ms")
+        with self.assertRaises(RuntimeError):
+            with self.worker.no_tester_present():
+                with self.worker.no_tester_present():   # held twice over: let go once, still held
+                    pass
+                self.assertTrue(self.worker.tester_present_paused)
+                start = time.monotonic()
+                time.sleep(0.3)                         # fifteen intervals
+                end = time.monotonic()
+                raise RuntimeError("the flash failed")
+        self.assertEqual(self.heartbeats(start, end), [])
+        self.assertFalse(self.worker.tester_present_paused, "a flash that failed lets go of it too")
+        self.assertTrue(spin_until(lambda: self.heartbeats(end), 2), "TesterPresent again")
+
+    def test_a_flash_beginning_waits_for_a_tester_present_on_its_way(self):
+        self.assertTrue(spin_until(self.heartbeats, 2))
+        self.bus.go.clear()
+        self.assertTrue(self.bus.held.wait(2), "a TesterPresent held on its way out")
+        times = {}
+
+        def flash():
+            with self.worker.no_tester_present():
+                times["start"] = time.monotonic()
+                time.sleep(0.2)
+                times["end"] = time.monotonic()
+
+        thread = threading.Thread(target=flash)
+        thread.start()
+        time.sleep(0.1)
+        self.assertNotIn("start", times, "the flash waits for it to be out...")
+        self.bus.go.set()
+        thread.join(2)
+        self.assertEqual(self.heartbeats(times["start"], times["end"]), [], "...so none goes out during it")
+
+    def test_an_exchange_beginning_waits_for_a_tester_present_on_its_way(self):
+        # Otherwise it could land between the frames of a multi-frame request, and the ECU drop the request.
+        mailbox = ReceiveMailbox(self.bus)
+        self.worker.add_mailbox(mailbox)
+        self.assertTrue(spin_until(self.heartbeats, 2))
+        self.bus.go.clear()
+        self.assertTrue(self.bus.held.wait(2), "a TesterPresent held on its way out")
+        times = {}
+
+        def exchange():
+            with mailbox.transaction():
+                times["start"] = time.monotonic()
+                time.sleep(0.2)
+                times["end"] = time.monotonic()
+
+        thread = threading.Thread(target=exchange)
+        thread.start()
+        time.sleep(0.1)
+        self.assertNotIn("start", times, "the exchange waits for it to be out...")
+        self.bus.go.set()
+        thread.join(2)
+        self.assertEqual(self.heartbeats(times["start"], times["end"]), [], "...and none goes out during it")
+        self.assertTrue(spin_until(lambda: self.heartbeats(times["end"]), 2), "TesterPresent again after it")
 
 
 class MemoryRecordTest(unittest.TestCase):

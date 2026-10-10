@@ -234,6 +234,18 @@ def designer_pictures(studio, wanted):
     designer.status.clearMessage()                              # (the temporary folder's path)
     if "form_designer" in wanted:
         save(designer, "form_designer")
+    if "find_replace" in wanted:                                # Find (Ctrl+F) in the script
+        from PyQt5.QtGui import QTextCursor
+        designer.design_tabs.setCurrentWidget(designer.code_page)
+        designer.code_editor.moveCursor(QTextCursor.Start)
+        designer._text_command("find")
+        bar = designer.code_pane.find_bar
+        bar.find_edit.setText("api.ui.set_value")
+        bar.find()
+        designer.code_editor.centerCursor()
+        save(designer, "find_replace", (1080, 640))
+        bar.close_bar()
+        designer.design_tabs.setCurrentWidget(designer.canvas)
     if "test_panel" in wanted:
         dialog = designer.test_panel()
         settle(1)
@@ -314,7 +326,7 @@ def variables_pictures(studio, wanted):
 
 PICTURES = {"connect_problem": main_window_pictures, "main_window": main_window_pictures,
             "trace": main_window_pictures, "can_logger": main_window_pictures, "transmit": main_window_pictures,
-            "uds_console": main_window_pictures, "form_designer": designer_pictures,
+            "uds_console": main_window_pictures, "form_designer": designer_pictures, "find_replace": designer_pictures,
             "test_panel": designer_pictures, "panel_check": designer_pictures, "test_expert": test_expert_picture,
             "dummy_ecu": dummy_ecu_picture, "variables_tab": variables_pictures, "variables": variables_pictures}
 

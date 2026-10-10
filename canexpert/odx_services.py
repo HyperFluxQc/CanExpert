@@ -28,19 +28,17 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from canexpert.lazy import installed
 from canexpert.paths import ODX_DIR
 
-try:
-    from odxtools import load_odx_file, load_pdx_file
-    HAS_ODXTOOLS = True
-except ImportError:
-    HAS_ODXTOOLS = False
+HAS_ODXTOOLS = installed("odxtools")    # imported by the first file loaded: a third of a second at startup
 
 FILE_FILTER = "ODX/PDX/CDD (*.odx *.odx-d *.odx-c *.odx-e *.odx-f *.odx-v *.pdx *-cdd.xml *.xml);;All files (*.*)"
 
 
 def load_database(path):
     """An odxtools database from an ODX (or CDD exported as ODX) or PDX file."""
+    from odxtools import load_odx_file, load_pdx_file
     path = Path(path)
     return load_pdx_file(path) if path.suffix.lower() == ".pdx" else load_odx_file(path)
 

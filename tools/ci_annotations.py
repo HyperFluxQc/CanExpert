@@ -5,7 +5,9 @@ also to readers who are not signed in, unlike the job's log.
     python tools/ci_annotations.py test-output.txt       (in a step that runs on failure)
 
 Each FAIL and ERROR becomes one annotation with the end of its traceback; a crash (a Python fatal error, as
-PYTHONFAULTHANDLER=1 prints it) becomes one naming the test that was running and the stack it died in.
+PYTHONFAULTHANDLER=1 prints it) becomes one naming the test that was running, what it printed before it died -
+where the reason is: PyQt aborts on a Python exception raised in a Qt slot, after printing it - and the stack it
+died in.
 """
 import re
 import sys
@@ -30,9 +32,15 @@ def annotations(output: str) -> list[tuple[str, str]]:
     crash = re.search(r"Fatal Python error: [^\n]*", output)      # often on the running test's own line
     if crash:
         before = output[:crash.start()].splitlines()
-        running = next((line.split(" ... ")[0] for line in reversed(before) if " ... " in line), "an unknown test")
+        at = next((index for index in range(len(before) - 1, -1, -1) if " ... " in before[index]), None)
+        running = before[at].split(" ... ")[0] if at is not None else "an unknown test"
+        printed = [before[at].split(" ... ", 1)[1], *before[at + 1:]] if at is not None else []
+        printed = [line for line in printed if line.strip()]
         stack = output[crash.start():].splitlines()
-        found.append((f"Crash while running {running.strip()}", "\n".join(stack[:TRACEBACK_LINES + 10])))
+        message = "\n".join(stack[:TRACEBACK_LINES + 10])
+        if printed:
+            message = "Printed before the crash:\n" + "\n".join(printed[-TRACEBACK_LINES:]) + "\n\n" + message
+        found.append((f"Crash while running {running.strip()}", message))
     return found[:MAX_ANNOTATIONS]
 
 

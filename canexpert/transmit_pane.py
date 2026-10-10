@@ -41,7 +41,18 @@ class TransmitPane(QDialog):
     def show_nodes(self):
         self.tabs.setCurrentWidget(self.nodes)
 
+    def pause_sending(self, paused=True):
+        """The kill switch: the cyclic messages and the simulated nodes send nothing meanwhile, and go on - as they
+        were switched - once it is released."""
+        self.messages.cyclic.pause(paused)
+        self.nodes.cyclic.pause(paused)
+
     def stop_sending(self):
         """Nothing keeps sending once the window is closed."""
         self.messages.stop_all()
         self.nodes.start_btn.setChecked(False)
+
+    def closeEvent(self, event):
+        """Closed on its own - not as the main window's pane, which stop_sending() stops - it stops too."""
+        self.stop_sending()
+        super().closeEvent(event)

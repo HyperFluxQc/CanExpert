@@ -40,12 +40,17 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from canexpert.lazy import LazyModule, installed
 from canexpert.panel.variables import convert
 
-try:
-    import pyqtgraph as pg
-except ImportError:
-    pg = None
+
+def _import_pyqtgraph():
+    import pyqtgraph
+    return pyqtgraph
+
+
+# Imported by the first trend shown, not when CAN Expert starts; None when it is not installed.
+pg = LazyModule(_import_pyqtgraph) if installed("pyqtgraph") and installed("numpy") else None
 
 ACCENT = "#0f6cbd"  # Windows 11 accent blue
 STATE_COLORS = ["#5f6368", "#2e7d32", "#f9a825", "#c62828", "#1565c0", "#6a1b9a", "#00838f", "#ef6c00"]
@@ -206,7 +211,33 @@ def apply_appearance(widget, data, interactive):
         widget.setAutoFillBackground(True)
     widget.setPalette(palette)
     if interactive and flag(data, "read_only"):
-        widget.setEnabled(False)
+        if isinstance(widget, QLineEdit):
+            # An I/O box's value stays text to select and copy; it takes no typing, and the background of a
+            # display tells it apart from a box to type into.
+            widget.setReadOnly(True)
+            if not (data.get("background") and background.isValid()):
+                palette.setColor(QPalette.Base, palette.color(QPalette.Window))
+                widget.setPalette(palette)
+        else:
+            widget.setEnabled(False)
+
+
+def show_text(widget, text):
+    """A line edit's text, replaced - keeping what is selected in it and where its cursor is, so a value can be
+    selected and copied while it keeps changing: all of it selected stays all of it, a part the same places."""
+    if text == widget.text():
+        return
+    cursor, start, length = widget.cursorPosition(), widget.selectionStart(), len(widget.selectedText())
+    everything = 0 < length == len(widget.text())
+    widget.setText(text)
+    if everything:
+        widget.selectAll()
+    elif length:
+        anchor = start + length if cursor == start else start
+        anchor, cursor = min(anchor, len(text)), min(cursor, len(text))
+        widget.setSelection(anchor, cursor - anchor)
+    elif widget.hasFocus():
+        widget.setCursorPosition(min(cursor, len(text)))
 
 
 # -----------------------------------------------------------------------------
@@ -959,10 +990,28 @@ class IoBox(Control):
     def create(self, data, ctx):
         widget = QLineEdit()
         widget.setPlaceholderText(str(data.get("label", "")))
+        widget.setProperty("_shown", "")         # the value shown or sent last: leaving the box sends only a change
         return widget
 
     def connect(self, widget, emit):
-        widget.editingFinished.connect(lambda: emit(widget.text()))
+        def send(enter):
+            # Enter sends what is in the box; leaving it sends what was typed - not a value only selected and
+            # copied. A read-only box sends nothing.
+            text = widget.text()
+            if widget.isReadOnly() or not enter and text == widget.property("_shown"):
+                return
+            widget.setProperty("_shown", text)
+            widget.setModified(False)
+            emit(text)
+        widget.returnPressed.connect(lambda: send(True))
+        widget.editingFinished.connect(lambda: send(False))
+
+    def set_value(self, widget, data, value):
+        if widget.isModified():
+            return      # being typed into: what is typed stays until Enter, or leaving the box, sends it
+        text = format_value(value, data)
+        show_text(widget, text)
+        widget.setProperty("_shown", text)
 
 
 class TextInput(IoBox):

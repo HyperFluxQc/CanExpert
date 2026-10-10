@@ -1,9 +1,11 @@
-"""What the Windows build and CI rely on: the version, the icons, the startup check of a built program, and the
-annotations a failed CI run leaves on the pull request."""
+"""What the Windows build and CI rely on: the version, the icons, the startup check of a built program, the
+libraries imported only when first used, and the annotations a failed CI run leaves on the pull request."""
 import importlib.util
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -58,6 +60,20 @@ Current thread 0x00007f (most recent call first):
 """
 
 
+# PyQt aborts on a Python exception raised in a Qt slot, after printing it: the reason is above the crash.
+SLOT_CRASH = """test_first (test_c.Case) ... ok
+test_setup (test_c.Case) ... Traceback (most recent call last):
+  File "/work/canexpert/simulation_window.py", line 263, in _on_cyclic_failed
+    self.status.setText(f"{name}: {why}")
+RuntimeError: wrapped C/C++ object of type QLabel has been deleted
+Unhandled Python exception
+Fatal Python error: Aborted
+
+Current thread 0x00007f (most recent call first):
+  File "/work/tests/test_c.py", line 63 in wait
+"""
+
+
 class PackagingTest(unittest.TestCase):
     def test_the_version_is_one_windows_can_hold(self):
         self.assertRegex(canexpert.__version__, r"^\d+\.\d+\.\d+$")
@@ -79,6 +95,50 @@ class PackagingTest(unittest.TestCase):
         self.assertIn('"docs/images"', spec, "the manual's pictures go with it")
         build = (ROOT / "tools" / "build_windows.py").read_text(encoding="utf-8")
         self.assertIn('"CanExpert.exe", "DummyECU.exe", "TestExpert.exe"', build)
+        # What the programs do not use stays out - but never what they need: Qt's core, widgets and the Windows
+        # platform plugin.
+        self.assertIn("analysis.binaries, analysis.datas = lean(analysis.binaries), lean(analysis.datas)", spec)
+        unused = set(re.findall(r'"([\w.]+\.dll)"', spec[spec.index("UNUSED"):spec.index("def lean")]))
+        self.assertIn("opengl32sw.dll", unused)
+        self.assertFalse(unused & {"qt5core.dll", "qt5gui.dll", "qt5widgets.dll", "qt5svg.dll", "qwindows.dll",
+                                   "qoffscreen.dll"})
+
+
+class StartupTest(unittest.TestCase):
+    """numpy, pyqtgraph and odxtools are imported where they are first used: half a second less to start."""
+
+    def test_starting_imports_none_of_them(self):
+        code = ("import sys, canexpert.main_window; "
+                "print(sorted(name for name in ('numpy', 'odxtools', 'pyqtgraph') if name in sys.modules))")
+        result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120,
+                                env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
+        self.assertEqual(result.stdout.strip(), "[]", result.stderr)
+
+    def test_a_lazy_module_is_imported_at_its_first_use(self):
+        from canexpert.lazy import LazyModule, installed
+        loads = []
+        module = LazyModule(lambda: loads.append(True) or __import__("json"))
+        self.assertEqual(loads, [], "not yet")
+        self.assertEqual(module.dumps([1]), "[1]")
+        self.assertEqual(module.loads("2"), 2)
+        self.assertEqual(loads, [True], "once")
+        self.assertTrue(installed("json"))
+        self.assertFalse(installed("no_such_module_anywhere"))
+
+    def test_the_build_still_finds_them(self):
+        # PyInstaller packs what import statements name: the late imports are still statements, in functions.
+        for path, module in (("canexpert/panel/controls.py", "pyqtgraph"), ("canexpert/can_logger.py", "numpy"),
+                             ("canexpert/can_logger.py", "pyqtgraph"), ("canexpert/odx_services.py", "odxtools")):
+            source = (ROOT / path).read_text(encoding="utf-8")
+            self.assertRegex(source, rf"(?m)^ +(import {module}$|from {module} import )", f"{module} in {path}")
+
+    def test_a_trend_and_the_logger_bring_them_in(self):
+        from canexpert.can_logger import pg as logger_pg
+        from canexpert.panel.controls import TrendWidget
+        trend = TrendWidget(10, "#1f77b4")
+        self.addCleanup(trend.deleteLater)
+        self.assertIsNotNone(trend.plot, "a trend draws with pyqtgraph")
+        self.assertTrue(callable(logger_pg.mkPen))
 
 
 class AnnotationsTest(unittest.TestCase):
@@ -96,6 +156,16 @@ class AnnotationsTest(unittest.TestCase):
         (title, message), = self.module.annotations(CRASH)
         self.assertEqual(title, "Crash while running test_floats (test_b.Case)")
         self.assertIn("drop_empty_floating", message)
+
+    def test_a_crash_keeps_what_was_printed_before_it(self):
+        (title, message), = self.module.annotations(SLOT_CRASH)
+        self.assertEqual(title, "Crash while running test_setup (test_c.Case)")
+        self.assertTrue(message.startswith("Printed before the crash:\nTraceback (most recent call last):"))
+        self.assertIn("RuntimeError: wrapped C/C++ object of type QLabel has been deleted", message)
+        self.assertIn("Unhandled Python exception", message)
+        self.assertIn("line 63 in wait", message, "and the stack after it")
+        (_title, message), = self.module.annotations(CRASH)
+        self.assertNotIn("Printed before", message, "nothing printed: nothing said")
 
     def test_messages_keep_their_lines_in_one_annotation(self):
         line = self.module.escape("a%b\nc")

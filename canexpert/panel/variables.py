@@ -6,11 +6,16 @@ Structured variables: records of typed fields and arrays that a panel keeps, wri
     * uint32 Axis
     * uint32 FOC[32]
 
-or pasted from a C header (struct Calib_Data { uint32_t temperature; ... };). A header line names the variable,
-with, in brackets, where it lives in the ECU - DID 0x0110 (ReadDataByIdentifier / WriteDataByIdentifier) or
-memory 0x20001000 (ReadMemoryByAddress / WriteMemoryByAddress) - and its byte order (big-endian, the default,
-or little-endian). Each field line has a type, a name and, for an array, [count]. Fields are packed: padding
-the ECU keeps is written as a field (uint8 pad[3]).
+or in braces, as in C - on one line or on several:
+
+    MyList (DID 0x0110) { uint32 data1; uint8 data2; }
+
+or pasted from a C header (struct Calib_Data { uint32_t temperature; ... };, typedef struct { ... } Name;). The
+name comes first, with, in brackets, where the variable lives in the ECU - DID 0x0110 (ReadDataByIdentifier /
+WriteDataByIdentifier) or memory 0x20001000 (ReadMemoryByAddress / WriteMemoryByAddress) - and its byte order
+(big-endian, the default, or little-endian). Each field has a type, a name and, for an array, [count]; a line
+ends a field, and so does a ; (uint8 a, b; is two). Fields are packed: padding the ECU keeps is written as a
+field (uint8 pad[3]). Comments: // and # to the end of the line, /* ... */.
 
 Types: uint8 uint16 uint32 uint64, int8 int16 int32 int64, float32 float64, bool, char (char name[16] is a text
 of 16 bytes) - and their C names (uint32_t, unsigned int, float, double...).
@@ -40,9 +45,14 @@ ALIASES = {"byte": "uint8", "u8": "uint8", "u16": "uint16", "u32": "uint32", "u6
 BIG, LITTLE = "big", "little"
 MAX_COUNT = 4096                      # the most elements an array may have
 NAME = re.compile(r"[A-Za-z_]\w*$")
-FIELD = re.compile(r"^(?P<type>(?:(?:unsigned|signed|long|short)\s+)*[A-Za-z_]\w*)\s+(?P<name>[A-Za-z_]\w*)"
-                   r"\s*(?:\[\s*(?P<count>[^\]]*)\])?\s*;?\s*$")
-C_STRUCT = re.compile(r"^(?:typedef\s+)?struct\s+(?P<name>[A-Za-z_]\w*)?\s*\{?\s*$")
+# A declaration: a type (unsigned int...) and one name or more, each with its [count]: uint8 a, b[4]
+DECLARATION = re.compile(r"^(?P<type>(?:(?:unsigned|signed|long|short)\s+)*[A-Za-z_]\w*)\s+(?P<names>[A-Za-z_].*)$")
+DECLARATOR = re.compile(r"^(?P<name>[A-Za-z_]\w*)\s*(?:\[\s*(?P<count>[^\]]*)\])?$")
+QUALIFIERS = re.compile(r"^(?:(?:const|volatile|static)\s+)+")
+STRUCT = re.compile(r"^(?:typedef\s+)?struct\b\s*")
+C_DECLARATION = re.compile(r"^(?:typedef|struct|union|enum)\b")     # outside a variable's braces, ended by ;
+STATEMENT = re.compile(r"[{};]|[^{};]+")
+COMMENT = re.compile(r"/\*.*?(?P<closed>\*/|\Z)|//[^\n]*|#[^\n]*", re.S)
 PATH = re.compile(r"^(?P<name>[A-Za-z_]\w*)(?:\[(?P<index>\d+)\])?$")
 
 
@@ -229,42 +239,200 @@ def parse_variables(text: str):
     """(the structures written in text, the problems: [(line, message)]). Every problem is kept - a structure
     with one is still returned as far as it could be read."""
     structures, problems = [], []
-    current = None
-    for number, raw in enumerate(str(text or "").splitlines(), 1):
-        line = re.sub(r"(//|#).*$", "", raw)
-        line = re.sub(r"/\*.*?\*/", "", line).strip()
-        if not line or line in ("{", "}", "};") or re.fullmatch(r"}\s*\w*\s*;?", line):
-            continue
-        body = re.sub(r"^[*\-•]\s*", "", line)
-        match = FIELD.match(body)
-        header = C_STRUCT.match(line)
-        if header and (header.group("name") or line.startswith(("struct", "typedef"))):
-            current = _structure(header.group("name") or "", "", number, structures, problems)
-            continue
-        if match and (canonical_type(match.group("type")) is not None or line[0] in "*-•" or body.endswith(";")):
-            if current is None:
-                problems.append((number, f"The field {match.group('name')} has no variable above it: write the "
-                                         "variable's name on a line of its own first"))
-                continue
-            _field(match, number, current, problems)
-            continue
-        if line[0] in "*-•":
-            problems.append((number, f"{body!r} is not a field: write type name, or type name[count]"))
-            continue
-        name, _bracket, options = line.partition("(")
-        current = _structure(name.strip().rstrip(":").strip(), options.rsplit(")", 1)[0] if _bracket else "", number,
-                             structures, problems)
-        if _bracket and ")" not in options:
-            problems.append((number, "The options are not closed: a ) is missing"))
+    reader = _Reader(structures, problems)
+    text = re.sub(r"\r\n?", "\n", str(text or ""))
+    for number, line in enumerate(_without_comments(text, problems).split("\n"), 1):
+        for statement, end in _statements(line):
+            reader.read(number, statement.strip(), end)
+    reader.finish()
     for item in structures:
         if not item.fields:
-            problems.append((item.line, f"{item.name} has no field: write them under it, one a line, * uint32 name"))
+            problems.append((item.line, f"{item.name} has no field: write them under it, one a line (* uint32 name), "
+                                        f"or in braces: {item.name} {{ uint32 name; }}"))
     return structures, problems
 
 
-def _structure(name, options, number, structures, problems):
-    if not name:
+def _without_comments(text, problems):
+    """The text without its comments - // and # to the end of the line, /* ... */ over lines too - each line where
+    it was. A /* not closed is said."""
+    def blank(match):
+        comment = match.group(0)
+        if comment.startswith("/*") and not match.group("closed"):
+            problems.append((text.count("\n", 0, match.start()) + 1, "This /* comment is not closed: a */ is missing"))
+        return "\n" * comment.count("\n") or " "
+    return COMMENT.sub(blank, text)
+
+
+def _statements(line):
+    """A line's statements: (text, what ends it) - a {, a }, a ; or the end of the line ("\n")."""
+    text = ""
+    for piece in STATEMENT.findall(line):
+        if piece in ("{", "}", ";"):
+            yield text, piece
+            text = ""
+        else:
+            text = piece
+    if text.strip():
+        yield text, "\n"
+
+
+def _declaration(text):
+    """(type, [(name, count text or None)]) for a field's declaration - "uint8 a, b[4]" - or None."""
+    match = DECLARATION.match(QUALIFIERS.sub("", text))
+    if match is None:
+        return None
+    names = [DECLARATOR.match(part.strip()) for part in match.group("names").split(",")]
+    if not all(names):
+        return None
+    return match.group("type"), [(name.group("name"), name.group("count")) for name in names]
+
+
+_PASSED_OVER = object()               # what a } closed when it was no variable's: nothing to name
+
+
+class _Reader:
+    """parse_variables, statement by statement: a variable's name (with its options), then its fields - one a line,
+    or between braces."""
+
+    def __init__(self, structures, problems):
+        self.structures, self.problems = structures, problems
+        self.current = None           # the variable fields go to
+        self.pending = None           # a variable named on a line of its own, no field yet: a { may follow
+        self.depth = 0                # braces open
+        self.block = None             # the variable whose braces are open; None for braces skipped
+        self.opened = 0               # the line of the { open
+        self.unnamed = []             # typedef struct { ... } Name; - waiting for the name after their }
+        self.closed = (None, 0)       # the variable a } has just closed, and its line: "} Name;" may name it
+
+    def read(self, number, text, end):
+        just_closed, line = self.closed
+        self.closed = (None, 0)
+        if end == "{":
+            self.open(number, text)
+            return
+        if line == number and just_closed is not None:      # } Name; - only an unnamed struct takes the name
+            if just_closed in self.unnamed and text:
+                self.name(just_closed, text, number)
+            if end == "}":
+                self.close(number)
+            return
+        if text:
+            self.statement(number, text, end)
+        if end == "}":
+            self.close(number)
+
+    def open(self, number, text):
+        if self.depth:
+            self.depth += 1
+            if self.depth == 2 and self.block is not None:
+                inner = self.header_name(text) or "this"
+                self.problems.append((number, f"{inner} is inside {self.block.name}: a variable holds fields, not other "
+                                              f"variables - write {inner} as a variable of its own"))
+            return
+        self.depth, self.opened = 1, number
+        if text:
+            self.block = self.header(number, text)
+        elif self.pending is not None:                      # MyList on a line, then {
+            self.block = self.pending
+        else:
+            self.block = None
+            self.problems.append((number, "A { with no variable's name before it: write the name first, "
+                                          "MyList { uint32 data1; uint8 data2; }"))
+        self.current, self.pending = self.block, None
+
+    def close(self, number):
+        if not self.depth:
+            self.problems.append((number, "A } with no { before it"))
+            self.closed = (_PASSED_OVER, number)
+            return
+        self.depth -= 1
+        # "} Name;" names an unnamed struct; after any other }, what follows on the line up to a ; is passed over
+        self.closed = (self.block if not self.depth and self.block is not None else _PASSED_OVER, number)
+        if not self.depth:
+            self.block = self.current = None
+
+    def statement(self, number, text, end):
+        if self.depth > 1 or self.depth and self.block is None:
+            return                                          # inside braces skipped: said once, at their {
+        bullet = text[0] in "*-•"
+        body = re.sub(r"^[*\-•]\s*", "", text)
+        declaration = _declaration(body)
+        if self.depth:                                      # between braces: fields only
+            if declaration is None:
+                self.problems.append((number, _not_a_field(body)))
+            else:
+                self.fields(number, declaration)
+            return
+        if end == ";" and C_DECLARATION.match(body):        # struct Motor; typedef uint16_t speed_t; - nothing to keep
+            return
+        if declaration is not None and (canonical_type(declaration[0]) is not None or bullet or end == ";"):
+            if self.current is None:
+                self.problems.append((number, f"The field {declaration[1][0][0]} has no variable above it: write the "
+                                              "variable's name on a line of its own first"))
+                return
+            self.fields(number, declaration)
+            return
+        if bullet:
+            self.problems.append((number, f"{body!r} is not a field: write type name, or type name[count]"))
+            return
+        self.current = self.pending = self.header(number, text)
+
+    def fields(self, number, declaration):
+        type_text, declarators = declaration
+        for name, count in declarators:
+            _field(type_text, name, count, number, self.current, self.problems, self.structures)
+        self.pending = None
+
+    @staticmethod
+    def header_name(text):
+        """The name in a variable's first line: MyList (DID 0x0110), struct MyList, MyList:."""
+        struct = STRUCT.match(text)
+        name = (text[struct.end():] if struct else text).partition("(")[0]
+        return name.strip().rstrip(":=").strip()
+
+    def header(self, number, text):
+        struct = STRUCT.match(text)
+        name, bracket, options = (text[struct.end():] if struct else text).partition("(")
+        name = name.strip().rstrip(":=").strip()
+        structure = _structure(name, options.rsplit(")", 1)[0] if bracket else "", number, self.structures,
+                               self.problems, named_later=bool(struct))
+        if struct and not name:
+            self.unnamed.append(structure)
+        if bracket and ")" not in options:
+            self.problems.append((number, "The options are not closed: a ) is missing"))
+        return structure
+
+    def name(self, structure, text, number):
+        """typedef struct { ... } Name;: the name after the }."""
+        match = re.match(r"[A-Za-z_]\w*", text)
+        if match is None:
+            return
+        self.unnamed.remove(structure)
+        if any(item.name == match.group(0) for item in self.structures):
+            self.problems.append((number, f"There are two variables named {match.group(0)}"))
+        structure.name = match.group(0)
+
+    def finish(self):
+        if self.depth:
+            what = f"{self.block.name}: the {{" if self.block is not None else "This {"
+            self.problems.append((self.opened, f"{what} is not closed - a }} is missing"))
+        for structure in self.unnamed:
+            self.problems.append((structure.line, "A variable needs a name: typedef struct { ... } Name;"))
+
+
+def _not_a_field(text):
+    """Why a statement between a variable's braces is not a field."""
+    if STRUCT.match(text) or text.split()[0] in ("union", "enum"):
+        return f"{text!r}: a variable holds fields, not other variables - write it as a variable of its own"
+    if re.search(r"\w\s*:\s*\d", text):
+        return f"{text!r}: bit fields are not read - write the byte that holds them, uint8 flags"
+    return f"{text!r} is not a field: write type name, or type name[count]"
+
+
+def _structure(name, options, number, structures, problems, named_later=False):
+    if not name and not named_later:
         problems.append((number, "A variable needs a name"))
+    if not name:
         name = f"Variable {len(structures) + 1}"
     for character in ".[]":
         if character in name:
@@ -300,12 +468,15 @@ def _structure(name, options, number, structures, problems):
     return structure
 
 
-def _field(match, number, structure, problems):
-    type_text, name, count_text = match.group("type"), match.group("name"), match.group("count")
+def _field(type_text, name, count_text, number, structure, problems, structures=()):
     type_name = canonical_type(type_text)
     if type_name is None:
-        problems.append((number, f"{type_text} is not a type.{suggest(type_text, list(TYPES) + list(ALIASES))} "
-                                 f"The types: {', '.join(TYPES)}"))
+        if any(item.name == type_text for item in structures):
+            problems.append((number, f"{type_text} is a variable, not a type: a variable holds fields of the types "
+                                     f"{', '.join(TYPES)} - not other variables"))
+        else:
+            problems.append((number, f"{type_text} is not a type.{suggest(type_text, list(TYPES) + list(ALIASES))} "
+                                     f"The types: {', '.join(TYPES)}"))
         return
     count = None
     if count_text is not None:

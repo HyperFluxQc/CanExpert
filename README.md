@@ -24,7 +24,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Panel pages as windows**: every page of a database is a workspace window of its own that can be tabbed, split and floated, fitted to its window or zoomed
 - **CANoe-style window system**: the Database panel and the analysis windows live in a workspace where they tab together, split, and float as windows of their own, with drop guides while dragging (Qt Advanced Docking System); the arrangement is remembered and can be saved as named desktops
 - **Node monitoring**: Sends configured periodic TesterPresent requests, lists responding nodes, and marks lost nodes with a red cross
-- **Form Designer**: CANoe Panel Designer-style editor with 20 controls (gauges, LEDs, multi-state indicators, switches, knobs, trends...), DBC signal drag-and-drop, align/distribute, grid snap, undo/redo, a Python editor, a Database tab (ID and versions, name, description, DBC, contents, the configurations that use it), a menu bar with the usual shortcuts, and a Test mode against the simulated ECU
+- **Form Designer**: CANoe Panel Designer-style editor with 20 controls (gauges, LEDs, multi-state indicators, switches, knobs, trends...), DBC signal drag-and-drop, align/distribute, grid snap, undo/redo, a Python editor and a Variables tab with line numbers, Find / Replace (Ctrl+F, Ctrl+H) and Go to line, a Database tab (ID and versions, name, description, DBC, contents, the configurations that use it), a menu bar with the usual shortcuts, and a Test mode against the simulated ECU
 - **Python in place of CAPL**: per-control handler functions and `@on_message`, `@on_signal`, `@on_timer`, `@on_start`, `@on_stop` event procedures
 - **Dynamic UI**: Buttons send CAN messages; values are read from CAN and displayed in real time
 - **Configuration Management**: Save and load interface settings; each configuration can use a different CAN interface
@@ -178,6 +178,7 @@ CanExpert/
 │   ├── can_bus.py              # Opening a bus, CanWorker (reader + TesterPresent), mailbox
 │   ├── config.py               # Configuration defaults, validation, UDS transport, files, dialog
 │   ├── paths.py                # Where the data folders are (also next to a frozen executable)
+│   ├── lazy.py                 # Libraries imported when first used, not at startup
 │   ├── flashing.py             # S-record / Intel HEX files and the flashing dialogs
 │   ├── can_logger.py           # CAN Logger: CANoe-style graphs, one strip per signal
 │   ├── trace_window.py         # Trace: every frame, symbolic, filtered, exportable
@@ -195,7 +196,7 @@ CanExpert/
 │   ├── odx_services.py         # ODX files and the UDS Console's ODX tab
 │   ├── ui_common.py            # Settings, toolbar icons, caption buttons, dock and splitter panels
 │   ├── panel/                  # database.py (files), view.py (running panel), controls.py, runtime.py
-│   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py
+│   ├── designer/               # form_designer.py, canvas.py, side_panels.py, code_editor.py, text_editor.py
 │   ├── uds/                    # isotp.py (ISO 15765-2), client.py (requests + ISO 14229 functions),
 │   │                           # observer.py (ISO-TP read off the bus), dtc.py (the DTC status byte)
 │   └── simulator/              # ecu.py (the simulated ECU), signals.py (its frames), dtc.py (its fault

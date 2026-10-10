@@ -26,7 +26,9 @@ class FlashRunner(QObject):
 
     def __init__(self, session, parent=None):
         super().__init__(parent)
-        self.session = session                      # session() -> (bus, worker, config) while connected
+        # session() -> (bus, worker, config) while connected. The worker reads the bus (add_mailbox,
+        # remove_mailbox, message_sent) and sends the TesterPresent a reflash pauses (no_tester_present).
+        self.session = session
         self.run = None                             # the FlashRun of the last attempt, finished or not
         self._cancel = threading.Event()
         self._thread = None
@@ -59,8 +61,9 @@ class FlashRunner(QObject):
     def _flash(self, uds, firmware, profile, worker, mailbox):
         run = self.run
         try:
-            run_flash(uds, firmware, profile, progress=self.progress.emit, cancelled=self._cancel.is_set,
-                      log=self.logged.emit, run=run)
+            with worker.no_tester_present():            # the ECU gets the sequence alone, however it ends
+                run_flash(uds, firmware, profile, progress=self.progress.emit, cancelled=self._cancel.is_set,
+                          log=self.logged.emit, run=run)
             ok = True
             text = f"{run.written} bytes written in {len(firmware.segments)} segment(s)."
         except FlashCancelled:

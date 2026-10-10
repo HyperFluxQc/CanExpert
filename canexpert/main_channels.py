@@ -1,7 +1,8 @@
 """
-The main window's CAN Channels: the receivers found - the one in use in bold -, the ECUs that answer on each and
-the database each can load, the channel used last (selected and checked at the next start), the ECU check
-(TesterPresent while no database is connected), the scan for ECUs and the channel setup.
+The main window's CAN Channels: the receivers found, the one chosen - double-clicked - in bold, with the ECUs
+that answer on it and the database Connect would load; the chosen one kept for the next start, where its ECUs
+are checked again; the ECU check (TesterPresent while no database is connected), the scan for ECUs and the
+channel setup.
 """
 import json
 import time
@@ -9,7 +10,7 @@ import time
 import can
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import QMenu, QTreeWidgetItem
+from PyQt5.QtWidgets import QMenu, QMessageBox, QTreeWidgetItem
 
 from canexpert.can_bus import SUPPORTED_INTERFACES, CanWorker, ReceiveMailbox, channel_key
 from canexpert.channel_setup import ChannelSetup, load_setup, open_configured, save_setup
@@ -39,13 +40,13 @@ class Channels:
         self._settings.setValue(LAST_CHANNEL, json.dumps(list(key)))
 
     def check_last_channel(self):
-        """At startup: select the channel used last and start checking its ECUs with TesterPresent, so a
+        """At startup: the channel chosen last is chosen again, and its ECUs checked with TesterPresent, so a
         responding ECU and the database it can load appear without connecting first."""
         item = self.channel_items.get(self.last_channel)
         if item is None or self.can_bus is not None or not self.active_config:
             return
-        self.on_channel_selected(item)
-        self.check_ecus(item.data(0, Qt.UserRole))
+        self.channel_list.setCurrentItem(item)
+        self.choose_channel(item.data(0, Qt.UserRole))
 
     def _matching_database(self):
         """The panel database Connect would load for the active configuration, or None."""
@@ -95,22 +96,29 @@ class Channels:
         if load_setup(self._settings, cfg).listen_only:
             label += " [listen-only]"
         if self.connected_channel_config and channel_key(cfg) == channel_key(self.connected_channel_config):
-            label += " [Connected]"
+            label += " [Off the bus]" if self.offline else " [Connected]"
         elif self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
             label += " [Checking ECUs]"
         return label
 
     def _label_channels(self):
-        """Each channel's label - [Connected], [Checking ECUs], [listen-only] - and the one in use in bold: the
-        session's, or the one whose ECUs are checked. A channel used before is not, once it is not in use."""
+        """Each channel's label - [Connected], [Checking ECUs], [listen-only] - and the chosen one in bold:
+        the one double-clicked last, which Connect uses. Only one is: the one chosen before is not any more."""
         for key, item in self.channel_items.items():
             item.setText(0, self._channel_label(item.data(0, Qt.UserRole)))
             font = item.font(0)
-            font.setBold(self._channel_checked(key))
+            font.setBold(self._channel_chosen(key))
             item.setFont(0, font)
 
+    def _channel_chosen(self, key):
+        """The channel chosen - double-clicked, or connected - and so in bold; none off the bus (Kill CAN)."""
+        return not self.offline and self.last_channel is not None and key == self.last_channel
+
     def _channel_checked(self, key):
-        """True while ECU replies on this channel are being watched: a database session or the ECU check."""
+        """True while ECU replies on this channel are being watched: a database session or the ECU check - not
+        off the bus (Kill CAN), when the adapter is closed."""
+        if self.offline:
+            return False
         if self.can_bus is not None and self.connected_channel_config is not None:
             if key == channel_key(self.connected_channel_config):
                 return True
@@ -159,17 +167,62 @@ class Channels:
             item.setData(0, Qt.UserRole, parent.data(0, Qt.UserRole))  # double-click connects this channel
 
     def on_channel_selected(self, item, column=0):
+        """A click only shows the channel: a double-click chooses it. Nothing chosen yet, Connect would use it."""
         cfg = item.data(0, Qt.UserRole)
-        if cfg:
+        if not cfg or item.parent() is not None:
+            return
+        if self.selected_channel_config is None:
             self.selected_channel_config = cfg
-            self.last_channel = channel_key(cfg)
-            self._settings.setValue(LAST_CHANNEL, json.dumps(list(self.last_channel)))
-            self.status_label.setText(f"Selected {cfg['interface']} channel {cfg.get('channel', 0)}")
+        if channel_key(cfg) == self.last_channel:
+            self.status_label.setText(f"{cfg['interface']} channel {cfg.get('channel', 0)} is the one chosen")
+        else:
+            self.status_label.setText(f"Double-click {cfg['interface']} channel {cfg.get('channel', 0)} to use it")
 
     def on_channel_double_clicked(self, item, column=0):
-        self.on_channel_selected(item, column)
-        if self.can_bus is None:
+        """An interface: it is chosen (choose_channel). An ECU or the database under the chosen one: Connect -
+        the database is loaded."""
+        cfg = item.data(0, Qt.UserRole)
+        if not cfg:
+            return
+        if item.parent() is None:
+            self.choose_channel(cfg)
+        elif self.can_bus is None:
+            self.selected_channel_config = cfg
             self.on_connect_clicked()
+
+    def choose_channel(self, channel_config) -> bool:
+        """The interface to use: in bold, its ECUs checked with TesterPresent - and once one answers, the
+        database Connect would load shown under it - and kept for the next start. The one chosen before is not
+        any more: no longer in bold, its ECUs and their database gone from the tree. A database connected on
+        another interface is closed first, if the user says so. False when it was not chosen."""
+        key = channel_key(channel_config)
+        name = f"{channel_config['interface']} channel {channel_config.get('channel', 0)}"
+        connected = self.connected_channel_config if self.can_bus is not None else None
+        if connected is not None and channel_key(connected) != key:
+            used = f"{connected['interface']} channel {connected.get('channel', 0)}"
+            if QMessageBox.question(self, "Change the interface", f"The database is connected on {used}.\n\n"
+                                    f"Disconnect it and use {name}?") != QMessageBox.Yes:
+                return False
+            self.on_disconnect_clicked()
+        self.selected_channel_config = dict(channel_config)
+        self._remember_channel(channel_config)
+        self._forget_nodes(keep=key)
+        if self.can_bus is None:
+            if self.active_config:
+                self.check_ecus(channel_config)
+            else:
+                self._set_status(f"{name} chosen - select a configuration to check its ECUs", "gray")
+        self._label_channels()
+        self._update_nodes()
+        return True
+
+    def _forget_nodes(self, keep=None):
+        """The ECUs seen on the other interfaces go from the tree, and the database they offered with them."""
+        for node in [node for node in self.node_states if node[0] != keep]:
+            del self.node_states[node]
+            item = self.node_items.pop(node, None)
+            if item is not None and item.parent() is not None:
+                item.parent().removeChild(item)
 
     def start_ecu_monitor(self, channel_config, config):
         """Send TesterPresent on the channel at the configuration's interval and watch the ECU replies:
@@ -250,7 +303,7 @@ class Channels:
         if self.ecu_monitor and channel_key(cfg) == channel_key(self.monitor_channel):
             menu.addAction("Stop checking ECUs", self.stop_ecu_monitor)
         elif self.can_bus is None and self.active_config and not self.offline:
-            menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.check_ecus(cfg))
+            menu.addAction(f"Check ECUs with \"{self.active_config.get('name', '')}\"", lambda: self.choose_channel(cfg))
         menu.addSeparator()
         menu.addAction("Scan for ECUs on this channel...", lambda: self.open_ecu_scan(cfg))
         menu.addAction("Channel setup...", lambda: self.edit_channel_setup(cfg))

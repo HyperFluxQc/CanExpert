@@ -99,6 +99,63 @@ A.B
         self.assertIn("has a DID and a memory address", messages[2])
         self.assertTrue(any("this is not a field! has no field" in message for _line, message in problems))
 
+    def test_in_braces_as_in_c(self):
+        structures, problems = parse_variables("""MyList { uint32 data1; uint8 data2; }
+Idle (DID 0x0110, little-endian) {
+    uint16 speed;       // per minute
+    uint8 gear
+}
+Pos
+{
+    int16 x, y, z;      /* three at once */
+}
+/* a comment
+   over lines */
+typedef struct {
+    const uint16_t rpm;
+} Motor;
+struct Motor;
+A { u8 a; } B { u16 b; }
+""")
+        self.assertEqual(problems, [])
+        self.assertEqual([item.name for item in structures], ["MyList", "Idle", "Pos", "Motor", "A", "B"])
+        my_list, idle, pos, motor = structures[:4]
+        self.assertEqual([field.declaration() for field in my_list.fields], ["uint32 data1", "uint8 data2"])
+        self.assertEqual((my_list.size, my_list.paths(), my_list.where()), (5, ["data1", "data2"], ""))
+        self.assertEqual((idle.did, idle.byte_order, [field.line for field in idle.fields]), (0x0110, "little", [3, 4]))
+        self.assertEqual([field.declaration() for field in pos.fields], ["int16 x", "int16 y", "int16 z"])
+        self.assertEqual(([field.declaration() for field in motor.fields], motor.line), (["uint16 rpm"], 12))
+        self.assertEqual(my_list.decode(bytes([0, 0, 1, 2, 3])), {"data1": 0x102, "data2": 3})
+
+    def test_what_is_written_wrong_in_braces_says_where(self):
+        _structures, problems = parse_variables("""MyList { uint32 data1; uint23 data2; }
+Outer {
+    struct Inner { uint8 b; } inner;
+    MyList rows[4];
+    uint8 on : 1;
+    uint8 kept;
+}
+{ uint8 lost; }
+} MyList;
+typedef struct { uint8 x; };
+Open {
+    uint8 a;
+""")
+        messages = {}
+        for line, message in problems:
+            messages[line] = messages.get(line, "") + message + " | "
+        self.assertIn("uint23 is not a type. Did you mean uint32?", messages[1])
+        self.assertIn("Inner is inside Outer: a variable holds fields, not other variables", messages[3])
+        self.assertIn("MyList is a variable, not a type", messages[4])
+        self.assertIn("bit fields are not read", messages[5])
+        self.assertIn("A { with no variable's name before it", messages[8])
+        self.assertIn("A } with no { before it", messages[9])
+        self.assertIn("A variable needs a name: typedef struct { ... } Name;", messages[10])
+        self.assertIn("Open: the { is not closed - a } is missing", messages[11])
+        self.assertEqual(len(problems), 8, "each said once")
+        _structures, problems = parse_variables("Cal { u32 a; }\n/* not closed\nOther { u8 b; }")
+        self.assertEqual(problems, [(2, "This /* comment is not closed: a */ is missing")])
+
     def test_bytes_either_way_round(self):
         (calib,), _ = parse_variables(CALIB)
         data = struct.pack("<34I", 25, 2, *range(32))
@@ -195,6 +252,24 @@ class PanelTest(unittest.TestCase):
         database = parse_application_database(self.path)
         self.assertEqual([item.name for item in database["variables"]], ["Calib Data", "Idle"])
         self.path.write_text(PANEL.replace("* uint16 speed", "* uint61 speed"), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Variables, line 7: uint61 is not a type"):
+            parse_application_database(self.path)
+
+    def test_a_variable_in_braces_on_the_panel(self):
+        from canexpert.panel.view import PanelView
+        self.path.write_text(PANEL.replace("""        Idle (DID 0x0110)
+        * uint16 speed""", """        Idle (DID 0x0110) { uint16 speed; uint8 gear; }"""), encoding="utf-8")
+        database = parse_application_database(self.path)
+        idle = database["variables"][1]
+        self.assertEqual((idle.name, idle.did, [field.name for field in idle.fields]), ("Idle", 0x0110, ["speed", "gear"]))
+        panel = PanelView(database, lambda *args: None, lambda text: None)
+        panel.set_value("Idle", {"speed": 800, "gear": 3})
+        shown = self.lists(panel)["Idle"]
+        self.assertEqual([shown.tree.topLevelItem(i).text(0) for i in range(2)], ["speed", "gear"])
+        self.assertEqual(panel.controls["Idle.speed"].get_value(panel.widgets["Idle.speed"]), 800)
+        self.path.write_text(PANEL.replace("""        Idle (DID 0x0110)
+        * uint16 speed""", """        Idle (DID 0x0110) { uint16 speed; uint8 gear }
+        Broken { uint61 x; }"""), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "Variables, line 7: uint61 is not a type"):
             parse_application_database(self.path)
 

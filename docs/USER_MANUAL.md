@@ -163,10 +163,11 @@ More in *The Variables tab*, under *Form Designer*.
 
 ### ...leave the bus to another tool
 
-1. Press **Kill CAN** (Ctrl+F9). CAN Expert stops everything it sends — the session, TesterPresent, the
-   Transmit window, scans — and closes the adapter. The status bar says **Off the bus**.
+1. Press **Kill CAN** (Ctrl+F9). CAN Expert closes the adapter and sends nothing more — no TesterPresent,
+   no Transmit window message, no script frame. The database stays loaded; the status bar says **Off the
+   bus**.
 2. Let the other tool, or the other tester, work: CAN Expert does not touch the bus, even if you restart it.
-3. Press **Kill CAN** again to come back; then connect as usual.
+3. Press **Kill CAN** again to come back: the adapter opens again and the session goes on where it was.
 
 More in *Connecting*.
 
@@ -218,10 +219,14 @@ Options inside the windows work the same way: a button that switches something o
 Trace window, the CAN Logger and the Form Designer — stays pressed in with a coloured line under it for
 as long as that option is active, so you can see at a glance what is switched on.
 
-At startup CAN Expert selects the receiver you used last and starts asking its ECUs whether they are there
-(see *Checking ECUs* below) — unless it was closed off the bus (**Kill CAN**, see *Connecting*). The receiver
-CAN Expert is using — connected, or checking its ECUs — is in **bold**; one it used before is not, once it is
-no longer in use.
+**Double-click a receiver** to choose it: it goes **bold**, CAN Expert starts asking its ECUs whether they
+are there (see *Checking ECUs* below), and once one answers, the database Connect would load appears under
+it. The receiver chosen before is not bold any more, and its ECUs and database go from the tree. A single
+click only selects a receiver; **Connect** uses the one in bold. If a database is connected on another
+receiver, CAN Expert asks before disconnecting it.
+
+At startup CAN Expert chooses again the receiver you used last and checks its ECUs — unless it was closed off
+the bus (**Kill CAN**, see *Connecting*); off the bus, none is in bold.
 
 ## Configurations
 
@@ -272,21 +277,30 @@ window says where, as the Form Designer's check does (see *Checking a panel*). *
 that loads but has problems connects, and the window lists them — once for each version of its files,
 not at every Connect. Each problem is written to the Log as well.
 
-**Double-clicking** a receiver, an ECU under it, or the database offered under it connects straight away —
-the same as pressing Connect.
+**Double-clicking** an ECU, or the database offered under the chosen receiver, connects straight away — the
+same as pressing Connect. Double-clicking a receiver chooses it (see *The main window*).
 
 **Disconnect** stops the script and the session's traffic. CAN Expert then goes on checking the ECUs with
 TesterPresent, so the CAN Channels tree still shows which ones answer (see *Checking ECUs*).
 
 **Kill CAN** (Ctrl+F9) is the kill switch: it takes CAN Expert off the bus at once, for another tool — or
-another tester — to have the bus and the ECU to itself. The session ends (its script stops without its
-`@on_stop` handlers, which could send), the ECU check, the Transmit window's messages and simulated nodes
-and any scan stop, and every adapter CAN Expert opened is closed: from then on it sends nothing and
-receives nothing. The button stays pressed in, the status bar says **Off the bus**, and nothing opens the
-adapter again — not Connect, not the ECU check, not a scan, not the bit rate search — until you press it
-again. CAN Expert remembers it: closed off the bus, it starts off the bus, without checking any ECU. Pressed
-again, it is back on the bus and checks the ECUs as at startup. What the ECU was asked to send by itself
-(periodic data, events) stops with its diagnostic session, a few seconds later, since nothing keeps it open.
+another tester — to have the bus and the ECU to itself. Every adapter CAN Expert opened is closed: from
+then on it sends nothing and receives nothing. **The database stays loaded**: the panel, its script and the
+windows stay as they are, and only the communication stops —
+
+- no TesterPresent; the Transmit window's messages and simulated nodes wait, still switched on;
+- what the script sends — frames, UDS requests — is refused, and the Write window says so once; the script
+  goes on running;
+- a reflash, a test run and a scan stop, and so does the ECU check;
+- the channel shows **[Off the bus]**, and the status bar says **Off the bus**.
+
+Nothing opens an adapter again — not Connect, not the ECU check, not a scan, not the bit rate search —
+until you press it again. Then the adapter is opened again and everything goes on where it was:
+TesterPresent, the Transmit window's messages, the script's frames. **Disconnect** still closes the
+database while CAN Expert is off the bus (the script's `@on_stop` frames are refused too). CAN Expert
+remembers the switch: closed off the bus, it starts off the bus, without checking any ECU. What the ECU was
+asked to send by itself (periodic data, events) stops with its diagnostic session, a few seconds later,
+since nothing keeps it open.
 
 While you are connected, the **status bar** says how things stand:
 
@@ -319,7 +333,8 @@ Under each receiver, every ECU that answers appears with its status:
 
 This keeps working **after Disconnect**: the channel is marked **[Checking ECUs]** and TesterPresent
 carries on, so the list keeps telling you which ECUs are alive. **Right-click a channel** to *Stop
-checking ECUs*, or to *Check ECUs* with the selected configuration without connecting.
+checking ECUs*, or to *Check ECUs* with the selected configuration without connecting — which chooses it, as
+a double-click does.
 
 Under a responding ECU, CAN Expert also lists the database that configuration would load
 ("showcase_2026-09-18 — double-click to load"). Double-click it to connect and load the panel.
@@ -391,7 +406,8 @@ only a placeholder.
 | **DLC / Data** | Length and bytes. |
 
 A row with a name has an arrow: open it to see the decoded signals with their units. Signals are decoded
-only for rows you actually open, so a busy bus stays responsive.
+only for rows you actually open, so a busy bus stays responsive. The Trace keeps the last 20 000 frames:
+once it holds that many, the oldest leave the top as new ones arrive at the bottom.
 
 The toolbar has **Clear**, **Pause** (freezes the view while recording continues), **Follow** (keeps the
 newest frame in view) and **Colour** (gives each identifier its own colour).
@@ -473,6 +489,13 @@ float one onto a second screen; the saved desktops keep where they are. Buttons,
 input boxes send what their script or DBC binding says; displays, gauges, LEDs and trends show what
 arrives. Everything the panel does is written in its Python script — see *Writing panel scripts*.
 
+**An I/O box's value can be copied**: select it with the mouse (a double-click selects a word, Ctrl+A all
+of it) and press Ctrl+C, or right-click → Copy. What is selected stays selected while the value changes, so
+a value arriving ten times a second can be copied too. A read-only I/O box (grey) is a box of text to copy
+from; nothing is typed into it. In a box you type into, **Enter** sends what is in it; clicking elsewhere
+sends what you typed — not a value you only clicked into or copied. While you type, a value arriving from the
+bus or the script does not overwrite what you are typing.
+
 **Zoom** at the top of every page: **Fit** scales the page to its window and follows it as the window is
 resized; **50 %** to **200 %** keep it at that size and scroll. **Ctrl + mouse wheel** steps the zoom. A page
 keeps its zoom, also in a newer dated version of the database.
@@ -496,7 +519,7 @@ script's `@on_key` handlers only hear keys pressed in the main window.
 | Menu | What it holds |
 |---|---|
 | **File** | **New** (Ctrl+N), **Open...** (Ctrl+O), **Open from the Databases folder** (each family's newest version first), **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S, offering today's version of the family), **Close**. |
-| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. |
+| **Edit** | Undo, redo, cut, copy, paste, duplicate, delete, select all — on the form, or in the script when its tab is in front. In the Python script and the Variables: **Find...** (Ctrl+F), **Find and replace...** (Ctrl+H), **Find next** (F3), **Find previous** (Shift+F3), **Go to line...** (Ctrl+G), **Comment / uncomment lines** (Ctrl+/), **Block selection mode** (Alt+Shift+A). |
 | **Arrange** | Align, make the same size, distribute, bring to front, send to back, and the grid. |
 | **Page** | Add, rename and remove pages. |
 | **Script** | **Check syntax** (F7), **Handler of the selected control** (F4). |
@@ -511,8 +534,9 @@ New, Open and closing the window ask whether to save changes first.
   indicator, trend, output box) and decorations (label, group box, picture).
 - Load a **DBC** to get the signal list, then drag a signal onto the page: the control is bound to it and
   takes its unit and value table.
-- **Move** a control by holding the left button anywhere on it and dragging — an I/O box too, and a
-  control inside a group box, whichever was put on the page first. A group box itself moves by its title or
+- **Move** a control by holding the left button anywhere on it and dragging — an I/O box too, a read-only
+  control (greyed out, as it will be on the panel) and a control inside a group box, whichever was put on the
+  page first. A group box itself moves by its title or
   its frame; pressing inside it, where nothing is, starts a selection rectangle. A **double-click** goes to
   the control's handler; double-click and keep the button down to drag instead.
 - **Duplicate** (Ctrl+D) and **Copy**/**Paste** give each copy a name of its own, so the script, its
@@ -525,6 +549,8 @@ New, Open and closing the window ask whether to save changes first.
   size, change the stacking order, undo and redo. The last selected control is the reference for aligning.
   The grid button snaps to the grid.
 - **Properties** edits the selected control: its binding, name, label, position, size and appearance.
+  **Read-only** greys an input out on the panel — but an I/O box stays text to select and copy, on a grey
+  background, and takes no typing.
 - **Format** shows a value in decimal, hex or binary — or, on an I/O box and a value display, as **ascii**:
   the characters its bytes spell. The bytes 0x31 0x30 read from the ECU show as `10`; so do a UDS answer
   (`api.ui.set_value("serial", RDBI(0xF18C))`), a list of byte values, and a DBC signal carrying text (its
@@ -548,10 +574,24 @@ Idle (DID 0x0110)
 * uint16 speed
 ```
 
+— or in braces, as in C, on one line or on several; a `;` ends a field, and so does the end of a line:
+
+```
+MyList { uint32 data1; uint8 data2; }
+
+Idle (DID 0x0110) {
+    uint16 speed;
+    uint8 gear;
+}
+```
+
 - A field is *type name*, or *type name[count]* for an array. The types: `uint8` to `uint64`, `int8` to
   `int64`, `float32`, `float64`, `bool` and `char` (`char name[16]` is a text of 16 bytes) — and their C
-  names (`uint32_t`, `unsigned int`, `float`, `double`...), so a `struct` pasted from a C header works too.
-  The `*` (or `-`) in front is optional; `//` and `#` start a comment.
+  names (`uint32_t`, `unsigned int`, `float`, `double`...), so a `struct` pasted from a C header works too
+  (`struct Name { ... };`, `typedef struct { ... } Name;`, `int16 x, y, z;`). The `*` (or `-`) in front is
+  optional; `//` and `#` start a comment, `/* ... */` is one, over several lines too.
+- A variable holds fields, not other variables: a field whose type is another variable (`MyList rows[4];`)
+  or a `struct` inside the braces is said to be wrong, with its line.
 - In brackets after the name, where it lives in the ECU: **DID 0x0110** (read with ReadDataByIdentifier,
   written with WriteDataByIdentifier) or **memory 0x20001000** (ReadMemoryByAddress, WriteMemoryByAddress,
   4-byte address and size) — and **little-endian** when the ECU keeps it so; big-endian otherwise. Without
@@ -579,6 +619,33 @@ the script tab opens with the function created for you.
 **The script tab** — the editor has completion (Ctrl+Space) for the API, your control names and DBC
 signals, a syntax check, and the **UDS functions** panel listing every ISO 14229 service with its
 documentation; double-click one to insert a call.
+
+**Editing the script and the variables** — both editors have line numbers, and:
+
+- **Find** (Ctrl+F): a bar opens under the editor, with the selected word in it. Every match is highlighted as
+  you type and the next one selected; **Enter** or **F3** goes to the next one, **Shift+Enter** or
+  **Shift+F3** to the one before, wrapping around at the end. The bar counts them (`3 of 12`). **Match
+  case**, **Whole words** (`speed`, not `speed_max`) and **Regex** — a Python regular expression — refine it.
+  **Esc** closes the bar.
+- **Find and replace** (Ctrl+H): the bar with a **Replace** line. **Replace** (or Enter in it) replaces the
+  selected match and goes to the next; **Replace all** replaces every one, and one **Undo** (Ctrl+Z) puts
+  them all back. With **Regex**, `\1` in the replacement is what the first group found:
+  `api\.log\((\w+)\)` → `print(\1)`.
+- **Go to line** (Ctrl+G), **Tab** and **Shift+Tab** to indent and unindent the selected lines, and
+  **Comment / uncomment lines** (Ctrl+/: `#` in the script, `//` in the variables). **Ctrl+A** selects
+  everything.
+- **Block editing** — a block of columns over several lines, as in Notepad++ or Visual Studio: hold **Alt**
+  and drag, or press **Shift+Alt+arrows**. What you type then goes on every line of it, at the same column;
+  **Backspace**, **Delete** and **Tab** too. With a block of zero width — a caret on several lines — that is
+  how a prefix goes in front of many lines at once. A line too short to reach the block is filled with
+  spaces. **Ctrl+C** copies the block, and a block copied pastes as a block (lines are added at the end when
+  there are too few); a line of text pasted into a block goes on every line of it. One **Ctrl+Z** undoes what
+  was typed. **Esc**, a click, or any other key ends the block. **Edit → Block selection mode**
+  (Alt+Shift+A) makes a plain drag and **Shift+arrows** select blocks, without Alt.
+
+[![Find in the script](images/find_replace.png)](images/find_replace.png)
+
+*Find (Ctrl+F) in the showcase panel's script: every match highlighted, the selected one counted.*
 
 **The Database tab** — what the panel is and where it goes:
 - **Database ID**: the file name, `family_YYYY-MM-DD`. The line under it says where it will be saved and how
@@ -969,6 +1036,10 @@ offers whichever are available.
      and finally the dependency check routine, the messages and DTCs back on, an ECU reset and a read of
      the software version.
 3. Watch the progress dialog; **Cancel** stops after the block being sent.
+
+While it flashes — either way — CAN Expert sends **no TesterPresent**: the ECU's bootloader gets the
+flashing sequence and nothing else in between. TesterPresent goes on once it is over, however it ends:
+finished, failed or cancelled. A flash that cannot start ends at once, with its reason.
 
 **Sequence settings...** opens what the built-in sequence uses, and every part of it can be changed to
 match your ECU: the session numbers, whether DTCs and normal messages are switched off, the
@@ -1511,8 +1582,10 @@ them break security access and flashing.
 
 The keys work in floating windows too. The toolbar buttons show theirs in their tooltips. In the Form
 Designer, **F1** opens its own section, **F5** tests the panel with the simulated ECU and **F7** checks the
-script. Plain letters and **F5** are left to the panel script's `@on_key`: keys CAN Expert uses itself
-do not reach the script.
+script; in its script and variables, **Ctrl+F** finds, **Ctrl+H** replaces, **F3** and **Shift+F3** go to
+the next and the previous match, **Ctrl+G** goes to a line, and **Alt + drag** or **Shift+Alt+arrows** select
+a block of columns (**Alt+Shift+A**: Block selection mode). Plain letters and **F5** are left to the panel
+script's `@on_key`: keys CAN Expert uses itself do not reach the script.
 
 ## Where things are kept
 
