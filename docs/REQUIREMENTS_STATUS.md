@@ -218,7 +218,7 @@ DBC bindings use `Message.Signal`. Relative DBC paths resolve against the XML di
 
 The designer offers 20 controls (input, display and decoration categories), multi-select (Ctrl+click or a rubber band), align/same size/distribute relative to the last-selected control, a 10 px grid with snap, a resize handle, bring to front/send to back (saved as document order, so group boxes stay behind their contents), copy/cut/paste/duplicate, arrow-key nudging, undo/redo (Ctrl+Z / Ctrl+Y), every control moved by holding the left button (a read-only one too), Find / Find and replace / Go to line with line numbers in the script and the variables (Ctrl+F, Ctrl+H, F3, Ctrl+G), and DBC signal drag-and-drop (a display, or with Ctrl an input; value tables become indicators or combo boxes). **Test panel...** runs the unsaved form and script against the simulated ECU on a private virtual bus. On a running panel, an I/O box's value is selected and copied - a read-only one's too, kept selected as the value changes.
 
-Example panels and scripts live under `examples/`; `showcase_2026-09-18` uses every control with `DBC/dummy_ecu.dbc`. Copy them to `Databases/` and select family `example` to try them. They do not replace existing user databases automatically.
+Example panels and scripts live under `examples/`; `showcase_2026-09-18` uses every control with `DBC/dummy_ecu.dbc`, and its ECU information page reads what the Dummy ECU tells over UDS (identification DIDs, session, uptime, live values by DID, the fault memory) - at Connect, with its Read all button and with the toolbar's Read (`Read(api)`). Copy them to `Databases/` and select family `example` to try them. They do not replace existing user databases automatically.
 
 ## Verification and limits
 

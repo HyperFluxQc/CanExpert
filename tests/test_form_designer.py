@@ -754,5 +754,64 @@ class MenusAndDatabaseTabTest(unittest.TestCase):
         self.assertEqual(window.browser.textCursor().block().text().strip(), "Form Designer")
 
 
+class ShowcaseTest(unittest.TestCase):
+    """The showcase panel's ECU information page, against the simulated ECU of the Test panel."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def test_the_example_is_the_database_the_dummy_ecu_configuration_loads(self):
+        for name in ("showcase_2026-09-18.xml", "showcase_2026-09-18_script.py"):
+            self.assertEqual((self.ROOT / "examples" / name).read_text(encoding="utf-8"),
+                             (self.ROOT / "Databases" / name).read_text(encoding="utf-8"), name)
+
+    def panel(self, simulate_ecu=True):
+        from canexpert.designer.form_designer import TestPanelDialog
+        path = self.ROOT / "Databases" / "showcase_2026-09-18.xml"
+        dialog = TestPanelDialog(parse_application_database(path),
+                                 path.with_name(path.stem + "_script.py").read_text(encoding="utf-8"), simulate_ecu)
+        self.addCleanup(dialog.close)
+        return dialog, dialog.panel.widgets
+
+    def test_the_ecu_information_page_shows_what_the_dummy_ecu_tells(self):
+        dialog, widgets = self.panel()
+        self.assertEqual([name for name, _window in dialog.panel.page_windows], ["Main", "ECU information"])
+        self.assertTrue(spin_until(lambda: widgets["info_status"].text().startswith("Read at")),
+                        "read at the start: " + widgets["info_status"].text())
+        shown = {name: widgets[name].text() for name in ("info_vin", "info_serial", "info_part_number",
+                                                         "info_software", "info_calibration", "info_dtc_count",
+                                                         "info_pressure", "info_idle_speed")}
+        self.assertEqual(shown, {"info_vin": "WVWZZZ1KZAW000001", "info_serial": "SN000123456",
+                                 "info_part_number": "CANEXPERT-DUMMY", "info_software": "APP-1.0.0",
+                                 "info_calibration": "locked - press Unlock",
+                                 "info_dtc_count": "2 stored, 1 failing now", "info_pressure": "1.00 bar",
+                                 "info_idle_speed": "800 rpm"})
+        self.assertRegex(widgets["info_temperature"].text(), r"^\d+\.\d degC$")
+        self.assertRegex(widgets["info_uptime"].text(), r"^0 h 00 min \d\d s$")
+        self.assertEqual((widgets["info_session"].text(), widgets["info_security"].is_on()), ("Default", False))
+        self.assertEqual(widgets["info_dtcs"].toPlainText().splitlines(),
+                         ["P0101-00   status 09: test failed, confirmed", "U0100-00   status 08: confirmed"])
+
+        widgets["unlock"].click()                                   # the extended session and security access
+        self.assertTrue(spin_until(lambda: widgets["info_calibration"].text() == "CAL-0042"))
+        self.assertEqual((widgets["info_session"].text(), widgets["info_security"].is_on()), ("Extended", True))
+
+        dialog.ecu.dids[0x0110] = (950).to_bytes(2, "big")          # changed in the ECU
+        widgets["live"].click()                                     # Live: read again at once, then every second
+        self.assertTrue(spin_until(lambda: widgets["info_idle_speed"].text() == "950 rpm"))
+        widgets["live"].click()
+
+        dialog.ecu.dids[0xF190] = b"WVWZZZ1KZAW000002"
+        dialog.function_buttons["Read"].click()                     # what the toolbar's Read runs
+        self.assertTrue(spin_until(lambda: "Read complete" in dialog.log_view.toPlainText()),
+                        dialog.log_view.toPlainText())
+        self.assertEqual(widgets["info_vin"].text(), "WVWZZZ1KZAW000002")
+
+    def test_an_ecu_that_does_not_answer_is_said_and_asked_no_more(self):
+        _dialog, widgets = self.panel(simulate_ecu=False)
+        self.assertTrue(spin_until(lambda: widgets["info_status"].text() == "Not read: no response", 4),
+                        widgets["info_status"].text())
+        self.assertEqual(widgets["info_vin"].text(), "--", "nothing else asked")
+
+
 if __name__ == "__main__":
     unittest.main()

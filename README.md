@@ -109,7 +109,7 @@ All control types:
 
 Every control also has appearance properties (text colour, background, font size, bold, tooltip; inputs can be read-only).
 
-`examples/showcase_2026-09-18.xml` uses every control with `DBC/dummy_ecu.dbc`.
+`examples/showcase_2026-09-18.xml` uses every control with `DBC/dummy_ecu.dbc`, and its **ECU information** page shows everything the Dummy ECU tells over UDS: VIN, serial number, part number, software version and calibration ID, the session, security and uptime, live values read by DID, and the fault codes with their status.
 
 ## Panel scripts
 
@@ -271,7 +271,7 @@ Every setting applies at once, even while connected, and is remembered for the n
 
 **How big are the TransferData blocks?** The ECU decides: it announces maxNumberOfBlockLength (data + the `0x36` SID + the block counter) in its RequestDownload response, and the tester sends blocks of that size minus 2. Set **Data per TransferData** to 256 or 512 to get `74 20 01 02` or `74 20 02 02`; CAN Expert's `Flashing()` follows it.
 
-In CAN Expert, choose the **Dummy ECU** configuration (SERVER ID `7E0`, ECU ID `7E8`, database family `showcase`, the showcase panel with every control and `Flashing()`), select the receiver `[kvaser] Ch 0` and click **Connect**. ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
+In CAN Expert, choose the **Dummy ECU** configuration (SERVER ID `7E0`, ECU ID `7E8`, database family `showcase`, the showcase panel with every control, an ECU information page, `Read()` and `Flashing()`), select the receiver `[kvaser] Ch 0` and click **Connect**. ECU `0x7E8` appears as responding, the ECU broadcasts `0x300` (temperature 0.1 °C and pressure 0.01 bar, big-endian) and `0x301` (status), and accepts `0x200` (`01` start, `02` stop) and `0x201` (bit 0: logging) commands.
 
 The ECU supports sessions, TesterPresent, ECUReset, S3 timeout, ReadDataByIdentifier (`F186` session, `F187` part number, `F18C` serial, `F190` VIN, `F195` software version, `0100` uptime, `0101`/`0102` the live temperature and pressure, `F201`/`F202` the same for periodic data, `0200` readable only in the extended session after unlocking), WriteDataByIdentifier for `F190`, SecurityAccess (by default level 1, key = seed XOR `A5`, the same as the example `compute_key()`), ReadDataByPeriodicIdentifier, ResponseOnEvent (on a DID change or a DTC status change), InputOutputControlByIdentifier (on the DIDs that follow a signal: the application frames carry what the tester set), ReadMemoryByAddress, WriteMemoryByAddress, ControlDTCSetting, CommunicationControl, ReadDTCInformation and ClearDiagnosticInformation. A DTC's **Fault** box makes its status follow ISO 14229's life cycle - pending, confirmed after operation cycles, aged out - with the snapshot taken at the moment of the fault. It also implements the complete flashing sequence of `examples/example_2026-09-18_script.py`: connect, click **Reflash** and pick `examples/firmware/demo_app.hex` (or `.s19`, or any S-record or Intel HEX file). Afterwards `F195` reports `APP-FLASHED-<crc32>`, or the version found in the image; **Save memory as S-record...** (or **Save image to** on the Flashing tab) writes the received image to a file, and RequestUpload (`0x35`) reads it back over UDS. A flash that fails leaves the application invalid, and the next ECUReset starts the bootloader until a good flash.
 

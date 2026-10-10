@@ -24,7 +24,10 @@ The things done most often, step by step. Each one ends with the section that te
 2. Choose its interface and channel — **Detect** lists them; with the Kvaser virtual driver, `kvaser`
    channel `1` — and press **Connect**.
 3. In CAN Expert, pick the **Dummy ECU** configuration, select `[kvaser] Ch 0` in **CAN Channels** and
-   press **Connect**. The showcase panel opens: flip **Run** and the engine warms up.
+   press **Connect**. The showcase panel opens: flip **Run** and the engine warms up. Its **ECU
+   information** page shows what the ECU tells over UDS — the VIN, serial number, part number and software
+   version, the session, security and uptime, live values read by DID and the fault codes; **Read** on the
+   toolbar reads it all again, **Unlock** opens the calibration ID, and **Live** refreshes it every second.
 
 [![The Dummy ECU window](images/dummy_ecu.png)](images/dummy_ecu.png)
 
