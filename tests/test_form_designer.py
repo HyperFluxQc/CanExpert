@@ -790,6 +790,8 @@ class ShowcaseTest(unittest.TestCase):
         self.assertEqual((widgets["info_session"].text(), widgets["info_security"].is_on()), ("Default", False))
         self.assertEqual(widgets["info_dtcs"].toPlainText().splitlines(),
                          ["P0101-00   status 09: test failed, confirmed", "U0100-00   status 08: confirmed"])
+        self.assertNotIn("=> NRC", dialog.log_view.toPlainText(),
+                         "nothing the ECU must refuse - it would be the status bar's last error at every Connect")
 
         widgets["unlock"].click()                                   # the extended session and security access
         self.assertTrue(spin_until(lambda: widgets["info_calibration"].text() == "CAL-0042"))

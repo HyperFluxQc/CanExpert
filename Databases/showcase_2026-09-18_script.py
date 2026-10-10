@@ -32,6 +32,7 @@ def on_hello_clicked(api, value):
 def on_session_changed(api, value):
     sessions = {"Default": 0x01, "Extended": 0x03}
     result = DSC(sessions[value])                        # sends 10 01 or 10 03
+    security["unlocked"] = False                         # a new session locks the ECU again
     api.ui.set_value("log", f"Session {value}: {'ok' if result else result.error}")
 
 
@@ -69,6 +70,7 @@ IDENTIFICATION = {"info_vin": 0xF190, "info_serial": 0xF18C, "info_part_number":
                   "info_software": 0xF195}                   # control -> DID
 DTC_STATUS = ("test failed", "failed this cycle", "pending", "confirmed", "not completed since clear",
               "failed since clear", "not completed this cycle", "warning lamp")      # status bits 0-7
+security = {"unlocked": False}      # Unlock granted, and the ECU still in that extended session
 
 
 def Read(api):
@@ -89,10 +91,12 @@ def on_unlock_clicked(api, value):
     """The extended session, then security access: the calibration ID answers once both are granted."""
     session = DSC(0x03)
     unlocked = SecurityUnlock(0x01, compute_key) if session else session
+    security["unlocked"] = bool(unlocked)
     api.ui.set_value("info_status", "Unlocked: extended session and security access" if unlocked else
                      f"Unlock failed: {unlocked.error}")
-    if read_state(api):
-        read_calibration_id(api)
+    state = read_state(api)
+    if state:
+        read_calibration_id(api, state.int)
 
 
 def on_live_changed(api, value):
@@ -113,7 +117,7 @@ def read_all(api):
         for name, did in IDENTIFICATION.items():
             result = RDBI(did)
             api.ui.set_value(name, result.text if result else f"({result.error})")
-        read_calibration_id(api)
+        read_calibration_id(api, state.int)
         read_fault_memory(api)
         api.ui.set_value("info_status", f"Read at {time.strftime('%H:%M:%S')}")
     return state
@@ -142,16 +146,17 @@ def read_state(api):
     return session
 
 
-def read_calibration_id(api):
-    """0200 answers in the extended session with security access only: its answer is the security state."""
-    result = RDBI(0x0200)
-    api.ui.set_value("info_security", bool(result))
-    if result:
-        api.ui.set_value("info_calibration", result.text)
-    elif result.nrc in (0x31, 0x33):                 # not in the extended session, or not unlocked
+def read_calibration_id(api, session):
+    """0200 answers in the extended session with security access only, so it is asked for only then: a request the
+    ECU must refuse would be the status bar's last error at every Connect."""
+    if session != 0x03:
+        security["unlocked"] = False                 # back in the default session (S3 timeout, a reset): locked
+    api.ui.set_value("info_security", security["unlocked"])
+    if not security["unlocked"]:
         api.ui.set_value("info_calibration", "locked - press Unlock")
-    else:
-        api.ui.set_value("info_calibration", f"({result.error})")
+        return
+    result = RDBI(0x0200)
+    api.ui.set_value("info_calibration", result.text if result else f"({result.error})")
 
 
 def read_fault_memory(api):
