@@ -113,6 +113,11 @@ def summary_text(report: TestReport) -> str:
             f"{counts[SKIPPED]} skipped{blocked} in {report.duration:.1f} s")
 
 
+def step_text(step) -> str:
+    """A step as a line: what was checked, and what came when there is more to say."""
+    return f"{step.description}  -  {step.detail}" if step.detail else step.description
+
+
 def _text(result: CaseResult) -> str:
     return "\n".join(f"[{step.time:8.3f}] {step.verdict.upper():4} {step.description}"
                      + (f" - {step.detail}" if step.detail else "") for step in result.steps)

@@ -41,8 +41,8 @@ in a file of its own.
   form, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess
   (mask or `GenerateKeyEx` seed & key DLL) and a fault-memory tab. The P2/P2* timing an ECU announces is
   honoured by the requests that follow.
-- **Test modules** (*Tools → Test*): Python test cases against the live bus with setup/teardown, a
-  verdict per step, Stop, and an HTML and a JUnit XML report of every run.
+- **Test modules** (TestExpert's *Modules* tab): Python test cases with setup/teardown, run with the
+  generated tests, a verdict per step, Stop, and HTML and JUnit XML reports.
 - **TestExpert** (`test_expert.py`, TestExpert.exe): UDS conformance tests generated from a CDD, ODX or PDX
   description, as Vector DiVa does, run against the ECU with HTML and JUnit reports; the Dummy ECU passes them.
   Pre-test and post-test sequences (a hard reset after a test, an ignition frame before the run...), test plans
@@ -53,7 +53,7 @@ in a file of its own.
   requested or sent with the transport protocol (BAM, RTS/CTS); the Trace's J1939 view; J1939 DBC messages
   from any source address; `j1939` and `@on_pgn` in scripts; the Dummy ECU as a J1939 node.
 - **Markers** (Ctrl+M): a comment at a moment of the measurement, in the Trace, on the Logger's graphs and
-  in BLF/ASC/TRC recordings; scripts use `api.marker()`, test modules `t.marker()`.
+  in BLF/ASC/TRC recordings; scripts use `api.marker()`.
 - **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
   windows offline and never touches a bus.
 - **Symbol databases**: one DBC list shared by the Trace, Data and Statistics windows, the CAN Logger and

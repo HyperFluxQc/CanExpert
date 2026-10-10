@@ -119,12 +119,12 @@ ODX, PDX or CDD file loaded in the ODX tab (`ODX/dummy_ecu.odx-d` describes the 
 
 **Was:** absent. This is what separates a viewer from a validation tool.
 
-**Now:** *Tools → Test* (`canexpert/testing/`) runs a test module - a Python file of `@testcase`
+**Now:** TestExpert's Modules tab (`canexpert/testing/`) runs a test module - a Python file of `@testcase`
 functions with `setup`, `teardown`, `before_each` and `after_each` - against the live bus with the UDS
 functions the scripts use and `t.check / check_equal / check_range / expect_nrc / require / fail / skip /
 log / wait / send / wait_for_frame / wait_for_signal`. The tree shows each case's verdict and every step as
-it runs; Stop skips the rest and still tears down. Each run leaves an HTML report and a JUnit XML file
-beside the module. `TestModules/dummy_ecu_checks.py` is an example against the Dummy ECU.
+it runs; Stop skips the rest and still tears down. Each run leaves an HTML report and a JUnit XML
+file. (CAN Expert had a Test window for this; testing is TestExpert's now.) `TestModules/dummy_ecu_checks.py` is an example against the Dummy ECU.
 
 ### 8. One docked workspace instead of separate dialogs, with saved desktops — **DONE**
 *Effort: medium — the single biggest "looks like CANoe" item*
@@ -478,7 +478,7 @@ CSV export).
 
 **Now:** **Connection → Insert marker...** (Ctrl+M, or Ctrl+Shift+M without a comment) marks a moment of
 the measurement: a highlighted row in the Trace, a line across the Logger's graphs, a global marker in a BLF
-recording (a comment line in ASC and TRC). Panel scripts call `api.marker()`, test modules `t.marker()`.
+recording (a comment line in ASC and TRC). Panel scripts call `api.marker()`.
 A replay in CAN Expert does not read the markers back.
 
 ### 36. A status strip showing the system state — **DONE**

@@ -76,12 +76,12 @@ PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> 
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
-                  "write", "tests", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
+                  "write", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
 SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "kill": "Ctrl+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
              "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
-             "tests": "Ctrl+8", "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
+             "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
 # The database's commands beside Kill CAN, as the View menu's Toolbar buttons names them: shown once the
 # connected database's ECU answers, greyed while it does not, gone with the database (_update_database_buttons).
 DATABASE_LABELS = {"ecu_read": "Read (database)", "ecu_write": "Write (database)", "reflash": "Reflash (database)"}
@@ -100,7 +100,7 @@ FLASHING_HINT = ("Flash ECU firmware without a database: the built-in sequence, 
 # The manual's section for each tool window, for F1.
 HELP_SECTIONS = {"trace": "Trace window", "logger": "CAN Logger", "data": "Data window", "statistics": "Statistics",
                  "transmit": "Transmit window", "console": "UDS Console", "write": "Writing panel scripts",
-                 "tests": "Test modules", "j1939": "J1939", "sysvars": "Writing panel scripts"}
+                 "j1939": "J1939", "sysvars": "Writing panel scripts"}
 
 
 def tool_panes() -> tuple:
@@ -243,7 +243,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
              self.disconnect_database),
             ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - nothing is sent or received until "
              "it is pressed again.\nThe database stays loaded and its script goes on; TesterPresent and the "
-             "Transmit window's messages wait;\na reflash, a test run, a scan and the ECU check stop. Pressed "
+             "Transmit window's messages wait;\na reflash, a scan and the ECU check stop. Pressed "
              "again, the rest goes on where it was.\nFor another tool, or another tester, to have the bus to "
              "itself", self.set_offline),
             ("ecu_read", "Read", DATABASE_HINTS["ecu_read"], lambda: self.database_function("Read")),
@@ -262,8 +262,6 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
              "memory",
              self.open_uds_console),
             ("write", "Write", "What the panel script writes, and its variables as it runs", self.open_write),
-            ("tests", "Test", "Run a test module's test cases against the bus, with a verdict per step and an HTML "
-             "and JUnit report", self.open_tests),
             ("j1939", "J1939", "J1939 networks: the nodes and their NAMEs, their faults (DM1, DM2, clear), and any "
              "PGN requested or sent", self.open_j1939),
             ("sysvars", "System Variables", "Values shared by the script, the windows and you", self.open_sysvars),

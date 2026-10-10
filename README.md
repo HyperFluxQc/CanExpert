@@ -10,7 +10,7 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **Data window**: every signal of the symbol databases with the value it holds now, physical and raw, with its unit, age and count; signals that never arrived are listed too
 - **Transmit window** with two tabs that keep sending until the window is closed: the **message list** - raw or database messages, sent once or cyclically, edited signal by signal, saved as JSON (CANoe's Interactive Generator) - and the **simulated nodes** - the messages of a database's sending nodes, sent at their cycle times as those ECUs would, a rest-bus simulation for the ECU on the bench
 - **UDS Console**: every ISO 14229 service without an ODX file, built from the same catalogue the panel scripts use, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess (key from a mask or a `GenerateKeyEx` seed & key DLL) and a fault-memory tab (read, snapshot, extended data, clear) that spells out the DTC status bits and shows each DTC's code (P0101-00) and, from the ODX file, its text; the P2/P2* timing the ECU announces is picked up and honoured by every later request; a **Periodic & events** tab starts periodic data (0x2A) and ResponseOnEvent (0x86) and lists what the ECU then sends by itself
-- **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached; **markers** with a comment (Ctrl+M, `api.marker()`, `t.marker()`) show in the Trace and on the Logger's graphs and go into BLF/ASC/TRC recordings
+- **Recording and offline replay**: write the session to BLF/ASC/CSV and play a file back into every window with no bus attached; **markers** with a comment (Ctrl+M, `api.marker()`) show in the Trace and on the Logger's graphs and go into BLF/ASC/TRC recordings
 - **Symbol databases**: one list of DBC files shared by the Trace, Data and Statistics windows, the CAN Logger and the Transmit window
 - **ISO-TP settings** per configuration, kept by CAN Expert rather than in the configuration file: every frame padded to 8 bytes (0xCC by default, as most ECUs require), and the block size and STmin the tester asks of the ECU
 - **Channel setup** per adapter channel: sample point and SJW turned into the adapter's bit timing, listen-only (Kvaser and Vector), a receive filter in the adapter, and bit rate detection that listens without disturbing the bus; configurations take any bit rate
@@ -18,8 +18,8 @@ A Python-based CAN interface application using Qt for GUI and python-can. Suppor
 - **One measurement clock**: the Trace, the Logger, the Write window and the UDS Console show each frame's own time, absolute or relative to the start of the measurement; the Trace also filters by direction
 - **Write window** for the script's output and its variables; scripts react to keys, error frames and the bus state
 - **TestExpert**, a program of its own: UDS conformance tests generated from a CDD, ODX or PDX file, as Vector DiVa does, with pre-test and post-test sequences, test plans that also run from the command line, and HTML and JUnit reports
-- **J1939**: the Trace names 29-bit frames by parameter group, source and destination and joins BAM and RTS/CTS messages; a **J1939 window** lists the nodes and their NAMEs, each node's DM1 faults (DM2, DM11/DM3 clear) and requests or sends any PGN; J1939 DBC messages decode from any source address; scripts and test modules use `j1939.request()` / `j1939.send()` and `@on_pgn`; the Dummy ECU can be a J1939 node (address claim, DM1, SOFT/VI/CI, `DBC/j1939_demo.dbc`)
-- **Test modules**: test cases in Python against the live bus (`@testcase`, `setup`/`teardown`, `t.check`, `t.require`, `t.expect_nrc`, `t.wait_for_frame`, `t.wait_for_signal` and the UDS functions), with a verdict per step as it runs, Stop, and an HTML and a JUnit XML report of every run; an example module checks the Dummy ECU
+- **J1939**: the Trace names 29-bit frames by parameter group, source and destination and joins BAM and RTS/CTS messages; a **J1939 window** lists the nodes and their NAMEs, each node's DM1 faults (DM2, DM11/DM3 clear) and requests or sends any PGN; J1939 DBC messages decode from any source address; panel scripts use `j1939.request()` / `j1939.send()` and `@on_pgn`; the Dummy ECU can be a J1939 node (address claim, DM1, SOFT/VI/CI, `DBC/j1939_demo.dbc`)
+- **Test modules**: test cases in Python (`@testcase`, `setup`/`teardown`, `t.check`, `t.require`, `t.expect_nrc`, `t.wait_for_frame`, `t.wait_for_signal` and the UDS functions), run by TestExpert with its generated tests, with a verdict per step as it runs, Stop, and HTML and JUnit XML reports; an example module checks the Dummy ECU
 - **Status bar** with the bus state, the diagnostic session and security state read off the ECU's answers, and the last error; **keyboard shortcuts** (F9 connect, Ctrl+1...7 tool windows, F1 help at the window you are in) and an **About** box listing every library and adapter driver version
 - **Panel pages as windows**: every page of a database is a workspace window of its own that can be tabbed, split and floated, fitted to its window or zoomed
 - **CANoe-style window system**: the Database panel and the analysis windows live in a workspace where they tab together, split, and float as windows of their own, with drop guides while dragging (Qt Advanced Docking System); the arrangement is remembered and can be saved as named desktops
@@ -188,7 +188,7 @@ CanExpert/
 │   ├── cyclic.py, timing.py    # Cyclic frames sent on time: their thread, waits to the half millisecond
 │   ├── simulation_window.py    # Simulated nodes: a database's messages sent as those ECUs would
 │   ├── uds_console.py          # UDS Console: every ISO 14229 service, ODX services, the fault memory
-│   ├── testing/                # Test modules: runner, HTML/JUnit reports, the Test window
+│   ├── testing/                # Test modules: runner, HTML/JUnit reports (TestExpert runs them)
 │   ├── j1939/, j1939_window.py # J1939: identifiers, NAME, DM1/DM2, transport protocol; the J1939 window
 │   ├── test_expert/            # TestExpert: descriptions (CDD, ODX, JSON, Dummy ECU), generated tests, window
 │   ├── recording.py            # Recording to BLF/ASC/CSV and offline replay
@@ -208,7 +208,7 @@ CanExpert/
 ├── DBC/, ODX/                  # Default folders for DBC and ODX/PDX files (ODX/: the Dummy ECU's DTC texts, and
 │                               # its description for TestExpert - dummy_ecu.cdd, dummy_ecu_services.odx-d)
 ├── examples/                   # Runnable panel + script pair, demo firmware
-├── TestModules/                # Test modules (dummy_ecu_checks.py); reports/ of their runs
+├── TestModules/                # Test modules TestExpert runs (dummy_ecu_checks.py)
 ├── docs/                       # USER_MANUAL.md, DOCUMENTATION.md, REQUIREMENTS_STATUS.md
 ├── tests/                      # Hardware-free acceptance, UDS and UI tests
 └── requirements.txt

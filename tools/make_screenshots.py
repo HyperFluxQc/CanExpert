@@ -270,7 +270,7 @@ def designer_pictures(studio, wanted):
 def test_expert_picture(studio, wanted):
     """TestExpert after a run of the first tests against the Dummy ECU."""
     from canexpert.test_expert.window import TestExpertWindow
-    from canexpert.testing.window import MemorySettings
+    from canexpert.ui_common import MemorySettings
     window = TestExpertWindow(MemorySettings())
     window.s3_test.setChecked(False)
     window.connect_ecu(studio.bus())

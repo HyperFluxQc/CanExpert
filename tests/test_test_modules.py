@@ -1,34 +1,21 @@
 """Test modules: test cases in Python run against the bus - verdicts per step, setup and teardown, stopping -
-their HTML and JUnit reports, the Test window running the example module against the Dummy ECU, and its place
-in the main window."""
+and their HTML and JUnit reports. TestExpert runs them (test_test_expert.py)."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-import json
 import queue
 import shutil
 import tempfile
 import threading
 import time
 import unittest
-import uuid
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
-from unittest.mock import patch
 
 import can
-import cantools
-from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QApplication
 
-from canexpert import can_bus
-from canexpert import main_window as main
-from canexpert.can_bus import CanWorker
-from canexpert.config import validate_config
-from canexpert.paths import DBC_DIR, TEST_MODULES_DIR
-from canexpert.simulator.ecu import DummyEcu, EcuConfig
 from canexpert.testing.report import html_report, junit_report, save_reports
 from canexpert.testing.runner import CaseResult, Runner, TestContext, call_hook, load_module, run_module, uds_names
-from canexpert.testing.window import MemorySettings, TestWindow
 
 APP = QApplication.instance() or QApplication([])
 
@@ -312,135 +299,6 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(html_path.name.startswith("bench_checks_") and html_path.suffix == ".html")
         self.assertEqual(xml_path.with_suffix(".html"), html_path)
         ElementTree.parse(xml_path)
-
-
-def symbol_decoder():
-    database = cantools.database.load_file(str(DBC_DIR / "dummy_ecu.dbc"))
-
-    def decode(can_id, data):
-        try:
-            message = database.get_message_by_frame_id(can_id)
-        except KeyError:
-            return "", {}
-        return message.name, message.decode(bytes(data), decode_choices=False, allow_truncated=True)
-    return decode
-
-
-class ExampleAgainstTheEcuTest(unittest.TestCase):
-    """The example module in TestModules/, run by the Test window against the Dummy ECU."""
-
-    def setUp(self):
-        channel = "tests-" + str(uuid.uuid4())
-        self.bus = can.Bus(interface="virtual", channel=channel)
-        ecu_bus = can.Bus(interface="virtual", channel=channel)
-        self.ecu = DummyEcu(ecu_bus, EcuConfig(), log=lambda text: None)
-        stop = threading.Event()
-        threading.Thread(target=self.ecu.serve, args=(stop,), daemon=True).start()
-        self.config = validate_config({"name": "Dummy", "request_id": 0x7E0, "response_id": 0x7E8})
-        self.worker = CanWorker(self.bus, self.config, tester_present=False)
-        self.worker.start()
-        self.module = write_module(self, (TEST_MODULES_DIR / "dummy_ecu_checks.py").read_text(encoding="utf-8"),
-                                   "dummy_ecu_checks.py")        # a copy: the reports go beside it
-        self.settings = MemorySettings({"tests/module": str(self.module)})
-        self.window = TestWindow(session=lambda: (self.bus, self.worker, self.config), decode=symbol_decoder(),
-                                 settings=self.settings)
-
-        def close():
-            self.window.stop()
-            if self.window.thread is not None:
-                self.window.thread.join(5)
-            self.window.deleteLater()
-            self.worker.stop()
-            stop.set()
-            time.sleep(.05)
-            self.bus.shutdown()
-            ecu_bus.shutdown()
-        self.addCleanup(close)
-
-    def run_and_wait(self):
-        self.assertIsNotNone(self.window.run(), self.window.log.toPlainText())
-        self.assertTrue(spin_until(lambda: self.window.report is not None and self.window.run_btn.isEnabled(), 20),
-                        self.window.log.toPlainText())
-        return self.window.report
-
-    def test_every_example_case_passes_and_leaves_its_reports(self):
-        self.assertEqual(self.window.module.path, self.module)
-        self.assertEqual(len(self.window.ticked()), 5)
-        report = self.run_and_wait()
-        self.assertEqual(report.verdict, "passed", self.window.log.toPlainText())
-        self.assertEqual(report.counts()["passed"], 5)
-        engine = next(case for case in report.cases if case.name == "engine_data")
-        self.assertIn("the temperature is between -40 and 150 degC", [step.description for step in engine.steps])
-        html_path, xml_path = self.window.report_paths
-        self.assertEqual(html_path.parent, self.module.parent / "reports")
-        self.assertTrue(xml_path.exists())
-        self.assertIn("PASSED: 5 passed", self.window.status.text())
-        item = self.window._items["identification"]
-        self.assertEqual(item.text(1), "passed")
-        self.assertEqual(item.childCount(), 4, "one line per step")
-
-    def test_only_the_ticked_cases_run_and_a_failure_is_shown(self):
-        for name, item in self.window._items.items():
-            item.setCheckState(0, 2 if name == "identification" else 0)
-        self.ecu.dids[0xF190] = b"SHORT-VIN"
-        report = self.run_and_wait()
-        self.assertEqual([case.name for case in report.cases], ["identification"])
-        self.assertEqual(report.cases[0].verdict, "failed")
-        self.assertIn("expected 17, got 9", self.window.log.toPlainText())
-        self.assertTrue(self.window._items["identification"].isExpanded())
-
-    def test_without_a_measurement_nothing_runs(self):
-        window = TestWindow(settings=MemorySettings({"tests/module": str(self.module)}))
-        self.addCleanup(window.deleteLater)
-        self.assertIsNone(window.run())
-        self.assertIn("connect first", window.log.toPlainText())
-
-    def test_a_module_that_does_not_load_is_reported(self):
-        broken = write_module(self, "def oops(:\n", "broken.py")
-        self.assertIsNone(self.window.open_module(broken))
-        self.assertIn("could not be read: SyntaxError", self.window.log.toPlainText())
-        self.assertEqual(self.window.module.path, self.module, "the module before stays")
-
-
-class MainWindowTest(unittest.TestCase):
-    def setUp(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        root = Path(temp.name)
-        (root / "Configurations").mkdir()
-        (root / "Databases").mkdir()
-        (root / "Configurations" / "config_Bench.json").write_text(json.dumps(
-            {"name": "Bench", "request_id": 0x7E0, "response_id": 0x7E8}))
-        settings = QSettings(str(root / "settings.ini"), QSettings.IniFormat)
-        patches = [patch.object(main, "CONFIG_DIR", root / "Configurations"),
-                   patch.object(main, "DATABASES_DIR", root / "Databases"),
-                   patch.object(main, "app_settings", lambda: settings),
-                   patch.object(main.can, "detect_available_configs", return_value=[]),
-                   patch.object(can_bus, "create_can_bus", lambda *a, **k: can.Bus(interface="virtual",
-                                                                                  channel="tests-main"))]
-        for item in patches:
-            item.start()
-        self.window = main.MainWindow()
-
-        def close():
-            self.window.close()
-            APP.processEvents()
-            for item in reversed(patches):
-                item.stop()
-        self.addCleanup(close)
-
-    def test_the_test_window_is_a_tool_window(self):
-        action = self.window._toolbar_actions["tests"]
-        self.assertEqual(action.shortcut().toString(), "Ctrl+8")
-        action.trigger()
-        tests = self.window.tool_widget("tests")
-        self.assertIsInstance(tests, TestWindow)
-        self.assertTrue(action.isChecked())
-        self.assertEqual(self.window.help_section(tests.tree), "Test modules")
-        self.assertIsNone(tests.run())
-        self.assertIn("connect first", tests.log.toPlainText())
-        name, signals = tests.decode(0x999, b"\x00")
-        self.assertEqual((name, signals), ("", {}))
 
 
 if __name__ == "__main__":

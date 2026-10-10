@@ -71,11 +71,10 @@ from canexpert.test_expert.services import parse_memory_range
 from canexpert.test_expert.tester import Tester
 from canexpert.test_expert.variant_dialog import IdentificationDialog
 from canexpert.test_expert.variants import Identification, identify, is_odx
-from canexpert.testing.report import COLOURS, summary_text
+from canexpert.testing.report import COLOURS, step_text, summary_text
 from canexpert.testing.runner import BLOCKED, ERROR, FAILED, INFO, PASS, PASSED
-from canexpert.testing.window import MemorySettings, step_text
-from canexpert.ui_common import (ToolbarButtons, app_icon, app_settings, enable_maximize, is_dark_theme,
-                                 toolbar_icon)
+from canexpert.ui_common import (MemorySettings, ToolbarButtons, app_icon, app_settings, enable_maximize,
+                                 is_dark_theme, toolbar_icon)
 from canexpert.uds.observer import SERVICE_NAMES
 
 TEST_EXPERT_DIR = APP_DIR / "TestExpert"          # reports/ and the recordings of the runs

@@ -240,7 +240,7 @@ class Session:
         """The kill switch (Kill CAN, Ctrl+F9). On: CAN Expert off the bus at once, the database staying loaded -
         the session's adapter is closed (SwitchedBus), so nothing is sent or received: no TesterPresent, the
         Transmit window's messages and nodes paused, the script's frames and requests refused while it goes on
-        running; a reflash, a test run and any ECU scan stop, and so does the ECU check. Nothing opens an adapter
+        running; a reflash and any ECU scan stop, and so does the ECU check. Nothing opens an adapter
         until the switch is released: not Connect, not the ECU check, not a scan. Kept in the settings, so CAN
         Expert starts off the bus if it was left so. Off: the session's adapter is opened again and all of it goes
         on where it was; without a session, the ECU check starts again as at startup."""
@@ -291,23 +291,17 @@ class Session:
         self._update_nodes()
 
     def _stop_bus_work(self):
-        """What cannot go on off the bus: a reflash (cancelled) and a test run (stopped)."""
+        """What cannot go on off the bus: a reflash (cancelled)."""
         if self.flash_runner is not None:
             self.flash_runner.cancel()
         if self.script_runtime is not None and self.flash_dialog is not None:
             self.script_runtime.cancel_flash()
-        tests = self.tool_widget("tests")
-        if tests is not None:
-            tests.stop()
 
     def on_disconnect_clicked(self):
         self.session_generation += 1
         self._watch_keys(False)
         if self.flash_runner is not None:
             self.flash_runner.cancel()      # the bus is about to go away under it
-        tests = self.tool_widget("tests")
-        if tests is not None:
-            tests.stop()                    # the running test case ends; its mailboxes close with the worker
         self._close_flash_dialog()
         self._stop_script()             # runs @on_stop handlers, then revokes the bus
         self._ecu_seen = False          # Read, Write and Reflash go with the database

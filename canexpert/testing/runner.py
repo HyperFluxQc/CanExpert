@@ -1,7 +1,7 @@
 """
 Test modules, as CANoe has them, in Python: a file of test cases run against the live bus.
 
-    \"\"\"Checks of the Dummy ECU.\"\"\"                # the module's title in the Test window and the report
+    \"\"\"Checks of the Dummy ECU.\"\"\"                # the module's title in TestExpert and the report
 
     def setup(t):                                     # before the test cases; a failure blocks them
         t.require(DSC(0x03), "extended session")

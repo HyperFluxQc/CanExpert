@@ -33,8 +33,8 @@ class ModulesTab(QWidget):
         layout = QVBoxLayout(self)
         note = QLabel("CAN Expert's test modules run after the generated tests, each as a group: its setup "
                       "before its first test case, its teardown after its last. Their UDS functions (RDBI, "
-                      "DSC...) go through TestExpert's connection. CAN Expert's Tools → Test writes and tries "
-                      "them.")
+                      "DSC...) go through TestExpert's connection. The manual's Test modules section says how "
+                      "to write one; TestModules/dummy_ecu_checks.py is an example.")
         note.setWordWrap(True)
         layout.addWidget(note)
         layout.addWidget(QLabel("<b>Test modules</b>"))

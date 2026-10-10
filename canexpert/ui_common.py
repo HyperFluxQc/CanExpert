@@ -32,6 +32,16 @@ def app_settings() -> QSettings:
     return QSettings(ORGANIZATION, APPLICATION)
 
 
+class MemorySettings(dict):
+    """Settings kept in memory, where no QSettings is given (TestExpert's smoke test, a module's symbols)."""
+
+    def value(self, key, default=None, type=None):
+        return self.get(key, default)
+
+    def setValue(self, key, value):
+        self[key] = value
+
+
 def is_dark_theme(widget) -> bool:
     """Dark theme when the window colour is darker than the text on it. Read from the palette in use, so a
     window follows a theme change while it is open."""
@@ -191,8 +201,6 @@ _PATHS = {
                   '<rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>',
     "write": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6.5 9h7M6.5 12.5h5M6.5 16h3"/>'
              '<path d="m14 17 1-3 4.5-4.5 2 2L17 16l-3 1z"/>',
-    "tests": '<rect x="4" y="3" width="16" height="18" rx="2"/>'
-             '<path d="m7.5 8.5 1.5 1.5 3-3M14 9h3M7.5 15.5 9 17l3-3M14 16h3"/>',
     "j1939": '<rect x="2" y="6" width="12" height="10" rx="1"/><path d="M14 10h4l3 3.5V16h-7z"/>'
              '<circle cx="6.5" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/><path d="M5 11h6"/>',
     "sysvars": '<path d="M7 5c-2 0-2 2-2 3.5S4 11 3 12c1 1 2 1.5 2 3.5S5 19 7 19"/>'
@@ -231,7 +239,6 @@ _COLORS = {
     "data": ("#2563eb", "#93c5fd"),
     "statistics": ("#0e7490", "#67e8f9"),
     "write": ("#4b5563", "#d1d5db"),
-    "tests": ("#047857", "#6ee7b7"),
     "j1939": ("#9a3412", "#fdba74"),
     "sysvars": ("#9d174d", "#f9a8d4"),
     "open": ("#b45309", "#fbbf24"),

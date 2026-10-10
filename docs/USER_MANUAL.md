@@ -204,7 +204,7 @@ The main window has a toolbar and four panels:
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
 | **Log** | The application's messages, *Debug* or *Verbose*. The frames themselves are in the Trace window. |
 
-The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — open in
+The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and J1939 — open in
 the **workspace** in
 the middle, together with the Database panel, where they can be tabbed, split and floated (see
 *Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
@@ -298,7 +298,7 @@ windows stay as they are, and only the communication stops —
 - no TesterPresent; the Transmit window's messages and simulated nodes wait, still switched on;
 - what the script sends — frames, UDS requests — is refused, and the Write window says so once; the script
   goes on running;
-- a reflash, a test run and a scan stop, and so does the ECU check;
+- a reflash and a scan stop, and so does the ECU check;
 - the channel shows **[Off the bus]**, and the status bar says **Off the bus**.
 
 Nothing opens an adapter again — not Connect, not the ECU check, not a scan, not the bit rate search —
@@ -983,69 +983,6 @@ first. It has four tabs over one log.
 The frames of an exchange are in the Trace window; its **Transport** view shows each request and answer
 as one row.
 
-## Test modules
-
-**Tools → Test** runs test cases written in Python against the ECU, as CANoe's test modules do, and
-writes a report of every run. It opens `TestModules/dummy_ecu_checks.py`, the example, until you open
-another module with **Open...**; the one used last is opened again.
-
-Connect first. Tick the test cases to run and press **Run**: each one appears with its verdict — *passed*,
-*failed*, *error* (the test itself broke), *skipped* or *blocked* (what it needs could not be set up, so it
-did not run; it counts with the failures) — and under it every step with its own verdict, as it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
-still runs. The module is read again before every run, so you can edit it in any editor and run it again
-straight away (**Reload** shows the new list without running).
-
-TestExpert runs test modules too, after the tests it generates (see **TestExpert → CAN Expert's test
-modules**).
-
-Every run writes two reports into `reports/` beside the module, named after it and the time:
-an **HTML** page (**Open report**) with the verdict, the counts, and each test case's steps — the ones that
-did not pass are opened — and a **JUnit XML** file that CI servers such as Jenkins or GitLab read.
-
-A test module is a Python file:
-
-```python
-"""Dummy ECU checks"""                          # the first line is the module's title
-
-def setup(t):                                    # before the test cases; if it fails, they are skipped
-    t.require(DSC(0x01), "the ECU answers")
-
-def teardown(t):                                 # after them, also when one failed or you pressed Stop
-    DSC(0x01)
-
-@testcase("The VIN has 17 characters")           # a test case, in the order the file lists them
-def vin(t):
-    vin = RDBI(0xF190)
-    t.require(vin, "VIN read")                   # a failed require ends the test case
-    t.check_equal(len(vin.data), 17, "length")   # a failed check fails it, and the next step still runs
-
-@testcase("An unknown DID is refused")
-def unknown(t):
-    t.expect_nrc(RDBI(0x1234), 0x31)
-```
-
-`before_each(t)` and `after_each(t)` run around every test case. The UDS functions are the ones panel
-scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` offers:
-
-| | |
-|---|---|
-| `t.check(condition, "step", detail)` | A step that passes when the condition is true — a positive UDS answer is; its detail shows the request and the answer |
-| `t.check_equal(actual, expected, "step")`, `t.check_range(value, low, high, "step")` | The step's detail says what was expected and what came |
-| `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
-| `t.require(condition, "step")` | A check that ends the test case when it fails |
-| `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
-| `t.block("why")` | In `before_each`: the test case cannot run — it is *blocked* |
-| `t.warn("step", detail)` | A step that went wrong without failing the test case (a clean-up that did not work) |
-| `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
-| `t.send(0x200, [1, 2])` | Send a frame |
-| `t.marker("before the reset")` | A marker in the measurement (Trace, Logger, recording) and a line in the report |
-| `j1939.request(0xFEEC, 0x00)`, `j1939.send(pgn, data, 0x00)` | J1939, as in panel scripts: the answer (`.data`, `.source`, `.acknowledgment`) or `None` |
-| `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
-| `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
-
-A wait takes the frames that arrive after it starts — or after the test's last `t.send()`, so an answer
-that comes back before the wait begins is not missed.
-
 ## J1939
 
 **Tools → J1939** (**Ctrl+9**) is for SAE J1939 networks — trucks, buses, agricultural and construction
@@ -1139,13 +1076,12 @@ While recording, the marker goes into the file where the format has a place for 
 marker, which CANoe shows on its time axis, and an `.asc` or `.trc` a comment line. `.csv` and `.log` keep
 the frames only. A replay in CAN Expert shows the frames, not the markers.
 
-A panel script marks with `api.marker("comment")`, a test module with `t.marker("comment")` (see *Test
-modules*).
+A panel script marks with `api.marker("comment")`.
 
 ## Arranging the windows
 
 The middle of the main window is the **workspace**, where the pages of the loaded database and the
-analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — live.
+analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and J1939 — live.
 Configuration, CAN Channels and Log stay
 as fixed panels around it.
 
@@ -1421,22 +1357,69 @@ comment there, or **Remove** one. The NRC policy and the deviations are part of 
 says how many deviations the run accepted. The steps before and after the tests (the pre-run and post-run
 sequences) appear in the results as **Before the tests** and **After the tests**.
 
-### CAN Expert's test modules
+### Test modules
 
 The checks the description cannot give — a signal that must follow a request, a sequence your specification
-prescribes — can be written as CAN Expert test modules (see **Test modules**) and run in the same run as the
-generated tests. On the **Modules** tab, **Add...** the module files: each one becomes a group of the tests
-tree, after the generated groups, named after its title, and its test cases can be ticked, attached to
-sequences and accepted as deviations like any other. **Read again** reads the files again after you edited
-them (a run always reads them as they are).
+prescribes — are written as test modules: Python files of test cases, as CANoe's test modules are, run in the
+same run as the generated tests. `TestModules/dummy_ecu_checks.py` is an example against the Dummy ECU. On
+the **Modules** tab, **Add...** the module files: each one becomes a group of the tests tree, after the
+generated groups, named after its title, and its test cases can be ticked, attached to sequences and accepted
+as deviations like any other. **Read again** reads the files again after you edited them (a run always reads
+them as they are).
 
-A module runs as in CAN Expert's Test window: its `setup` before its first test case — a failure there
-**blocks** its test cases — its `before_each` and `after_each` around each one, its `teardown` after the last
-(a failure there is a warning). TestExpert puts the ECU in the default session before the module, not between
-its test cases, so they go on from where its setup left the ECU. The UDS functions (`RDBI`, `DSC`,
-`SecurityUnlock`...) go through TestExpert's connection, and what they ask counts in the coverage.
-`t.wait_for_frame()` reads the bus; add **Symbol databases** (DBC...) for `t.wait_for_signal()` and the
-frames' signals. A module that cannot be read is a test that fails, saying why.
+A module runs its `setup` before its first test case — a failure there **blocks** its test cases — its
+`before_each` and `after_each` around each one, its `teardown` after the last (a failure there is a
+warning). TestExpert puts the ECU in the default session before the module, not between its test cases, so
+they go on from where its setup left the ECU. The UDS functions (`RDBI`, `DSC`, `SecurityUnlock`...) go
+through TestExpert's connection, and what they ask counts in the coverage. `t.wait_for_frame()` reads the
+bus; add **Symbol databases** (DBC...) for `t.wait_for_signal()` and the frames' signals. A module that
+cannot be read is a test that fails, saying why.
+
+A test module is a Python file:
+
+```python
+"""Dummy ECU checks"""                          # the first line is the module's title
+
+def setup(t):                                    # before the test cases; if it fails, they are blocked
+    t.require(DSC(0x01), "the ECU answers")
+
+def teardown(t):                                 # after them, also when one failed or you pressed Stop
+    DSC(0x01)
+
+@testcase("The VIN has 17 characters")           # a test case, in the order the file lists them
+def vin(t):
+    vin = RDBI(0xF190)
+    t.require(vin, "VIN read")                   # a failed require ends the test case
+    t.check_equal(len(vin.data), 17, "length")   # a failed check fails it, and the next step still runs
+
+@testcase("An unknown DID is refused")
+def unknown(t):
+    t.expect_nrc(RDBI(0x1234), 0x31)
+```
+
+`before_each(t)` and `after_each(t)` run around every test case. The UDS functions are the ones panel
+scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` offers:
+
+| | |
+|---|---|
+| `t.check(condition, "step", detail)` | A step that passes when the condition is true — a positive UDS answer is; its detail shows the request and the answer |
+| `t.check_equal(actual, expected, "step")`, `t.check_range(value, low, high, "step")` | The step's detail says what was expected and what came |
+| `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
+| `t.require(condition, "step")` | A check that ends the test case when it fails |
+| `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
+| `t.block("why")` | In `before_each`: the test case cannot run — it is *blocked* |
+| `t.warn("step", detail)` | A step that went wrong without failing the test case (a clean-up that did not work) |
+| `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
+| `t.send(0x200, [1, 2])` | Send a frame |
+| `t.marker("before the reset")` | A line in the report, *Marker: before the reset*, with its time |
+| `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
+| `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
+
+A wait takes the frames that arrive after it starts — or after the test's last `t.send()`, so an answer
+that comes back before the wait begins is not missed.
+
+J1939 requests (`j1939.request`, `j1939.send`) are panel scripts' only: a test module has no J1939 connection
+in a TestExpert run.
 
 ### Test plans
 
@@ -1629,7 +1612,7 @@ them break security access and flashing.
 |---|---|
 | **F9** / **Shift+F9** | Connect / Disconnect |
 | **Ctrl+F9** | Kill CAN: off the bus at once — pressed again, back on |
-| **Ctrl+1** ... **Ctrl+9** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test, J1939 — the toolbar's order; pressed again, the window closes |
+| **Ctrl+1** ... **Ctrl+7**, **Ctrl+9** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, and J1939 — the toolbar's order; pressed again, the window closes |
 | **Ctrl+E** | Form Designer |
 | **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
 | **Ctrl+O** | Replay a recorded file |
@@ -1655,7 +1638,7 @@ script's `@on_key`: keys CAN Expert uses itself do not reach the script.
 | `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab and TestExpert (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts; `dummy_ecu.cdd` and `dummy_ecu_services.odx-d`: its diagnostics, for TestExpert) |
 | `TestExpert/` | TestExpert's reports (`reports/`), the traffic it recorded, and the plans you save there |
 | `examples/` | A runnable panel and script, and demo firmware images |
-| `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |
+| `TestModules/` | Test modules for TestExpert's Modules tab (`dummy_ecu_checks.py` is the example) |
 
 Recordings go wherever you save them; `.blf` is the most compact.
 
