@@ -107,7 +107,7 @@ All control types:
 | Display | Value Display (number format, decimals, DBC value-table text), 7-Segment Display, Gauge (warning/critical zones), Progress Bar (horizontal/vertical), LED (colours, blink), Multi-State Indicator (states from the DBC value table or `value=text:colour; ...`), Trend Graph, Output Box |
 | Decoration | Label, Group Box, Picture |
 
-Every control also has appearance properties (text colour, background, font size, bold, tooltip; inputs can be read-only).
+Every control also has appearance properties (text colour, background, font size, bold, tooltip; inputs can be read-only). I/O boxes are white unless given a background, in either theme.
 
 `examples/showcase_2026-09-18.xml` uses every control with `DBC/dummy_ecu.dbc`, and its **ECU information** page shows everything the Dummy ECU tells over UDS: VIN, serial number, part number, software version and calibration ID, the session, security and uptime, live values read by DID, and the fault codes with their status.
 

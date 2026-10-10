@@ -525,8 +525,8 @@ arrives. Everything the panel does is written in its Python script — see *Writ
 
 **An I/O box's value can be copied**: select it with the mouse (a double-click selects a word, Ctrl+A all
 of it) and press Ctrl+C, or right-click → Copy. What is selected stays selected while the value changes, so
-a value arriving ten times a second can be copied too. A read-only I/O box (grey) is a box of text to copy
-from; nothing is typed into it. In a box you type into, **Enter** sends what is in it; clicking elsewhere
+a value arriving ten times a second can be copied too. A read-only I/O box is a box of text to copy from;
+nothing is typed into it. In a box you type into, **Enter** sends what is in it; clicking elsewhere
 sends what you typed — not a value you only clicked into or copied. While you type, a value arriving from the
 bus or the script does not overwrite what you are typing.
 
@@ -583,8 +583,10 @@ New, Open and closing the window ask whether to save changes first.
   size, change the stacking order, undo and redo. The last selected control is the reference for aligning.
   The grid button snaps to the grid.
 - **Properties** edits the selected control: its binding, name, label, position, size and appearance.
-  **Read-only** greys an input out on the panel — but an I/O box stays text to select and copy, on a grey
-  background, and takes no typing.
+  **Read-only** greys an input out on the panel — but an I/O box stays text to select and copy, and takes no
+  typing. An I/O box is white, in the light and the dark theme, unless you give it a **Background**; on a
+  background of its own, a control's text is black or white — whichever reads on it — unless you give it a
+  **Text colour**.
 - **Format** shows a value in decimal, hex or binary — or, on an I/O box and a value display, as **ascii**:
   the characters its bytes spell. The bytes 0x31 0x30 read from the ECU show as `10`; so do a UDS answer
   (`api.ui.set_value("serial", RDBI(0xF18C))`), a list of byte values, and a DBC signal carrying text (its
