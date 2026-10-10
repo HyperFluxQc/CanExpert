@@ -216,7 +216,9 @@ meanwhile.
 buttons you do not use; tick them again, or **Show all**, to bring them back. The choice is kept for the
 next start. A hidden button's command is still in the menus, with its key. **Read**, **Write** and
 **Reflash** show only once a connected database's ECU answers, and **Flashing** only while no database is
-connected — each only if it is ticked.
+connected — each only if it is ticked. The **Write** window's button starts unticked: that window is for
+writing panel scripts (see *Writing panel scripts*), and *Tools → Write* (Ctrl+7) opens it all the same; tick
+it to have the button.
 
 Configuration, CAN Channels and Log are fixed panels around the workspace. Each has a **–** button to
 shrink it to a strip and **×** to close it; the *File* menu brings a closed one back. While a database

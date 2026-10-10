@@ -72,6 +72,9 @@ MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window and the console
 TOOLBAR_HIDDEN = "toolbar/hidden"    # settings: the toolbar buttons unticked (a JSON list)
+# The Write window - the script's output and its variables, for writing scripts - starts without a button on
+# the toolbar: Tools > Write and Ctrl+7 open it, and View > Toolbar buttons puts the button back.
+HIDDEN_AT_FIRST = ("write",)
 PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
@@ -221,7 +224,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         toolbar = QToolBar("Main actions", self)
         toolbar.setMovable(False)
         # Right-click it (or View > Toolbar buttons) to choose the buttons it shows.
-        self.toolbar_buttons = ToolbarButtons(toolbar, self._settings, TOOLBAR_HIDDEN)
+        self.toolbar_buttons = ToolbarButtons(toolbar, self._settings, TOOLBAR_HIDDEN, HIDDEN_AT_FIRST)
         toolbar.setIconSize(QSize(28, 28))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         # A checked button keeps a pressed-in background with an accent line: a style sheet that names

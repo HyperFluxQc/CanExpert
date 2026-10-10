@@ -1350,12 +1350,13 @@ def goodbye(api):
                          "right-click: the ticks")
         ticks = {action.text(): action for action in buttons.menu().actions() if action.isCheckable()}
         self.assertEqual(list(ticks), [label for label, _item in buttons.items.values()], "every button, in order")
-        self.assertTrue(all(action.isChecked() for action in ticks.values()))
+        self.assertEqual([text for text, action in ticks.items() if not action.isChecked()], ["Write"],
+                         "every one but the Write window's, hidden at first")
         trace = buttons.items["trace"][1]
         ticks["Trace"].setChecked(False)
         self.assertFalse(trace.isVisible())
         self.assertTrue(self.window._toolbar_actions["trace"].isEnabled(), "still in the Tools menu, with its key")
-        self.assertEqual(json.loads(self.settings.value("toolbar/hidden")), ["trace"])
+        self.assertEqual(json.loads(self.settings.value("toolbar/hidden")), ["trace", "write"])
         again = main.MainWindow()                                   # kept for the next start
         self.addCleanup(again.close)
         self.assertFalse(again.toolbar_buttons.items["trace"][1].isVisible())
@@ -1388,6 +1389,32 @@ def goodbye(api):
         self.assertTrue(trace.isVisible() and separators[0].isVisible())
         view = next(action.menu() for action in self.window.menuBar().actions() if action.text() == "View")
         self.assertIn("Toolbar buttons", [action.text() for action in view.actions()])
+
+    def test_the_write_window_starts_without_a_toolbar_button(self):
+        write = self.window.toolbar_buttons.items["write"][1]
+        self.assertFalse(write.isVisible(), "hidden at first")
+        action = self.window._toolbar_actions["write"]
+        tools = next(item.menu() for item in self.window.menuBar().actions() if item.text() == "Tools")
+        self.assertIn(action, tools.actions(), "Tools > Write still opens it")
+        self.assertEqual(action.shortcut().toString(), "Ctrl+7", "and so does its key")
+        action.trigger()
+        self.assertIsNotNone(self.window.tool_widget("write"))
+        self.window.toolbar_buttons.set_shown("write", True)            # ticked again: there from then on
+        again = main.MainWindow()
+        self.addCleanup(again.close)
+        self.assertTrue(again.toolbar_buttons.items["write"][1].isVisible())
+
+    def test_a_choice_of_buttons_made_before_gets_write_hidden_once(self):
+        self.settings.setValue("toolbar/hidden", json.dumps(["trace"]))   # chosen with a version without it
+        self.settings.remove("toolbar/hidden_at_first")
+        window = main.MainWindow()
+        self.addCleanup(window.close)
+        self.assertEqual(window.toolbar_buttons.hidden, {"trace", "write"}, "the choice kept, Write hidden")
+        self.assertEqual(json.loads(self.settings.value("toolbar/hidden_at_first")), ["write"])
+        window.toolbar_buttons.set_shown("write", True)
+        again = main.MainWindow()
+        self.addCleanup(again.close)
+        self.assertEqual(again.toolbar_buttons.hidden, {"trace"}, "not hidden a second time")
 
     def test_the_selected_configuration_has_an_edit_button(self):
         self.assertEqual(self.window.edit_config_btn.text(), "Edit")

@@ -89,22 +89,34 @@ def fit_new_window(window, anchor=None):
 
 class ToolbarButtons:
     """Which buttons a toolbar shows: every one unless it was unticked - right-click the toolbar, or the window's
-    View menu - and kept so in the settings (key: a JSON list of the hidden ones). A window can also take a button
-    away for a while (set_available: Reflash until a database's ECU answers); it shows again only if it is ticked.
+    View menu - and kept so in the settings (key: a JSON list of the hidden ones). hidden_at_first: buttons that
+    start unticked. Each is unticked once - also where the settings already hold a choice of buttons - and from
+    then on stays as it is left (key_at_first: the ones unticked so far). A window can also take a button away
+    for a while (set_available: Reflash until a database's ECU answers); it shows again only if it is ticked.
     Separators with nothing shown on one side go too. A hidden button's action still works from the menus and
     its key."""
 
-    def __init__(self, toolbar, settings, key):
+    def __init__(self, toolbar, settings, key, hidden_at_first=()):
         self.toolbar, self.settings, self.key = toolbar, settings, key
         self.items = {}                         # name -> (label, the toolbar's action for the button)
         self.available = {}
-        try:
-            hidden = json.loads(str(settings.value(key, "") or "[]"))
-            self.hidden = {str(name) for name in hidden} if isinstance(hidden, list) else set()
-        except ValueError:
-            self.hidden = set()
+        self.hidden = self._names(key)
+        done = self._names(f"{key}_at_first")
+        first = set(hidden_at_first) - done
+        if first:
+            self.hidden |= first
+            settings.setValue(key, json.dumps(sorted(self.hidden)))
+            settings.setValue(f"{key}_at_first", json.dumps(sorted(done | first)))
         toolbar.setContextMenuPolicy(Qt.CustomContextMenu)
         toolbar.customContextMenuRequested.connect(lambda pos: self.menu().exec_(toolbar.mapToGlobal(pos)))
+
+    def _names(self, key) -> set:
+        """The names a setting holds as a JSON list; none when it holds nothing, or something else."""
+        try:
+            names = json.loads(str(self.settings.value(key, "") or "[]"))
+        except ValueError:
+            return set()
+        return {str(name) for name in names} if isinstance(names, list) else set()
 
     def add(self, name, label, item):
         """A button of the toolbar: item is what QToolBar.addWidget() returned for it."""
