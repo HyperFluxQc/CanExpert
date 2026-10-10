@@ -935,7 +935,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
 def startup_problems() -> list[str]:
     """What a built CAN Expert would miss at run time (--smoke-test): the manual, the icon, the example DBC
     read by cantools, a python-can bus, odxtools, pyqtgraph and numpy - the last three imported only when first
-    used, so a build without them would start all the same. An empty list when all is there."""
+    used, so a build without them would start all the same - and a graph drawn: the build leaves Qt's OpenGL
+    parts out. An empty list when all is there."""
     from canexpert.paths import DBC_DIR, DOCS_DIR
     problems = []
     if not (DOCS_DIR / "USER_MANUAL.md").exists():
@@ -957,6 +958,15 @@ def startup_problems() -> list[str]:
             __import__(module)                  # imported only to see that it is there
         except Exception as exc:
             problems.append(f"{module}: {exc}")
+    try:
+        import pyqtgraph                        # a graph drawn, as the trends and the CAN Logger draw theirs
+        plot = pyqtgraph.PlotWidget()
+        plot.plot([0, 1, 2], [0, 1, 0])
+        if plot.grab().isNull():
+            problems.append("pyqtgraph: a graph could not be drawn")
+        plot.deleteLater()
+    except Exception as exc:
+        problems.append(f"pyqtgraph drawing: {exc}")
     return problems
 
 

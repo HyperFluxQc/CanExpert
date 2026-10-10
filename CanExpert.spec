@@ -23,6 +23,23 @@ for _distribution in ("python-can", "cantools", "odxtools", "pyqtgraph", "PyQtAd
     DATA += copy_metadata(_distribution)
 # python-can opens its interfaces by name at run time, so the analysis cannot see them.
 HIDDEN = collect_submodules("can.interfaces")
+# Qt parts CAN Expert does not use - some 40 MB of the 140: OpenGL (Qt's software fallback and ANGLE; the programs
+# draw with QPainter, without OpenGL), the WebGL platform plugin with the Qt Quick, QML and network libraries it
+# brings, the plugins of TUIO touch over the network and of the Linux desktop portal with theirs, and Qt's
+# translations, which nothing loads. The build's smoke test starts each program and draws a graph without them.
+UNUSED = {"opengl32sw.dll", "d3dcompiler_47.dll", "libglesv2.dll", "libegl.dll", "qt5quick.dll", "qt5qml.dll",
+          "qt5qmlmodels.dll", "qt5websockets.dll", "qt5network.dll", "qt5dbus.dll", "qwebgl.dll",
+          "qtuiotouchplugin.dll", "qxdgdesktopportal.dll"}
+
+
+def lean(toc):
+    """A table of contents without what CAN Expert does not use (UNUSED, Qt's translations)."""
+    kept = []
+    for entry in toc:
+        name = entry[0].replace("\\", "/").lower()
+        if name.rsplit("/", 1)[-1] not in UNUSED and "qt5/translations/" not in name:
+            kept.append(entry)
+    return kept
 
 
 def version_resource(description, name):
@@ -42,6 +59,7 @@ def version_resource(description, name):
 def program(script, name, icon, description):
     analysis = Analysis([str(ROOT / script)], pathex=[str(ROOT)], datas=DATA, hiddenimports=HIDDEN,
                         excludes=["tkinter", "PySide2", "PySide6", "PyQt6"], noarchive=False)
+    analysis.binaries, analysis.datas = lean(analysis.binaries), lean(analysis.datas)
     executable = EXE(PYZ(analysis.pure), analysis.scripts, [], exclude_binaries=True, name=name,
                      icon=str(ROOT / "canexpert" / "resources" / icon), console=False,
                      version=version_resource(description, name) if sys.platform == "win32" else None,

@@ -95,6 +95,13 @@ class PackagingTest(unittest.TestCase):
         self.assertIn('"docs/images"', spec, "the manual's pictures go with it")
         build = (ROOT / "tools" / "build_windows.py").read_text(encoding="utf-8")
         self.assertIn('"CanExpert.exe", "DummyECU.exe", "TestExpert.exe"', build)
+        # What the programs do not use stays out - but never what they need: Qt's core, widgets and the Windows
+        # platform plugin.
+        self.assertIn("analysis.binaries, analysis.datas = lean(analysis.binaries), lean(analysis.datas)", spec)
+        unused = set(re.findall(r'"([\w.]+\.dll)"', spec[spec.index("UNUSED"):spec.index("def lean")]))
+        self.assertIn("opengl32sw.dll", unused)
+        self.assertFalse(unused & {"qt5core.dll", "qt5gui.dll", "qt5widgets.dll", "qt5svg.dll", "qwindows.dll",
+                                   "qoffscreen.dll"})
 
 
 class StartupTest(unittest.TestCase):
