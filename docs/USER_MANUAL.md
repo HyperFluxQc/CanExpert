@@ -1584,6 +1584,15 @@ image — as the check routine's option record, which the built-in flashing sequ
 in the image's last four bytes — and the software version can be read from the image itself (the demo
 image has its name at `00020000`).
 
+After a good flash `F195` reports `APP-FLASHED-<crc32>`, or the version found in the image. **Save memory as
+S-record...** (or **Save image to** on the Flashing tab) writes what was received to a file, and
+RequestUpload (`0x35`) reads it back over UDS.
+
+**How big are the TransferData blocks?** The ECU decides: it announces maxNumberOfBlockLength (the data,
+plus the `0x36` service byte and the block counter) in its RequestDownload response, and the tester sends
+blocks of that size minus 2. Set **Data per TransferData** to 256 or 512 to get `74 20 01 02` or
+`74 20 02 02`; the built-in sequence and the example `Flashing()` follow it.
+
 ### J1939
 
 On **Addressing**, **A J1939 node as well** makes the dummy ECU a J1939 node beside its UDS side: it claims its
@@ -1609,6 +1618,20 @@ Expert's node list while the other requests go wrong.
 Several dummy ECUs can share a channel when each has its own identifiers (Addressing) and only one sends
 the application frames. A second ECU answering the *same* requests is refused, because two ECUs answering
 them break security access and flashing.
+
+### Without its window
+
+`--console` runs the Dummy ECU in a terminal, with the settings of a profile saved from its window if you
+give one:
+
+```bash
+python dummy_ecu.py --console --channel 1 --config my_ecu.json
+```
+
+Its options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--response-id`, `--functional-id`,
+`--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--block-size`, `--stmin`, `--fc-wait`,
+`--erase-seconds`, `--dbc FILE`, `--no-broadcast`, `--dump FILE` and `--force`. Given without `--console`,
+they preset the window. `python dummy_ecu.py --help` explains each one.
 
 ## Keyboard shortcuts
 

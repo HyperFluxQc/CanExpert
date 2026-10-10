@@ -141,7 +141,7 @@ def main_window_pictures(studio, wanted):
     window.selected_channel_config = {"interface": "virtual", "channel": CHANNEL}
     dbc = studio.folder / "DBC" / "dummy_ecu.dbc"
     window.symbols.set_paths([str(dbc)])
-    window.resize(1280, 760)                    # every toolbar button in view
+    window.resize(1380, 760)                    # every toolbar button in view, Read, Write and Reflash too
     window.show()
     settle(0.5)
 

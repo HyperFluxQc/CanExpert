@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PyQt5.QtCore import QUrl
-from PyQt5.QtGui import QTextDocument
+from PyQt5.QtGui import QImage, QTextDocument
 from PyQt5.QtWidgets import QApplication
 
 from canexpert import help_window
@@ -78,7 +78,9 @@ class UserManualTest(unittest.TestCase):
         window.resize(1600, 900)                                             # wider: made again, never larger
         APP.processEvents()
         window.browser.fit_images()
-        self.assertTrue(all(image.width() <= 1280 for _p, _l, image in window.browser.images()))
+        for _position, _length, image in window.browser.images():
+            natural = QImage(str(MANUAL.parent / image.name().rsplit("@", 1)[0])).width()
+            self.assertLessEqual(image.width(), natural, image.name())
         opened = []
         with patch.object(help_window.QDesktopServices, "openUrl", opened.append):
             window.browser.picture_clicked.emit("images/trace.png")          # a click on a picture
