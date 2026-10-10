@@ -24,7 +24,10 @@ The things done most often, step by step. Each one ends with the section that te
 2. Choose its interface and channel — **Detect** lists them; with the Kvaser virtual driver, `kvaser`
    channel `1` — and press **Connect**.
 3. In CAN Expert, pick the **Dummy ECU** configuration, select `[kvaser] Ch 0` in **CAN Channels** and
-   press **Connect**. The showcase panel opens: flip **Run** and the engine warms up.
+   press **Connect**. The showcase panel opens: flip **Run** and the engine warms up. Its **ECU
+   information** page shows what the ECU tells over UDS — the VIN, serial number, part number and software
+   version, the session, security and uptime, live values read by DID and the fault codes; **Read** on the
+   toolbar reads it all again, **Unlock** opens the calibration ID, and **Live** refreshes it every second.
 
 [![The Dummy ECU window](images/dummy_ecu.png)](images/dummy_ecu.png)
 
@@ -153,6 +156,9 @@ More in *Building a form*, under *Form Designer*.
 2. On the **Form** tab, drop a **Variable List** and choose the variable in Properties.
 3. **Test panel...** (or connect): **Read** fills the list; double-click a value to change it; **Write** sends
    the variable back. Writing usually needs the extended session and, for memory, security access.
+4. For one button that does it all, give the script a `Read(api)` and a `Write(api)`: the toolbar's **Read**
+   and **Write** run them (see *Read, Write and Reflash*). The calibration example's take both variables at
+   once, its `Write()` taking the extended session and security access itself.
 
 [![A Variable List read from the Dummy ECU](images/variables.png)](images/variables.png)
 
@@ -198,7 +204,7 @@ The main window has a toolbar and four panels:
 | **Database** | The panel of the loaded database, with its controls. It appears once you connect. |
 | **Log** | The application's messages, *Debug* or *Verbose*. The frames themselves are in the Trace window. |
 
-The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — open in
+The tool windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and J1939 — open in
 the **workspace** in
 the middle, together with the Database panel, where they can be tabbed, split and floated (see
 *Arranging the windows*). Their toolbar buttons are switches: the button **stays pressed in** while its
@@ -208,8 +214,11 @@ meanwhile.
 
 **Choosing the toolbar's buttons** — right-click the toolbar (or *View → Toolbar buttons*) and untick the
 buttons you do not use; tick them again, or **Show all**, to bring them back. The choice is kept for the
-next start. A hidden button's command is still in the menus, with its key. **Flashing** shows only while
-connected — and only if it is ticked.
+next start. A hidden button's command is still in the menus, with its key. **Read**, **Write** and
+**Reflash** show only once a connected database's ECU answers, and **Flashing** only while no database is
+connected — each only if it is ticked. The **Write** window's button starts unticked: that window is for
+writing panel scripts (see *Writing panel scripts*), and *Tools → Write* (Ctrl+7) opens it all the same; tick
+it to have the button.
 
 Configuration, CAN Channels and Log are fixed panels around the workspace. Each has a **–** button to
 shrink it to a strip and **×** to close it; the *File* menu brings a closed one back. While a database
@@ -291,7 +300,7 @@ windows stay as they are, and only the communication stops —
 - no TesterPresent; the Transmit window's messages and simulated nodes wait, still switched on;
 - what the script sends — frames, UDS requests — is refused, and the Write window says so once; the script
   goes on running;
-- a reflash, a test run and a scan stop, and so does the ECU check;
+- a reflash and a scan stop, and so does the ECU check;
 - the channel shows **[Off the bus]**, and the status bar says **Off the bus**.
 
 Nothing opens an adapter again — not Connect, not the ECU check, not a scan, not the bit rate search —
@@ -320,6 +329,33 @@ measurement started (**Relative**) for the lines of the Write window and the UDS
 starts when you connect, start the ECU check or replay a file, and the Trace's *Relative* time and the
 CAN Logger's time axis count from the same moment, so a line in the console, a row in the Trace and a
 point on a graph line up.
+
+### Read, Write and Reflash
+
+Beside **Kill CAN** is a group of three buttons that belong to the database:
+
+| | |
+|---|---|
+| **Read** | Runs the database script's `Read(api)` — whatever reading the ECU means for that panel. |
+| **Write** | Runs the database script's `Write(api)`. |
+| **Reflash** | Flashes the ECU over the database: with the script's `Flashing(api, firmware)` or the built-in sequence (see *Firmware flashing*). |
+
+They appear once a database is connected **and** its ECU has answered. They are greyed out while the ECU
+does not answer — *Lost connection* in CAN Channels, or off the bus with Kill CAN — and while one of them,
+or a flashing, runs; they are back as soon as it answers again. Disconnect, and they go.
+
+Each of them **refreshes the database** first. When the Databases folder holds a newer one of the
+configuration's family — a later date in its name — or the loaded one was saved since, its panel or its
+script (from the Form Designer, say), that one is loaded in its place before the command runs. The session
+goes on meanwhile: the adapter stays open and TesterPresent keeps the ECU in its session; the panel is
+built again and the new script started, the old one's `@on_stop` handlers first. The Log says *Database
+refreshed*. When nothing is newer, nothing restarts. A newer database that cannot be loaded leaves the
+loaded one running: the Panel check window says why, and the command is not run.
+
+How it ended is in the status bar — *Read complete — showcase_2026-10-01.xml*, with the database that ran
+it — in the Write window, and in the Log when it failed. `Read` and `Write` fail when they return `False`
+or a negative answer of the ECU, or raise an error; a script without them says so, and so does the
+button's tooltip. See *Writing panel scripts*.
 
 ### Checking ECUs
 
@@ -491,8 +527,8 @@ arrives. Everything the panel does is written in its Python script — see *Writ
 
 **An I/O box's value can be copied**: select it with the mouse (a double-click selects a word, Ctrl+A all
 of it) and press Ctrl+C, or right-click → Copy. What is selected stays selected while the value changes, so
-a value arriving ten times a second can be copied too. A read-only I/O box (grey) is a box of text to copy
-from; nothing is typed into it. In a box you type into, **Enter** sends what is in it; clicking elsewhere
+a value arriving ten times a second can be copied too. A read-only I/O box is a box of text to copy from;
+nothing is typed into it. In a box you type into, **Enter** sends what is in it; clicking elsewhere
 sends what you typed — not a value you only clicked into or copied. While you type, a value arriving from the
 bus or the script does not overwrite what you are typing.
 
@@ -549,8 +585,10 @@ New, Open and closing the window ask whether to save changes first.
   size, change the stacking order, undo and redo. The last selected control is the reference for aligning.
   The grid button snaps to the grid.
 - **Properties** edits the selected control: its binding, name, label, position, size and appearance.
-  **Read-only** greys an input out on the panel — but an I/O box stays text to select and copy, on a grey
-  background, and takes no typing.
+  **Read-only** greys an input out on the panel — but an I/O box stays text to select and copy, and takes no
+  typing. An I/O box is white, in the light and the dark theme, unless you give it a **Background**; on a
+  background of its own, a control's text is black or white — whichever reads on it — unless you give it a
+  **Text colour**.
 - **Format** shows a value in decimal, hex or binary — or, on an I/O box and a value display, as **ascii**:
   the characters its bytes spell. The bytes 0x31 0x30 read from the ECU show as `10`; so do a UDS answer
   (`api.ui.set_value("serial", RDBI(0xF18C))`), a list of byte values, and a DBC signal carrying text (its
@@ -690,9 +728,10 @@ warnings do not stop it. **Open** says why a file cannot be opened — the line,
 probably meant — and a file that opens with problems lists them, ready to put right and save.
 
 **Test panel...** runs the panel against a simulated ECU on a virtual bus, without touching your hardware.
-Its **Flashing...** opens the same dialog as the main window's Flashing button (see *Firmware flashing*):
+Its **Flashing...** opens the same dialog as the main window's Reflash button (see *Firmware flashing*):
 the script's `Flashing` when it defines one, or the built-in sequence, with its settings, progress and
-report.
+report. Its **Read** and **Write** run the script's `Read` and `Write` as the main window's buttons do, and
+the window's log says how they ended.
 
 ## Writing panel scripts
 
@@ -762,6 +801,22 @@ def typed(api, variable, field):           # field: "Axis", "FOC[3]"
 ```
 
 A value that does not fit its type (`calib.Axis = -1` for a `uint32`) raises an error that says so.
+
+The toolbar's **Read** and **Write** run the script's `Read` and `Write` (see *Read, Write and Reflash*),
+and **Reflash** its `Flashing(api, firmware)` (see *Firmware flashing*):
+
+```python
+def Read(api):                             # the toolbar's Read
+    api.ui.set_value("vin", RDBI(0xF190).text)
+    return api.var("Calib Data").read()    # False, a negative answer or an error: it failed
+
+def Write(api):                            # the toolbar's Write
+    DSC(0x03)
+    SecurityUnlock(0x01, lambda seed: bytes(b ^ 0xA5 for b in seed))
+    return api.var("Calib Data").write()
+```
+
+They run on the script's thread, after the events that came before them.
 
 Every ISO 14229 service is available as a function: `RDBI(0xF190)` sends `22 F1 90` and returns a result
 that is true for a positive response, with `.data`, `.text`, `.int`, `.hex()`, `.nrc` and `.error`.
@@ -932,69 +987,6 @@ first. It has four tabs over one log.
 The frames of an exchange are in the Trace window; its **Transport** view shows each request and answer
 as one row.
 
-## Test modules
-
-**Tools → Test** runs test cases written in Python against the ECU, as CANoe's test modules do, and
-writes a report of every run. It opens `TestModules/dummy_ecu_checks.py`, the example, until you open
-another module with **Open...**; the one used last is opened again.
-
-Connect first. Tick the test cases to run and press **Run**: each one appears with its verdict — *passed*,
-*failed*, *error* (the test itself broke), *skipped* or *blocked* (what it needs could not be set up, so it
-did not run; it counts with the failures) — and under it every step with its own verdict, as it happens. **Stop** ends the run after the current step; the rest are skipped, but the module's clean-up
-still runs. The module is read again before every run, so you can edit it in any editor and run it again
-straight away (**Reload** shows the new list without running).
-
-TestExpert runs test modules too, after the tests it generates (see **TestExpert → CAN Expert's test
-modules**).
-
-Every run writes two reports into `reports/` beside the module, named after it and the time:
-an **HTML** page (**Open report**) with the verdict, the counts, and each test case's steps — the ones that
-did not pass are opened — and a **JUnit XML** file that CI servers such as Jenkins or GitLab read.
-
-A test module is a Python file:
-
-```python
-"""Dummy ECU checks"""                          # the first line is the module's title
-
-def setup(t):                                    # before the test cases; if it fails, they are skipped
-    t.require(DSC(0x01), "the ECU answers")
-
-def teardown(t):                                 # after them, also when one failed or you pressed Stop
-    DSC(0x01)
-
-@testcase("The VIN has 17 characters")           # a test case, in the order the file lists them
-def vin(t):
-    vin = RDBI(0xF190)
-    t.require(vin, "VIN read")                   # a failed require ends the test case
-    t.check_equal(len(vin.data), 17, "length")   # a failed check fails it, and the next step still runs
-
-@testcase("An unknown DID is refused")
-def unknown(t):
-    t.expect_nrc(RDBI(0x1234), 0x31)
-```
-
-`before_each(t)` and `after_each(t)` run around every test case. The UDS functions are the ones panel
-scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` offers:
-
-| | |
-|---|---|
-| `t.check(condition, "step", detail)` | A step that passes when the condition is true — a positive UDS answer is; its detail shows the request and the answer |
-| `t.check_equal(actual, expected, "step")`, `t.check_range(value, low, high, "step")` | The step's detail says what was expected and what came |
-| `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
-| `t.require(condition, "step")` | A check that ends the test case when it fails |
-| `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
-| `t.block("why")` | In `before_each`: the test case cannot run — it is *blocked* |
-| `t.warn("step", detail)` | A step that went wrong without failing the test case (a clean-up that did not work) |
-| `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
-| `t.send(0x200, [1, 2])` | Send a frame |
-| `t.marker("before the reset")` | A marker in the measurement (Trace, Logger, recording) and a line in the report |
-| `j1939.request(0xFEEC, 0x00)`, `j1939.send(pgn, data, 0x00)` | J1939, as in panel scripts: the answer (`.data`, `.source`, `.acknowledgment`) or `None` |
-| `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
-| `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
-
-A wait takes the frames that arrive after it starts — or after the test's last `t.send()`, so an answer
-that comes back before the wait begins is not missed.
-
 ## J1939
 
 **Tools → J1939** (**Ctrl+9**) is for SAE J1939 networks — trucks, buses, agricultural and construction
@@ -1022,11 +1014,18 @@ traffic by parameter group, and the CAN Logger plots the signals of a J1939 DBC 
 
 ## Firmware flashing
 
-While connected, the **Flashing** toolbar button appears. There are two ways to flash, and the button
-offers whichever are available.
+Two toolbar buttons flash an ECU:
 
-1. Press **Flashing** and choose an S-record (`.s19`, `.s28`, `.s37`) or Intel HEX (`.hex`) file.
-2. The dialog lists the file, its size and the address ranges to be written, and asks how to flash it:
+- **Reflash**, while a database is connected and its ECU answers (see *Read, Write and Reflash*). It
+  refreshes the database first, then offers both ways of flashing below.
+- **Flashing**, while no database is connected. It flashes with the built-in sequence over the ECU check of
+  the chosen receiver (see *Checking ECUs*), to the ECU of the configuration the check uses: double-click
+  a receiver first — the button is greyed out until its ECUs are being checked.
+
+1. Press **Reflash** (or **Flashing**) and choose an S-record (`.s19`, `.s28`, `.s37`) or Intel HEX (`.hex`)
+   file.
+2. The dialog names the ECU — the configuration, with its request and response identifiers — lists the
+   file, its size and the address ranges to be written, and asks how to flash it:
    - **With the panel script's `Flashing(api, firmware)`** — offered when the loaded database's script
      defines one. What happens is then entirely up to the script, which is the way to handle a
      bootloader that does something unusual.
@@ -1081,13 +1080,12 @@ While recording, the marker goes into the file where the format has a place for 
 marker, which CANoe shows on its time axis, and an `.asc` or `.trc` a comment line. `.csv` and `.log` keep
 the frames only. A replay in CAN Expert shows the frames, not the markers.
 
-A panel script marks with `api.marker("comment")`, a test module with `t.marker("comment")` (see *Test
-modules*).
+A panel script marks with `api.marker("comment")`.
 
 ## Arranging the windows
 
 The middle of the main window is the **workspace**, where the pages of the loaded database and the
-analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and Test — live.
+analysis windows — Trace, Statistics, Data, CAN Logger, Transmit, UDS Console, Write and J1939 — live.
 Configuration, CAN Channels and Log stay
 as fixed panels around it.
 
@@ -1363,22 +1361,69 @@ comment there, or **Remove** one. The NRC policy and the deviations are part of 
 says how many deviations the run accepted. The steps before and after the tests (the pre-run and post-run
 sequences) appear in the results as **Before the tests** and **After the tests**.
 
-### CAN Expert's test modules
+### Test modules
 
 The checks the description cannot give — a signal that must follow a request, a sequence your specification
-prescribes — can be written as CAN Expert test modules (see **Test modules**) and run in the same run as the
-generated tests. On the **Modules** tab, **Add...** the module files: each one becomes a group of the tests
-tree, after the generated groups, named after its title, and its test cases can be ticked, attached to
-sequences and accepted as deviations like any other. **Read again** reads the files again after you edited
-them (a run always reads them as they are).
+prescribes — are written as test modules: Python files of test cases, as CANoe's test modules are, run in the
+same run as the generated tests. `TestModules/dummy_ecu_checks.py` is an example against the Dummy ECU. On
+the **Modules** tab, **Add...** the module files: each one becomes a group of the tests tree, after the
+generated groups, named after its title, and its test cases can be ticked, attached to sequences and accepted
+as deviations like any other. **Read again** reads the files again after you edited them (a run always reads
+them as they are).
 
-A module runs as in CAN Expert's Test window: its `setup` before its first test case — a failure there
-**blocks** its test cases — its `before_each` and `after_each` around each one, its `teardown` after the last
-(a failure there is a warning). TestExpert puts the ECU in the default session before the module, not between
-its test cases, so they go on from where its setup left the ECU. The UDS functions (`RDBI`, `DSC`,
-`SecurityUnlock`...) go through TestExpert's connection, and what they ask counts in the coverage.
-`t.wait_for_frame()` reads the bus; add **Symbol databases** (DBC...) for `t.wait_for_signal()` and the
-frames' signals. A module that cannot be read is a test that fails, saying why.
+A module runs its `setup` before its first test case — a failure there **blocks** its test cases — its
+`before_each` and `after_each` around each one, its `teardown` after the last (a failure there is a
+warning). TestExpert puts the ECU in the default session before the module, not between its test cases, so
+they go on from where its setup left the ECU. The UDS functions (`RDBI`, `DSC`, `SecurityUnlock`...) go
+through TestExpert's connection, and what they ask counts in the coverage. `t.wait_for_frame()` reads the
+bus; add **Symbol databases** (DBC...) for `t.wait_for_signal()` and the frames' signals. A module that
+cannot be read is a test that fails, saying why.
+
+A test module is a Python file:
+
+```python
+"""Dummy ECU checks"""                          # the first line is the module's title
+
+def setup(t):                                    # before the test cases; if it fails, they are blocked
+    t.require(DSC(0x01), "the ECU answers")
+
+def teardown(t):                                 # after them, also when one failed or you pressed Stop
+    DSC(0x01)
+
+@testcase("The VIN has 17 characters")           # a test case, in the order the file lists them
+def vin(t):
+    vin = RDBI(0xF190)
+    t.require(vin, "VIN read")                   # a failed require ends the test case
+    t.check_equal(len(vin.data), 17, "length")   # a failed check fails it, and the next step still runs
+
+@testcase("An unknown DID is refused")
+def unknown(t):
+    t.expect_nrc(RDBI(0x1234), 0x31)
+```
+
+`before_each(t)` and `after_each(t)` run around every test case. The UDS functions are the ones panel
+scripts use (`RDBI`, `DSC`, `SecurityUnlock`, `UDS("22 F1 90")`...). What `t` offers:
+
+| | |
+|---|---|
+| `t.check(condition, "step", detail)` | A step that passes when the condition is true — a positive UDS answer is; its detail shows the request and the answer |
+| `t.check_equal(actual, expected, "step")`, `t.check_range(value, low, high, "step")` | The step's detail says what was expected and what came |
+| `t.expect_nrc(result, 0x31, "step")` | Passes when the ECU answered with that negative response code |
+| `t.require(condition, "step")` | A check that ends the test case when it fails |
+| `t.fail("why")`, `t.skip("why")`, `t.log("text")` | Fail or skip the test case; a line in the report without a verdict |
+| `t.block("why")` | In `before_each`: the test case cannot run — it is *blocked* |
+| `t.warn("step", detail)` | A step that went wrong without failing the test case (a clean-up that did not work) |
+| `t.wait(seconds)` | Wait, and stop at once when Stop is pressed |
+| `t.send(0x200, [1, 2])` | Send a frame |
+| `t.marker("before the reset")` | A line in the report, *Marker: before the reset*, with its time |
+| `t.wait_for_frame(0x300, timeout=2)` | The next frame of that identifier (`frame.data`, `frame.signals` decoded with the symbol databases), or `None` |
+| `t.wait_for_signal("EngineData.Temperature", lambda value: value > 80, timeout=5)` | The value of the signal in the next frame that carries it (and meets the condition), or `None` |
+
+A wait takes the frames that arrive after it starts — or after the test's last `t.send()`, so an answer
+that comes back before the wait begins is not missed.
+
+J1939 requests (`j1939.request`, `j1939.send`) are panel scripts' only: a test module has no J1939 connection
+in a TestExpert run.
 
 ### Test plans
 
@@ -1539,6 +1584,15 @@ image — as the check routine's option record, which the built-in flashing sequ
 in the image's last four bytes — and the software version can be read from the image itself (the demo
 image has its name at `00020000`).
 
+After a good flash `F195` reports `APP-FLASHED-<crc32>`, or the version found in the image. **Save memory as
+S-record...** (or **Save image to** on the Flashing tab) writes what was received to a file, and
+RequestUpload (`0x35`) reads it back over UDS.
+
+**How big are the TransferData blocks?** The ECU decides: it announces maxNumberOfBlockLength (the data,
+plus the `0x36` service byte and the block counter) in its RequestDownload response, and the tester sends
+blocks of that size minus 2. Set **Data per TransferData** to 256 or 512 to get `74 20 01 02` or
+`74 20 02 02`; the built-in sequence and the example `Flashing()` follow it.
+
 ### J1939
 
 On **Addressing**, **A J1939 node as well** makes the dummy ECU a J1939 node beside its UDS side: it claims its
@@ -1565,13 +1619,27 @@ Several dummy ECUs can share a channel when each has its own identifiers (Addres
 the application frames. A second ECU answering the *same* requests is refused, because two ECUs answering
 them break security access and flashing.
 
+### Without its window
+
+`--console` runs the Dummy ECU in a terminal, with the settings of a profile saved from its window if you
+give one:
+
+```bash
+python dummy_ecu.py --console --channel 1 --config my_ecu.json
+```
+
+Its options: `--interface`, `--channel`, `--bitrate`, `--request-id`, `--response-id`, `--functional-id`,
+`--extended-ids` (29-bit), `--address-byte`, `--max-block`, `--block-size`, `--stmin`, `--fc-wait`,
+`--erase-seconds`, `--dbc FILE`, `--no-broadcast`, `--dump FILE` and `--force`. Given without `--console`,
+they preset the window. `python dummy_ecu.py --help` explains each one.
+
 ## Keyboard shortcuts
 
 | Key | Does |
 |---|---|
 | **F9** / **Shift+F9** | Connect / Disconnect |
 | **Ctrl+F9** | Kill CAN: off the bus at once — pressed again, back on |
-| **Ctrl+1** ... **Ctrl+9** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, Test, J1939 — the toolbar's order; pressed again, the window closes |
+| **Ctrl+1** ... **Ctrl+7**, **Ctrl+9** | Trace, CAN Logger, Data, Statistics, Transmit, UDS Console, Write, and J1939 — the toolbar's order; pressed again, the window closes |
 | **Ctrl+E** | Form Designer |
 | **Ctrl+R** / **Ctrl+Shift+R** | Record to a file / Stop recording |
 | **Ctrl+O** | Replay a recorded file |
@@ -1597,7 +1665,7 @@ script's `@on_key`: keys CAN Expert uses itself do not reach the script.
 | `ODX/` | ODX, PDX and CDD files for the UDS Console's ODX tab and TestExpert (`dummy_ecu.odx-d`: the Dummy ECU's DTC texts; `dummy_ecu.cdd` and `dummy_ecu_services.odx-d`: its diagnostics, for TestExpert) |
 | `TestExpert/` | TestExpert's reports (`reports/`), the traffic it recorded, and the plans you save there |
 | `examples/` | A runnable panel and script, and demo firmware images |
-| `TestModules/` | Test modules for the Test window (`dummy_ecu_checks.py` is the example); each run's reports go to `reports/` beside the module |
+| `TestModules/` | Test modules for TestExpert's Modules tab (`dummy_ecu_checks.py` is the example) |
 
 Recordings go wherever you save them; `.blf` is the most compact.
 
@@ -1625,8 +1693,12 @@ problems before you connect.
 **The Trace shows identifiers but no names** — no symbol database describes those messages. Add the DBC
 under *Tools → Symbol databases...*.
 
-**The Flashing button stays greyed out** — flashing needs a connection; connect first. A script without
-`Flashing(api, firmware)` only means the built-in sequence is the one offered.
+**Read, Write and Reflash are not on the toolbar** — they appear once a database is connected and its
+ECU has answered; greyed out, the ECU does not answer (or CAN Expert is off the bus). A script without
+`Flashing(api, firmware)` only means Reflash offers the built-in sequence.
+
+**The Flashing button stays greyed out** — without a database, it flashes over the ECU check: double-click a
+receiver in CAN Channels so its ECUs are checked. With a database connected, **Reflash** flashes instead.
 
 **Graphs stay empty** — the Logger only draws signals from the loaded DBC that are actually received, and
 only while you are connected.

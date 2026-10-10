@@ -189,8 +189,10 @@ def format_value(value, data):
     return f"{text} {unit}" if unit and fmt not in ("hex", "binary") else text
 
 
-def apply_appearance(widget, data, interactive):
-    """Font, colours, tooltip and read-only state shared by every control."""
+def apply_appearance(widget, data, interactive, default_background=""):
+    """Font, colours, tooltip and read-only state shared by every control. default_background: the control's
+    background when it is given none (an I/O box's white, in either theme). On a background, the text is black
+    or white - whichever reads on it - unless a colour is given."""
     font = QFont(widget.font())
     size = num(data, "font_size", 0)
     if size > 0:
@@ -200,24 +202,26 @@ def apply_appearance(widget, data, interactive):
     if data.get("tooltip"):
         widget.setToolTip(str(data["tooltip"]))
     palette = widget.palette()
+    background = QColor(str(data.get("background") or ""))
+    if not background.isValid():
+        background = QColor(default_background)
     text_colour = QColor(str(data.get("text_color") or ""))
-    if data.get("text_color") and text_colour.isValid():
+    if not text_colour.isValid() and background.isValid():
+        text_colour = QColor(Qt.black if background.lightness() >= 128 else Qt.white)
+    if text_colour.isValid():
         for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
             palette.setColor(role, text_colour)
-    background = QColor(str(data.get("background") or ""))
-    if data.get("background") and background.isValid():
+        placeholder = QColor(text_colour)          # an empty I/O box's label, fainter than a value
+        placeholder.setAlpha(128)
+        palette.setColor(QPalette.PlaceholderText, placeholder)
+    if background.isValid():
         for role in (QPalette.Window, QPalette.Base, QPalette.Button):
             palette.setColor(role, background)
         widget.setAutoFillBackground(True)
     widget.setPalette(palette)
     if interactive and flag(data, "read_only"):
         if isinstance(widget, QLineEdit):
-            # An I/O box's value stays text to select and copy; it takes no typing, and the background of a
-            # display tells it apart from a box to type into.
-            widget.setReadOnly(True)
-            if not (data.get("background") and background.isValid()):
-                palette.setColor(QPalette.Base, palette.color(QPalette.Window))
-                widget.setPalette(palette)
+            widget.setReadOnly(True)               # an I/O box's value stays text to select and copy
         else:
             widget.setEnabled(False)
 
@@ -803,6 +807,7 @@ class Control:
     in_palette = True
     event = "changed"            # handler name suffix: on_<name>_<event>
     props = ()
+    background = ""              # its background when the panel gives it none ("": the theme's)
 
     def defaults(self):
         values = {prop.key: prop.default for prop in self.props}
@@ -984,6 +989,7 @@ class Spin(Control):
 
 class IoBox(Control):
     kind, label, category, group, interactive = "io_box", "I/O Box", "Input", "io_boxes", True
+    background = "#ffffff"       # white in either theme, read-only or not, unless the panel gives another
     props = (Prop("unit", "Unit"), Prop("value_type", "Value type", "choice", "float", ("float", "integer", "string")),
              *TEXT_FORMAT)
 
@@ -1282,5 +1288,5 @@ def build(kind, data, ctx=None):
     """Create a configured control widget (unknown kinds fall back to a label)."""
     control = CONTROLS.get(kind) or CONTROLS["label"]
     widget = control.create(data, ctx or {})
-    apply_appearance(widget, data, control.interactive)
+    apply_appearance(widget, data, control.interactive, control.background)
     return control, widget

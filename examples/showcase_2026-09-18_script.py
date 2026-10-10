@@ -3,7 +3,10 @@
 Run it against dummy_ecu.py (or with the Form Designer's "Test panel..." button): the Run switch
 starts the simulated engine, the gauge, 7-segment display and trend follow the temperature, the
 indicator shows the diagnostic session from the DBC value table, and the output box logs events.
+The ECU information page shows what the ECU tells over UDS: its VIN, serial number, part number and
+software version, its session, security and uptime, live values by DID and its fault memory.
 """
+import time
 
 
 def DatabaseMainFunction(api):
@@ -29,6 +32,7 @@ def on_hello_clicked(api, value):
 def on_session_changed(api, value):
     sessions = {"Default": 0x01, "Extended": 0x03}
     result = DSC(sessions[value])                        # sends 10 01 or 10 03
+    security["unlocked"] = False                         # a new session locks the ECU again
     api.ui.set_value("log", f"Session {value}: {'ok' if result else result.error}")
 
 
@@ -56,8 +60,131 @@ def heartbeat(api):
         api.ui.set_value("log", f"Temperature {temperature:.1f} degC")
 
 
+# --- ECU information page ----------------------------------------------------------------------
+# Everything the Dummy ECU tells over UDS: who it is, the state it is in, live values by DID and its
+# fault memory. Connecting reads it all, and so do Read all and the toolbar's Read, which runs Read();
+# Unlock takes the extended session and security access, which the calibration ID needs; Live reads
+# the state and the live values again every second.
+
+IDENTIFICATION = {"info_vin": 0xF190, "info_serial": 0xF18C, "info_part_number": 0xF187,
+                  "info_software": 0xF195}                   # control -> DID
+DTC_STATUS = ("test failed", "failed this cycle", "pending", "confirmed", "not completed since clear",
+              "failed since clear", "not completed this cycle", "warning lamp")      # status bits 0-7
+security = {"unlocked": False}      # Unlock granted, and the ECU still in that extended session
+
+
+def Read(api):
+    """The toolbar's Read: the ECU information page read again. It fails when the ECU does not answer."""
+    return read_all(api)
+
+
+@on_start
+def read_at_start(api):
+    read_all(api)
+
+
+def on_read_info_clicked(api, value):
+    read_all(api)
+
+
+def on_unlock_clicked(api, value):
+    """The extended session, then security access: the calibration ID answers once both are granted."""
+    session = DSC(0x03)
+    unlocked = SecurityUnlock(0x01, compute_key) if session else session
+    security["unlocked"] = bool(unlocked)
+    api.ui.set_value("info_status", "Unlocked: extended session and security access" if unlocked else
+                     f"Unlock failed: {unlocked.error}")
+    state = read_state(api)
+    if state:
+        read_calibration_id(api, state.int)
+
+
+def on_live_changed(api, value):
+    if value:
+        read_state(api)
+
+
+@on_timer(1.0)
+def live(api):
+    if api.ui.get_value("live") and not read_state(api):
+        api.ui.set_value("live", False)              # an ECU that does not answer is not asked every second
+
+
+def read_all(api):
+    """Everything on the page. Returns the answer to the first request: a silent ECU is asked no more."""
+    state = read_state(api)
+    if state:
+        for name, did in IDENTIFICATION.items():
+            result = RDBI(did)
+            api.ui.set_value(name, result.text if result else f"({result.error})")
+        read_calibration_id(api, state.int)
+        read_fault_memory(api)
+        api.ui.set_value("info_status", f"Read at {time.strftime('%H:%M:%S')}")
+    return state
+
+
+def read_state(api):
+    """The session, the uptime and the live values. Returns the answer to the first request."""
+    session = RDBI(0xF186, timeout=1.0)              # a short wait: an ECU that is not there is soon known
+    if not session:
+        api.ui.set_value("info_status", f"Not read: {session.error}")
+        return session
+    api.ui.set_value("info_session", session.int)
+    uptime = RDBI(0x0100)                            # seconds since the ECU started
+    if uptime:
+        minutes, seconds = divmod(uptime.int, 60)
+        api.ui.set_value("info_uptime", f"{minutes // 60} h {minutes % 60:02d} min {seconds:02d} s")
+    else:
+        api.ui.set_value("info_uptime", f"({uptime.error})")
+    temperature = RDBI(0x0101)                       # 0.1 degC, signed
+    api.ui.set_value("info_temperature", int.from_bytes(temperature.data, "big", signed=True) / 10
+                     if temperature else f"({temperature.error})")
+    pressure = RDBI(0x0102)                          # 0.01 bar
+    api.ui.set_value("info_pressure", pressure.int / 100 if pressure else f"({pressure.error})")
+    idle = RDBI(0x0110)                              # rpm
+    api.ui.set_value("info_idle_speed", idle.int if idle else f"({idle.error})")
+    return session
+
+
+def read_calibration_id(api, session):
+    """0200 answers in the extended session with security access only, so it is asked for only then: a request the
+    ECU must refuse would be the status bar's last error at every Connect."""
+    if session != 0x03:
+        security["unlocked"] = False                 # back in the default session (S3 timeout, a reset): locked
+    api.ui.set_value("info_security", security["unlocked"])
+    if not security["unlocked"]:
+        api.ui.set_value("info_calibration", "locked - press Unlock")
+        return
+    result = RDBI(0x0200)
+    api.ui.set_value("info_calibration", result.text if result else f"({result.error})")
+
+
+def read_fault_memory(api):
+    """ReadDTCInformation reportDTCByStatusMask: every DTC stored, and what its status byte says."""
+    result = RDTCI(0x02, 0xFF)
+    api.ui.set_value("info_dtcs", None)              # the list emptied
+    if not result:
+        api.ui.set_value("info_dtc_count", f"({result.error})")
+        return
+    records = result.data[1:]                        # after the status availability mask: DTC (3 bytes), status
+    dtcs = [(int.from_bytes(records[i:i + 3], "big"), records[i + 3])
+            for i in range(0, len(records) - 3, 4)]
+    for dtc, status in dtcs:
+        meaning = ", ".join(name for bit, name in enumerate(DTC_STATUS) if status & (1 << bit))
+        api.ui.set_value("info_dtcs", f"{dtc_code(dtc)}   status {status:02X}: {meaning or 'no bit set'}")
+    failing = sum(1 for _dtc, status in dtcs if status & 0x01)
+    api.ui.set_value("info_dtc_count", f"{len(dtcs)} stored, {failing} failing now" if dtcs else
+                     "none stored")
+
+
+def dtc_code(dtc):
+    """A 3-byte DTC as SAE J2012 writes it: 0x010100 is P0101-00, the last byte its failure type."""
+    system, digit = "PCBU"[dtc >> 22], (dtc >> 20) & 0x3
+    return f"{system}{digit}{(dtc >> 16) & 0xF:X}{(dtc >> 8) & 0xFF:02X}-{dtc & 0xFF:02X}"
+
+
 # --- Firmware flashing (ISO 14229-1) ---------------------------------------------------------
-# Defining Flashing() enables the Flashing toolbar button (and Flashing... in the Form Designer's
+# Defining Flashing() makes Reflash on the toolbar offer it (and Flashing... in the Form Designer's
 # Test panel). The user picks an S-record or Intel HEX file (examples/firmware/demo_app.s19 or .hex),
 # confirms, and Flashing(api, firmware) runs with firmware.path, firmware.size and
 # firmware.segments = [(address, bytes), ...].

@@ -50,7 +50,7 @@ from canexpert.test_expert.transport import GROUP as TRANSPORT_GROUP
 from canexpert.test_expert.transport import Frame, Link, gap, st_min_seconds, valid_st_min
 from canexpert.test_expert.variants import Identification, identify, is_odx
 from canexpert.testing.runner import Runner
-from canexpert.testing.window import MemorySettings
+from canexpert.ui_common import MemorySettings
 from canexpert.uds.seed_key import xor_key
 
 APP = QApplication.instance() or QApplication([])

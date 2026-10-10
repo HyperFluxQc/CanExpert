@@ -190,6 +190,31 @@ class PanelControlsTest(unittest.TestCase):
         QTest.keyClick(typed, Qt.Key_Return)
         self.assertEqual(changed, [("typed", "abcd"), ("typed", "xyz")], "Enter sends it, changed or not - once")
 
+    def test_an_io_box_is_white_unless_the_panel_gives_it_a_colour(self):
+        from PyQt5.QtGui import QColor, QPalette
+        app = QApplication.instance()
+        light = app.palette()
+        dark = QPalette(light)
+        for role, colour in ((QPalette.Window, "#353535"), (QPalette.Base, "#232323"), (QPalette.Text, "#ffffff"),
+                             (QPalette.WindowText, "#ffffff")):
+            dark.setColor(role, QColor(colour))
+        self.addCleanup(app.setPalette, light)
+
+        def colours(widget):
+            return widget.palette().color(QPalette.Base).name(), widget.palette().color(QPalette.Text).name()
+
+        for theme, palette in (("light", light), ("dark", dark)):
+            app.setPalette(palette)
+            for read_only in (False, True):
+                _control, box = build("io_box", {"label": "Command", "read_only": read_only})
+                self.assertEqual(colours(box), ("#ffffff", "#000000"), f"{theme} theme, read-only {read_only}")
+            _control, value = build("value", {})
+            self.assertFalse(value.autoFillBackground(), "the other controls keep the theme's")
+        _control, box = build("io_box", {"background": "#1e3a5f"})            # a dark one, of the panel's
+        self.assertEqual(colours(box), ("#1e3a5f", "#ffffff"), "white text reads on it")
+        _control, box = build("io_box", {"text_color": "#c62828"})
+        self.assertEqual(colours(box), ("#ffffff", "#c62828"), "a text colour given is kept")
+
     def test_the_values_a_frame_or_the_script_changed_and_only_those(self):
         path = Path(tempfile.mkdtemp()) / "panel.xml"
         path.write_text(f'''<application_database dbc_path="{DBC.as_posix()}"><pages><page>

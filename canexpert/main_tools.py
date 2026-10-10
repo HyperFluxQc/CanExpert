@@ -1,7 +1,7 @@
 """
 The main window's tool windows: each one's pane in the workspace, opened on demand and filled with what
 happened before it was opened - the Trace, the CAN Logger, the Data, Statistics and Transmit windows, the UDS
-Console, the Write window, the Test window, the system variables and the Form Designer - and the keys a panel
+Console, the Write window, the system variables and the Form Designer - and the keys a panel
 script hears.
 """
 import time
@@ -30,7 +30,6 @@ from canexpert.sysvars import SystemVariablesWindow
 from canexpert.trace_window import TraceWindow
 from canexpert.transmit_pane import TransmitPane
 from canexpert.uds_console import UdsConsoleWindow
-from canexpert.testing.window import TestWindow
 from canexpert.ui_common import fit_new_window
 from canexpert.workspace import fit_on_screen, set_content
 from canexpert.write_window import WriteWindow
@@ -143,17 +142,6 @@ class ToolWindows:
         if created:
             for entry in list(self.write_history):
                 window.add(*entry)
-        return window
-
-    def open_tests(self):
-        """Test window: a test module's test cases, run against the measurement's bus."""
-        def decode(can_id, data):
-            return self.symbols.name(can_id), self.symbols.decode(can_id, data)
-        window, created = self.open_tool("tests", "Test", lambda: TestWindow(
-            self, self.active_session, decode, self._settings,
-            time_text=lambda t: self.clock.text(t, self.time_display)))
-        if created:
-            window.marker_requested.connect(self.add_marker)          # t.marker() in a test module
         return window
 
     def open_j1939(self):

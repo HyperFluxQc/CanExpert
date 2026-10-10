@@ -322,6 +322,28 @@ class PanelTest(unittest.TestCase):
                         dialog.log_view.toPlainText())
         self.assertEqual(dialog.panel.controls["Idle.speed"].get_value(dialog.panel.widgets["Idle.speed"]), 900)
 
+    def test_the_examples_read_and_write_take_both_variables(self):
+        from canexpert.designer.form_designer import TestPanelDialog
+        database = parse_application_database(ROOT / "examples" / "calibration_2026-09-30.xml")
+        script = (ROOT / "examples" / "calibration_2026-09-30_script.py").read_text(encoding="utf-8")
+        dialog = TestPanelDialog(database, script, True)
+        self.addCleanup(dialog.close)
+        log = dialog.panel.widgets["log"]
+        self.assertTrue(spin_until(lambda: "Idle speed 800 rpm" in log.toPlainText()), log.toPlainText())
+        lists = self.lists(dialog.panel)
+        lists["Idle"]._items["speed"].setText(2, "950")
+        lists["Calib Data"]._items["FOC[3]"].setText(2, "0x55")
+        dialog.function_buttons["Write"].click()                    # no Unlock pressed: Write() unlocks
+        self.assertTrue(spin_until(lambda: "Write complete" in dialog.log_view.toPlainText()),
+                        dialog.log_view.toPlainText())
+        self.assertEqual(dialog.ecu.dids[0x0110], (950).to_bytes(2, "big"))
+        self.assertEqual(dialog.ecu.read_memory(0x10000 + 20, 4), b"\x55\x00\x00\x00")
+        dialog.ecu.dids[0x0110] = (700).to_bytes(2, "big")         # changed in the ECU: Read brings it back
+        dialog.function_buttons["Read"].click()
+        self.assertTrue(spin_until(lambda: lists["Idle"]._items["speed"].text(2) == "700"),
+                        dialog.log_view.toPlainText())
+        self.assertTrue(spin_until(lambda: "Read: idle speed 700 rpm" in log.toPlainText()), log.toPlainText())
+
     def test_a_script_asking_for_a_variable_the_panel_has_not(self):
         from canexpert.config import validate_config
         from canexpert.panel.runtime import ScriptRuntime

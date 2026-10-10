@@ -58,6 +58,20 @@ def Flashing(api, firmware):
 '''
 
 
+# Read() and Write(), which the toolbar's Read and Write run: Write() takes long enough to see the buttons greyed.
+READ_WRITE_SCRIPT = '''
+calls = []
+
+def Read(api):
+    calls.append("read")
+    api.ui.set_value("status", f"read {len(calls)}")
+
+def Write(api):
+    api.can.send(0x2AA, [0x57])
+    api.sleep(0.3)
+    return False
+'''
+
 # A Flashing() that takes half a second - about eight TesterPresent intervals - sending a frame now and then.
 SLOW_FLASH_SCRIPT = '''
 def Flashing(api, firmware):
@@ -578,14 +592,14 @@ def copy(api, frame):
                             self.window.panel.widgets["copy"].text())
         self.window.on_disconnect_clicked()
 
-    def test_flashing_button_calls_database_flashing(self):
+    def test_reflash_calls_database_flashing(self):
         from canexpert.flashing import Firmware
-        item, action = self.window.flashing_toolbar_item, self.window._toolbar_actions["flashing"]
+        item, action = self.window.toolbar_buttons.items["reflash"][1], self.window._toolbar_actions["reflash"]
         self.assertFalse(item.isVisible())
         (self.databases/'panel_2026-09-18_script.py').write_text(SCRIPT + FLASH_SCRIPT)
         self.window.on_connect_clicked()
-        self.assertTrue(item.isVisible())
-        self.assertTrue(spin_until(action.isEnabled))
+        self.answer()
+        self.assertTrue(spin_until(lambda: item.isVisible() and action.isEnabled() and self.window.script_flash))
         firmware = Firmware("app.s19", [(0x1000, b"\x01\x02\x03"), (0x2000, b"\x04")])
         with patch.object(main.QMessageBox, "information") as information:
             self.window.start_flashing(firmware)
@@ -593,7 +607,8 @@ def copy(api, frame):
             self.assertTrue(spin_until(lambda: information.called))
         self.assertEqual(self.window.panel.widgets["status"].text(), "1000:4")
         self.assertIsNone(self.window.flash_dialog)
-        self.assertTrue(action.isEnabled())
+        self.answer()
+        self.assertTrue(spin_until(action.isEnabled))
         self.window.on_disconnect_clicked()
         self.assertFalse(item.isVisible())
 
@@ -657,7 +672,7 @@ def copy(api, frame):
         threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
         try:
             self.window.on_connect_clicked()
-            self.assertTrue(spin_until(self.window._toolbar_actions["flashing"].isEnabled))
+            self.assertTrue(spin_until(self.window._toolbar_actions["reflash"].isEnabled))   # the ECU answers
             firmware = load_firmware(examples / "firmware" / "demo_app.hex")
             results = []
             with patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
@@ -671,12 +686,13 @@ def copy(api, frame):
             time.sleep(0.05)
             ecu_bus.shutdown()
 
-    def test_flashing_offers_the_built_in_sequence_when_the_script_has_no_flashing(self):
+    def test_reflash_offers_the_built_in_sequence_when_the_script_has_no_flashing(self):
         self.window.on_connect_clicked()
-        action = self.window._toolbar_actions["flashing"]
-        self.assertTrue(self.window.flashing_toolbar_item.isVisible())
+        action = self.window._toolbar_actions["reflash"]
         self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
-        self.assertTrue(action.isEnabled(), "the built-in sequence needs no panel script")
+        self.answer()
+        self.assertTrue(spin_until(action.isEnabled), "the built-in sequence needs no panel script")
+        self.assertTrue(self.window.toolbar_buttons.items["reflash"][1].isVisible())
         self.assertFalse(self.window.script_flash)
         self.assertIn("built-in sequence", action.toolTip())
         self.assertIn("does not define Flashing", action.toolTip())
@@ -696,13 +712,222 @@ def copy(api, frame):
         with patch.object(main, "choose_firmware", lambda *arguments: firmware), \
                 patch.object(main.FlashDialog, "exec_", lambda dialog: QDialog.Accepted), \
                 patch.object(main.FlashRunner, "start", start):
-            self.window.open_flashing()
+            self.window.open_reflash()
         self.assertEqual(started, [(firmware, FlashProfile())])
         self.assertIsNotNone(self.window.flash_dialog, "the progress dialog carries the Cancel button")
         with patch.object(main.QMessageBox, "critical"):
             self.window._on_flash_finished(False, "Cancelled")
         self.assertIsNone(self.window.flash_dialog)
-        self.assertTrue(self.window._toolbar_actions["flashing"].isEnabled())
+        self.answer()
+        self.assertTrue(spin_until(self.window._toolbar_actions["reflash"].isEnabled))
+
+    def test_read_write_and_reflash_follow_the_database_and_its_ecu(self):
+        buttons, actions = self.window.toolbar_buttons, self.window._toolbar_actions
+        group = ("ecu_read", "ecu_write", "reflash")
+        shown = lambda: [buttons.items[name][1].isVisible() for name in group]    # noqa: E731
+        usable = lambda: [actions[name].isEnabled() for name in group]            # noqa: E731
+        self.assertEqual(shown(), [False] * 3, "no database")
+        order = ["|" if action.isSeparator() else next(name for name, (_label, item) in buttons.items.items()
+                                                       if item is action)
+                 for action in self.window.findChild(main.QToolBar).actions()]
+        self.assertEqual(order[:8], ["connect", "disconnect", "kill", "|", "ecu_read", "ecu_write", "reflash", "|"],
+                         "a group of their own, beside Kill CAN")
+        self.assertEqual([buttons.items[name][0] for name in group],
+                         ["Read (database)", "Write (database)", "Reflash (database)"], "as the View menu says")
+        self.assertTrue(buttons.items["flashing"][1].isVisible(), "Flashing, without a database")
+        self.assertFalse(actions["flashing"].isEnabled(), "not before an interface's ECUs are checked")
+        self.window.on_connect_clicked()
+        self.assertEqual(shown(), [False] * 3, "the database, but no answer from its ECU yet")
+        self.assertFalse(buttons.items["flashing"][1].isVisible(), "Reflash flashes now")
+        self.answer()
+        self.assertTrue(spin_until(lambda: shown() == [True] * 3 and usable() == [True] * 3))
+        self.assertTrue(spin_until(lambda: usable() == [False] * 3), "the ECU silent: greyed")
+        self.assertEqual(shown(), [True] * 3, "and still there")
+        self.answer()
+        self.assertTrue(spin_until(lambda: usable() == [True] * 3), "it answers again")
+        self.window.set_offline(True)                                   # Kill CAN: nothing is received
+        self.assertEqual((shown(), usable()), ([True] * 3, [False] * 3))
+        self.window.set_offline(False)
+        self.answer()
+        self.assertTrue(spin_until(lambda: usable() == [True] * 3))
+        self.window.on_disconnect_clicked()                             # the database closed: they go
+        self.assertEqual(shown(), [False] * 3)
+        self.assertTrue(buttons.items["flashing"][1].isVisible())
+
+    def test_read_and_write_run_the_database_functions(self):
+        (self.databases / 'panel_2026-09-18_script.py').write_text(SCRIPT + READ_WRITE_SCRIPT)
+        self.window.on_connect_clicked()
+        read, write = self.window._toolbar_actions["ecu_read"], self.window._toolbar_actions["ecu_write"]
+        self.answer()
+        self.assertTrue(spin_until(lambda: read.isEnabled() and self.window._script_functions == {"Read", "Write"}))
+        self.assertNotIn("does not define", read.toolTip())
+        runtime = self.window.script_runtime
+        read.trigger()
+        self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "read 1"))
+        self.assertTrue(spin_until(lambda: self.window.status_label.text() == "Read complete — panel_2026-09-18.xml"))
+        self.assertIs(self.window.script_runtime, runtime, "nothing newer: the script was not started again")
+        self.drain()
+        self.answer()
+        self.assertTrue(spin_until(write.isEnabled))
+        write.trigger()
+        self.assertFalse(read.isEnabled() or write.isEnabled(), "greyed while Write() runs")
+        self.assertTrue(spin_until(lambda: self.window.status_label.text().startswith("Write() reported failure")))
+        self.assertIn("Write() reported failure", self.window.debug_log.toPlainText(), "a failure is in the Log too")
+        self.assertIn(0x2AA, [frame.arbitration_id for frame in self.drain()])
+        self.assertEqual([entry[1:] for entry in self.window.write_history][-2:],
+                         [("info", "Read complete"), ("error", "Write() reported failure")])
+        self.answer()
+        self.assertTrue(spin_until(read.isEnabled))
+        self.window.on_disconnect_clicked()
+
+    def test_a_database_without_read_says_so(self):
+        self.window.on_connect_clicked()                                # SCRIPT has no Read() and no Write()
+        read = self.window._toolbar_actions["ecu_read"]
+        self.answer()
+        self.assertTrue(spin_until(lambda: read.isEnabled() and "does not define Read(api)" in read.toolTip()),
+                        "greyed only when the ECU does not answer: a newer database may have one")
+        read.trigger()
+        self.assertTrue(spin_until(lambda: self.window.status_label.text().startswith(
+            "The database script does not define Read(api)")))
+        self.window.on_disconnect_clicked()
+
+    def test_read_loads_a_newer_database_first(self):
+        (self.databases / 'panel_2026-09-18_script.py').write_text(
+            SCRIPT + 'def Read(api):\n    api.ui.set_value("status", "old Read")\n')
+        self.window.on_connect_clicked()
+        bus, worker, runtime = self.window.can_bus, self.window.worker, self.window.script_runtime
+        read = self.window._toolbar_actions["ecu_read"]
+        self.answer()
+        self.assertTrue(spin_until(read.isEnabled))
+        (self.databases / "panel_2026-10-01.xml").write_text(PANEL)
+        (self.databases / "panel_2026-10-01_script.py").write_text(
+            'def Read(api):\n    api.ui.set_value("status", "new Read")\n')
+        read.trigger()
+        self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-10-01.xml"), "the newer one")
+        self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "new Read"))
+        self.assertIsNot(self.window.script_runtime, runtime)
+        self.assertFalse(runtime.thread.is_alive(), "the old script stopped")
+        self.assertIs(self.window.can_bus, bus, "the session went on: the same adapter")
+        self.assertIs(self.window.worker, worker, "and the same worker - its TesterPresent with it")
+        self.assertNotIn(runtime.mailbox, worker.mailboxes, "the old script's mailbox is off the worker")
+        self.assertIn("Database refreshed: ", self.window.debug_log.toPlainText())
+        self.assertTrue(spin_until(lambda: self.window.status_label.text() == "Read complete — panel_2026-10-01.xml"),
+                        "which database ran it")
+
+        script = self.databases / "panel_2026-10-01_script.py"          # the one loaded, written since
+        script.write_text('def Read(api):\n    api.ui.set_value("status", "edited Read")\n')
+        stamp = script.stat().st_mtime + 10
+        os.utime(script, (stamp, stamp))
+        self.answer()
+        self.assertTrue(spin_until(read.isEnabled))
+        read.trigger()
+        self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "edited Read"))
+        self.window.on_disconnect_clicked()
+
+    def test_a_refresh_never_goes_back_to_an_older_database(self):
+        self.window.on_connect_clicked()                                # panel_2026-09-18: the newest
+        runtime = self.window.script_runtime
+        (self.databases / "panel_2026-09-18.xml").rename(self.databases / "panel_2026-09-18.xml.bak")
+        self.assertTrue(self.window.refresh_database(), "the one loaded is used")
+        self.assertIs(self.window.script_runtime, runtime, "and goes on: 2026-09-01 is older")
+        self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-09-18.xml"))
+        self.window.on_disconnect_clicked()
+
+    def test_a_newer_database_that_cannot_be_loaded_leaves_the_loaded_one(self):
+        self.window.on_connect_clicked()
+        runtime, read = self.window.script_runtime, self.window._toolbar_actions["ecu_read"]
+        self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
+        (self.databases / "panel_2026-10-01.xml").write_text(PANEL)
+        (self.databases / "panel_2026-10-01_script.py").write_text("def Read(api)\n    pass\n")   # no colon
+        self.answer()
+        self.assertTrue(spin_until(read.isEnabled))
+        read.trigger()
+        self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-09-18.xml"), "it stays")
+        self.assertIs(self.window.script_runtime, runtime, "its script goes on")
+        dialog = self.window.problems_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.heading.text(), "<b>The panel panel_2026-10-01.xml cannot be loaded</b>")
+        self.assertIn("panel_2026-10-01.xml cannot be loaded", self.window.status_label.text())
+        self.assertIsNone(self.window._function_running, "Read() was not run")
+        dialog.close()
+
+        # A panel that cannot be built: the one loaded is built again, and its controls still reach its script.
+        (self.databases / "panel_2026-10-01_script.py").write_text("def Read(api):\n    pass\n")
+        (self.databases / "panel_2026-10-01.xml").write_text(PANEL.replace('x="10" y="50"', 'x="10" y="5O"'))
+        self.answer()
+        self.assertTrue(spin_until(read.isEnabled))
+        read.trigger()
+        self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-09-18.xml"))
+        self.assertIs(self.window.script_runtime, runtime)
+        self.drain()
+        self.window.panel.widgets["start"].click()                     # api.on("start"): sends 0x200
+        sent = []
+        self.assertTrue(spin_until(lambda: sent.extend(self.drain()) or 0x200 in [m.arbitration_id for m in sent]))
+        self.window.on_disconnect_clicked()
+
+    def test_reflash_flashes_with_the_refreshed_database(self):
+        from canexpert.flashing import Firmware
+        self.window.on_connect_clicked()                                # SCRIPT: no Flashing()
+        self.assertTrue(spin_until(lambda: self.window.panel.widgets["status"].text() == "ready"))
+        self.assertFalse(self.window.script_flash)
+        (self.databases / "panel_2026-10-01.xml").write_text(PANEL)
+        (self.databases / "panel_2026-10-01_script.py").write_text(SCRIPT + FLASH_SCRIPT)
+        firmware, offered = Firmware("app.s19", [(0x1000, b"\x01\x02\x03")]), []
+
+        def exec_(dialog):
+            offered.append(dialog.script_radio.isEnabled() and dialog.script_radio.isChecked())
+            return QDialog.Accepted
+
+        with patch.object(main, "choose_firmware", lambda *arguments: firmware), \
+                patch.object(main.FlashDialog, "exec_", exec_), \
+                patch.object(main.QMessageBox, "information") as information:
+            self.window.open_reflash()
+            self.assertEqual(offered, [True], "the newer script's Flashing(), offered first")
+            self.assertTrue(spin_until(lambda: information.called))
+        self.assertTrue(self.window.app_database["source_path"].endswith("panel_2026-10-01.xml"))
+        self.assertEqual(self.window.panel.widgets["status"].text(), "1000:3")
+        self.window.on_disconnect_clicked()
+
+    def test_flashing_without_a_database_flashes_over_the_ecu_check(self):
+        import shutil
+        import threading
+        from canexpert.flashing import load_firmware
+        from canexpert.simulator.ecu import DummyEcu, EcuConfig
+        image = self.root / "demo_app.hex"                              # its report is written beside it
+        shutil.copy(Path(__file__).resolve().parent.parent / "examples" / "firmware" / "demo_app.hex", image)
+        firmware, dump = load_firmware(image), self.root / "flashed.s19"
+        stop = threading.Event()
+        ecu_bus = can.Bus(interface="virtual", channel=self.channel)
+        ecu = DummyEcu(ecu_bus, EcuConfig(erase_seconds=0.05, broadcast_interval=0, dump_path=str(dump)),
+                       log=lambda text: None)
+        threading.Thread(target=ecu.serve, args=(stop,), daemon=True).start()
+        action, offered, results = self.window._toolbar_actions["flashing"], [], []
+
+        def exec_(dialog):
+            offered.append((dialog.script_radio.isHidden(), dialog.use_script()))
+            return QDialog.Accepted
+
+        try:
+            self.assertFalse(action.isEnabled(), "no interface's ECUs checked yet")
+            self.window.check_ecus(self.window.selected_channel_config)
+            self.assertTrue(action.isEnabled())
+            with patch.object(main, "choose_firmware", lambda *arguments: firmware), \
+                    patch.object(main.FlashDialog, "exec_", exec_), \
+                    patch.object(main, "report_result", lambda parent, ok, text: results.append((ok, text))):
+                self.window.open_flashing()
+                self.assertFalse(action.isEnabled(), "greyed while it flashes")
+                self.assertTrue(spin_until(lambda: results, 20))
+            self.assertTrue(results[0][0], results[0][1])
+            self.assertEqual(offered, [(True, False)], "the built-in sequence: no database, no script to offer")
+            self.assertEqual(load_firmware(dump).segments, firmware.segments)
+            self.assertIsNotNone(self.window.ecu_monitor, "the ECU check goes on")
+            self.assertTrue(action.isEnabled())
+            self.window.stop_ecu_monitor()
+            self.assertFalse(action.isEnabled(), "nothing to flash over")
+        finally:
+            stop.set()
+            time.sleep(0.05)
+            ecu_bus.shutdown()
 
     def test_side_panels_minimize_while_connected(self):
         side = [dock.titleBarWidget() for dock in (self.window.config_dock, self.window.channels_dock, self.window.log_dock)]
@@ -942,6 +1167,10 @@ def ready(api):
         self.addCleanup(configuration.close)
         self.assertEqual((configuration.server_id_edit.text(), configuration.ecu_id_edit.text()), ("7E0", "7E8"))
 
+    def answer(self):
+        """The ECU answers: its node is Responding - what Read, Write and Reflash wait for."""
+        self.ecu.send(can.Message(arbitration_id=0x7E8, data=[2, 0x7E, 0], is_extended_id=False))
+
     def drain(self):
         """The frames the ECU's bus has received and not read yet."""
         frames = []
@@ -1108,7 +1337,8 @@ def goodbye(api):
         self.assertFalse(results[1][0])
         self.assertIn("could not start", results[1][1])
         self.assertIsNone(self.window.flash_dialog)
-        self.assertTrue(self.window._toolbar_actions["flashing"].isEnabled())
+        self.answer()
+        self.assertTrue(spin_until(self.window._toolbar_actions["reflash"].isEnabled))
         self.drain()
         self.assertTrue(spin_until(lambda: tester_present_frames(self.drain())), "TesterPresent was never paused")
         self.window.on_disconnect_clicked()
@@ -1120,23 +1350,36 @@ def goodbye(api):
                          "right-click: the ticks")
         ticks = {action.text(): action for action in buttons.menu().actions() if action.isCheckable()}
         self.assertEqual(list(ticks), [label for label, _item in buttons.items.values()], "every button, in order")
-        self.assertTrue(all(action.isChecked() for action in ticks.values()))
+        self.assertEqual([text for text, action in ticks.items() if not action.isChecked()], ["Write"],
+                         "every one but the Write window's, hidden at first")
         trace = buttons.items["trace"][1]
         ticks["Trace"].setChecked(False)
         self.assertFalse(trace.isVisible())
         self.assertTrue(self.window._toolbar_actions["trace"].isEnabled(), "still in the Tools menu, with its key")
-        self.assertEqual(json.loads(self.settings.value("toolbar/hidden")), ["trace"])
+        self.assertEqual(json.loads(self.settings.value("toolbar/hidden")), ["trace", "write"])
         again = main.MainWindow()                                   # kept for the next start
         self.addCleanup(again.close)
         self.assertFalse(again.toolbar_buttons.items["trace"][1].isVisible())
-        flashing = buttons.items["flashing"][1]                     # Flashing: connected, and ticked
+        flashing = buttons.items["flashing"][1]                     # Flashing: no database, and ticked
+        self.assertTrue(flashing.isVisible())
         buttons.set_shown("flashing", False)
-        self.window.on_connect_clicked()
-        self.assertFalse(flashing.isVisible(), "unticked: not even while connected")
+        self.assertFalse(flashing.isVisible(), "unticked")
         buttons.set_shown("flashing", True)
         self.assertTrue(flashing.isVisible())
+        self.window.on_connect_clicked()
+        self.assertFalse(flashing.isVisible(), "a database connected: Reflash flashes")
         self.window.on_disconnect_clicked()
-        self.assertFalse(flashing.isVisible())
+        self.assertTrue(flashing.isVisible())
+        reflash = buttons.items["reflash"][1]                       # Reflash: the database's ECU answers, and ticked
+        buttons.set_shown("reflash", False)
+        self.window.on_connect_clicked()
+        self.answer()
+        self.assertTrue(spin_until(buttons.items["ecu_read"][1].isVisible))
+        self.assertFalse(reflash.isVisible(), "unticked: not even then")
+        buttons.set_shown("reflash", True)
+        self.assertTrue(reflash.isVisible())
+        self.window.on_disconnect_clicked()
+        self.assertFalse(reflash.isVisible())
         separators = [action for action in self.window.findChild(main.QToolBar).actions() if action.isSeparator()]
         self.assertTrue(separators[0].isVisible())
         for name in ("connect", "disconnect", "kill"):                 # the first group, all hidden
@@ -1146,6 +1389,32 @@ def goodbye(api):
         self.assertTrue(trace.isVisible() and separators[0].isVisible())
         view = next(action.menu() for action in self.window.menuBar().actions() if action.text() == "View")
         self.assertIn("Toolbar buttons", [action.text() for action in view.actions()])
+
+    def test_the_write_window_starts_without_a_toolbar_button(self):
+        write = self.window.toolbar_buttons.items["write"][1]
+        self.assertFalse(write.isVisible(), "hidden at first")
+        action = self.window._toolbar_actions["write"]
+        tools = next(item.menu() for item in self.window.menuBar().actions() if item.text() == "Tools")
+        self.assertIn(action, tools.actions(), "Tools > Write still opens it")
+        self.assertEqual(action.shortcut().toString(), "Ctrl+7", "and so does its key")
+        action.trigger()
+        self.assertIsNotNone(self.window.tool_widget("write"))
+        self.window.toolbar_buttons.set_shown("write", True)            # ticked again: there from then on
+        again = main.MainWindow()
+        self.addCleanup(again.close)
+        self.assertTrue(again.toolbar_buttons.items["write"][1].isVisible())
+
+    def test_a_choice_of_buttons_made_before_gets_write_hidden_once(self):
+        self.settings.setValue("toolbar/hidden", json.dumps(["trace"]))   # chosen with a version without it
+        self.settings.remove("toolbar/hidden_at_first")
+        window = main.MainWindow()
+        self.addCleanup(window.close)
+        self.assertEqual(window.toolbar_buttons.hidden, {"trace", "write"}, "the choice kept, Write hidden")
+        self.assertEqual(json.loads(self.settings.value("toolbar/hidden_at_first")), ["write"])
+        window.toolbar_buttons.set_shown("write", True)
+        again = main.MainWindow()
+        self.addCleanup(again.close)
+        self.assertEqual(again.toolbar_buttons.hidden, {"trace"}, "not hidden a second time")
 
     def test_the_selected_configuration_has_an_edit_button(self):
         self.assertEqual(self.window.edit_config_btn.text(), "Edit")

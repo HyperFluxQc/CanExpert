@@ -76,7 +76,7 @@ class Symbols:
         paths = [str(path) for path in paths]
         if paths:
             from canexpert.symbols import SymbolDatabases
-            from canexpert.testing.window import MemorySettings
+            from canexpert.ui_common import MemorySettings
             self.databases = SymbolDatabases(paths, settings=MemorySettings())
             self.errors = list(self.databases.errors)
 

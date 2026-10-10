@@ -27,12 +27,14 @@ from canexpert.j1939.pgn import TOOL_ADDRESS
 from canexpert.j1939.transport import J1939Assembler, J1939Link
 from canexpert.panel.variables import Variable, suggest
 from canexpert.can_bus import OffTheBus
-from canexpert.uds.client import FUNCTIONS, UdsFunctions, uds_request, unsolicited_kind
+from canexpert.uds.client import FUNCTIONS, UdsFunctions, UdsResult, uds_request, unsolicited_kind
 
 # The CAPL-style event decorators a script's globals hold (ScriptRuntime._namespace).
 EVENT_DECORATORS = ("on_start", "on_stop", "on_timer", "on_message", "on_signal", "on_control", "on_key",
                     "on_error_frame", "on_bus_state", "on_periodic_data", "on_response_event", "on_pgn",
                     "on_variable")
+# The script's functions the main window's Read and Write buttons call (ScriptRuntime.call_function).
+TOOLBAR_FUNCTIONS = ("Read", "Write")
 
 
 def script_globals() -> set[str]:
@@ -444,6 +446,8 @@ class ScriptRuntime(QObject):
     flashing_available = pyqtSignal(bool)
     flash_progress = pyqtSignal(int, int, str)
     flash_finished = pyqtSignal(bool, str)
+    functions_available = pyqtSignal(object)    # the TOOLBAR_FUNCTIONS the script defines, as a frozenset
+    function_finished = pyqtSignal(str, bool, str)   # call_function(): the name, succeeded, what to tell
     marker_requested = pyqtSignal(float, str)   # api.marker(): (when, comment)
 
     def __init__(self, bus, config, values, parent=None, sysvars=None):
@@ -456,6 +460,9 @@ class ScriptRuntime(QObject):
         self.values = dict(values)
         self.lock = threading.Lock()
         self.thread = None
+        # Set once the script has run to its definitions - Flashing(), Read(), Write() are known - or failed.
+        self.loaded = threading.Event()
+        self._ended = False             # nothing takes events any more: the script ended, or never started
         self.flash_function = None
         self.flash_cancel = threading.Event()
         self.dbc = None                 # panel DBC: signal decoding, @on_signal, api.set_signal
@@ -526,7 +533,10 @@ class ScriptRuntime(QObject):
 
     def start(self, path):
         path = Path(path)
-        if not path.exists():
+        if not path.exists():                   # a database without a script: no event waits for one
+            with self.lock:
+                self._ended = True
+            self.loaded.set()
             return
         source = path.read_text(encoding="utf-8-sig")
         code = compile(source, str(path), "exec")
@@ -797,6 +807,8 @@ class ScriptRuntime(QObject):
             flashing = namespace.get("Flashing")
             self.flash_function = flashing if callable(flashing) else None
             self.flashing_available.emit(self.flash_function is not None)
+            self.functions_available.emit(self.functions())
+            self.loaded.set()
             startup = namespace.get("DatabaseMainFunction")
             if startup:
                 try:
@@ -816,6 +828,8 @@ class ScriptRuntime(QObject):
                         self._on_frame(name, value)
                     elif kind == "flash":
                         self._flash(value)
+                    elif kind == "call":
+                        self._call_function(name)
                     elif kind == "sysvar":
                         for handler in list(self.sysvar_handlers.get(name, ())) + \
                                 list(self.sysvar_handlers.get("*", ())):
@@ -848,18 +862,69 @@ class ScriptRuntime(QObject):
             self.say("error", f"Database script failed: {exc}")
         finally:
             sys.settrace(None)
+            self._end()
+
+    def _end(self):
+        """The script's thread is over: no event is taken from now on, and a flashing or a Read or Write that
+        was waiting to run ends at once, rather than never."""
+        with self.lock:
+            self._ended = True
+        self.loaded.set()
+        while True:
+            try:
+                kind, name, _value = self.events.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "flash":
+                self.flash_finished.emit(False, "Flashing could not start: the database script stopped")
+            elif kind == "call":
+                self.function_finished.emit(name, False, f"{name} could not start: the database script stopped")
+
+    def functions(self) -> frozenset:
+        """The TOOLBAR_FUNCTIONS the script defines - once it is loaded."""
+        return frozenset(name for name in TOOLBAR_FUNCTIONS if callable(self.namespace.get(name)))
+
+    def call_function(self, name) -> bool:
+        """Run the script's Read(api) or Write(api) on its thread, after the events before it; function_finished
+        tells how it ended. False when the script cannot take it: it is stopping, or not running."""
+        return self.post("call", name, None)
+
+    def _call_function(self, name):
+        """One of the script's TOOLBAR_FUNCTIONS. It fails when it returns False or a negative answer of the ECU
+        (return calib.write()) or raises an exception."""
+        function = self.namespace.get(name) if name in TOOLBAR_FUNCTIONS else None
+        if not callable(function):
+            self.function_finished.emit(name, False, f"The database script does not define {name}(api)")
+            return
+        ok, text = False, f"{name}() stopped: the database script stopped"     # sys.exit(), or Disconnect
+        try:
+            result = self._adapt(function)()
+            if isinstance(result, UdsResult) and not result:
+                text = f"{name}(): {result.error}"
+            elif result is False:
+                text = f"{name}() reported failure"
+            else:
+                ok, text = True, f"{name} complete"
+        except OffTheBus as exc:                    # the kill switch
+            text = f"{name}() stopped: {exc}"
+        except Exception as exc:
+            text = f"{name}() failed: {str(exc) or type(exc).__name__}"
+        finally:                                    # however it ends, the window hears of it
+            self.function_finished.emit(name, ok, text)
 
     def _flash(self, firmware):
         """Run the database's Flashing(api, firmware); False or an exception reports failure."""
         self.flash_cancel.clear()
+        ok, message = False, "Flashing() stopped: the database script stopped"    # sys.exit(), or Disconnect
         try:
             with self.no_tester_present():             # the ECU gets the flashing alone, however it ends
                 result = self.flash_function(self.api, firmware)
             ok = result is not False
             message = "Flashing complete" if ok else "Flashing() reported failure"
         except Exception as exc:
-            ok, message = False, str(exc) or type(exc).__name__
-        self.flash_finished.emit(ok, message)
+            message = str(exc) or type(exc).__name__
+        finally:                                       # the progress dialog closes however it ends
+            self.flash_finished.emit(ok, message)
 
     def start_flash(self, firmware):
         if self.flash_function is None:
@@ -873,19 +938,22 @@ class ScriptRuntime(QObject):
         self.flash_cancel.set()
 
     def post(self, kind, name, value) -> bool:
-        """Hand an event to the script's thread. False when it is dropped: the script stopping, or too many
-        events waiting."""
+        """Hand an event to the script's thread. False when it is dropped: the script stopping or not running,
+        or too many events waiting."""
         if self.stop_event.is_set():
             return False
-        if kind == "control":
-            with self.lock:
+        with self.lock:                     # the thread ending (_end) takes no event after its last look
+            if self._ended:
+                return False
+            if kind == "control":
                 self.values[name] = value
-        try:
-            self.events.put_nowait((kind, name, value))
-        except queue.Full:
-            self.say("warning", "Script event queue full; event dropped")
-            return False
-        return True
+            try:
+                self.events.put_nowait((kind, name, value))
+                return True
+            except queue.Full:
+                pass
+        self.say("warning", "Script event queue full; event dropped")
+        return False
 
     def get_value(self, name):
         with self.lock:

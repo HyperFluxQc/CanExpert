@@ -141,7 +141,7 @@ def main_window_pictures(studio, wanted):
     window.selected_channel_config = {"interface": "virtual", "channel": CHANNEL}
     dbc = studio.folder / "DBC" / "dummy_ecu.dbc"
     window.symbols.set_paths([str(dbc)])
-    window.resize(1280, 760)                    # every toolbar button in view
+    window.resize(1380, 760)                    # every toolbar button in view, Read, Write and Reflash too
     window.show()
     settle(0.5)
 
@@ -270,7 +270,7 @@ def designer_pictures(studio, wanted):
 def test_expert_picture(studio, wanted):
     """TestExpert after a run of the first tests against the Dummy ECU."""
     from canexpert.test_expert.window import TestExpertWindow
-    from canexpert.testing.window import MemorySettings
+    from canexpert.ui_common import MemorySettings
     window = TestExpertWindow(MemorySettings())
     window.s3_test.setChecked(False)
     window.connect_ecu(studio.bus())

@@ -41,8 +41,8 @@ in a file of its own.
   form, the services of an ODX/PDX/CDD file with their answers decoded, session control, SecurityAccess
   (mask or `GenerateKeyEx` seed & key DLL) and a fault-memory tab. The P2/P2* timing an ECU announces is
   honoured by the requests that follow.
-- **Test modules** (*Tools → Test*): Python test cases against the live bus with setup/teardown, a
-  verdict per step, Stop, and an HTML and a JUnit XML report of every run.
+- **Test modules** (TestExpert's *Modules* tab): Python test cases with setup/teardown, run with the
+  generated tests, a verdict per step, Stop, and HTML and JUnit XML reports.
 - **TestExpert** (`test_expert.py`, TestExpert.exe): UDS conformance tests generated from a CDD, ODX or PDX
   description, as Vector DiVa does, run against the ECU with HTML and JUnit reports; the Dummy ECU passes them.
   Pre-test and post-test sequences (a hard reset after a test, an ignition frame before the run...), test plans
@@ -53,7 +53,7 @@ in a file of its own.
   requested or sent with the transport protocol (BAM, RTS/CTS); the Trace's J1939 view; J1939 DBC messages
   from any source address; `j1939` and `@on_pgn` in scripts; the Dummy ECU as a J1939 node.
 - **Markers** (Ctrl+M): a comment at a moment of the measurement, in the Trace, on the Logger's graphs and
-  in BLF/ASC/TRC recordings; scripts use `api.marker()`, test modules `t.marker()`.
+  in BLF/ASC/TRC recordings; scripts use `api.marker()`.
 - **Recording and replay**: BLF, ASC, CSV, LOG or TRC through python-can; a replayed file reaches the
   windows offline and never touches a bus.
 - **Symbol databases**: one DBC list shared by the Trace, Data and Statistics windows, the CAN Logger and
@@ -109,6 +109,48 @@ With family `engine`, the second version is chosen. Supported date suffixes are 
 
 The connection workflow does not read a database ID from the ECU; the earlier RDBI discovery helpers have been removed. A connection can monitor nodes even before any node responds.
 
+## Panel database format
+
+A panel database is XML: its pages, and on each page its controls, placed with `x`, `y`, `width` and `height`.
+The Form Designer writes it, and it can be written by hand:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<application_database name="engine">
+  <description>Temperature &amp; Control Panel</description>
+  <pages>
+    <page name="Main">
+      <button label="Start" binding_value="start" x="20" y="20"/>
+      <value label="Status" binding_value="status" x="20" y="60"/>
+      <value label="Temperature" unit="°C" can_id="0x300" byte_start="0" byte_length="2" scale="0.1" x="20" y="100"/>
+      <checkbox label="Enable Logging" can_id="0x201" byte="0" bit="0" x="20" y="140"/>
+      <slider label="Brightness" min="0" max="100" can_id="0x202" byte="0" x="20" y="180"/>
+    </page>
+  </pages>
+</application_database>
+```
+
+Controls can be driven by a script binding (`binding_value`), a DBC signal (`binding_type="dbc"`,
+`binding_value="Message.Signal"`), or a raw CAN mapping:
+
+| Element | Raw CAN attributes | Behaviour |
+|---|---|---|
+| **button** | `can_id`, `data` (hex bytes) | Sends the frame when clicked |
+| **value** | `can_id`, `byte_start`, `byte_length`, `scale`, `offset`, `value_type` | Decodes and displays received data |
+| **checkbox** | `can_id`, `byte`, `bit` | Sends the bit state when toggled |
+| **slider** | `can_id`, `byte`, `min`, `max` | Sends the byte value when changed |
+
+All control types:
+
+| Category | Controls |
+|---|---|
+| Input | Button, Toggle Switch, Checkbox, Radio Buttons, Combo Box, Slider (horizontal/vertical), Knob, Numeric Up/Down, I/O Box |
+| Display | Value Display (number format, decimals, DBC value-table text), 7-Segment Display, Gauge (warning/critical zones), Progress Bar (horizontal/vertical), LED (colours, blink), Multi-State Indicator (states from the DBC value table or `value=text:colour; ...`), Trend Graph, Output Box, Variable List |
+| Decoration | Label, Group Box, Picture |
+
+Every control also has appearance properties (text colour, background, font size, bold, tooltip; inputs can be
+read-only). I/O boxes are white unless given a background, in either theme.
+
 ## Panel scripts
 
 Set a control's **Binding type** to `script` and its **Binding** to a unique name such as `start`, `setpoint`, or `status`. If there is no binding, the displayed control label is its script name. Names are case-sensitive and must be unique across pages.
@@ -145,6 +187,21 @@ def tick(api):
 - `api.log(text)` or `api.write(text)` (CAPL's `write`), and `api.warn(text)`: a line in the Write window, a warning in its colour. Script errors go there too, and to the application's Debug log.
 - `api.running` and `api.sleep(seconds)`: cooperative cancellation for older loop-based scripts. Prefer callbacks and return from `DatabaseMainFunction`; a startup loop prevents that script's queued callbacks from being processed.
 - **Structured variables** (the Form Designer's Variables tab, kept in the database's optional `<variables>`): records of typed fields and arrays written as `Calib Data (memory 0x20001000, little-endian)` then `* uint32 FOC[32]`, in braces as in C (`MyList { uint32 data1; uint8 data2; }`, on one line or several), or as a pasted C struct, living in the ECU at a DID or a memory address. `api.var("Calib Data")` gives the script one: its fields as attributes and items (`.temperature`, `.FOC[3]`, `["FOC"][3]`), `.read()` / `.write()` with the ECU (RDBI/WDBI or RMBA/WMBA; true when the ECU answered), `.bytes()` / `.decode(data)`; a value that does not fit its type raises. `@on_variable("Calib Data")` is called with `(variable, field)` when a field is typed on the panel. A **Variable List** control shows one field by field and reads, edits and writes it; a control named after a field (`Idle.speed`) shows that field.
+- **Read and Write**: `def Read(api):` and `def Write(api):` are run by the main window's **Read** and **Write** toolbar buttons - shown once the connected database's ECU answers, greyed while it does not or while one of them or a flashing runs, gone with the database - on the script thread, after the events queued before them. Returning `False` or a negative UDS result (`return api.var("Calib Data").write()`), or raising, is a failure, said with the NRC or the exception's message; anything else is success. The outcome is shown in the status bar with the database that ran it, in the Write window, and in the Log when it failed. Each button - **Reflash** too - first refreshes the database: a newer one of the family, or the loaded one saved since, takes its place in the running session (the adapter, the CAN worker and TesterPresent go on; the panel is built again and the new script started); one that cannot be loaded leaves the loaded one, and the command is not run.
+
+The ISO 14229 functions, by functional unit:
+
+| Functional unit (ISO 14229-1) | Functions |
+|---|---|
+| Diagnostic and communication management | `DSC` 0x10, `ER` 0x11, `SA` 0x27, `CC` 0x28, `AUTH` 0x29, `TP` 0x3E, `ATP` 0x83, `SDT` 0x84, `CDTCS` 0x85, `ROE` 0x86, `LC` 0x87 |
+| Data transmission | `RDBI` 0x22, `RMBA` 0x23, `RSDBI` 0x24, `RDBPI` 0x2A, `DDDI_DefineById` / `DDDI_DefineByAddress` / `DDDI_Clear` 0x2C, `WDBI` 0x2E, `WMBA` 0x3D |
+| Stored data transmission | `CDTCI` 0x14, `RDTCI` 0x19 |
+| Input/output control | `IOCBI` 0x2F |
+| Remote activation of routine | `RC` 0x31 |
+| Upload/download | `RD` 0x34, `RU` 0x35, `TD` 0x36, `RTE` 0x37, `RFT` 0x38 |
+| Helpers | `UDS("22 F1 90")` (any request), `SecurityUnlock(level, compute_key)`, `ReadDTCs(mask)`, `StartRoutine` / `StopRoutine` / `RoutineResults`, `UdsLog(True)` |
+
+An ECU answering *busyRepeatRequest* (NRC 0x21) is asked again, three times at most.
 
 **Deprecated.** The first script API is still there, so existing scripts keep working, but the Form Designer's completion no longer offers it and its docstrings name the replacement:
 
@@ -166,7 +223,7 @@ The connection already schedules TesterPresent; database scripts do not need to 
 
 ## Firmware flashing
 
-While connected, a **Flashing** button appears in the toolbar (the Form Designer's **Test panel...** window has a **Flashing...** button with the same dialog and both ways, against the simulated ECU). There are two ways to flash, and the dialog offers whichever are available: the built-in ISO 14229 sequence, which needs nothing but a connection, and the database script's own function, offered when the script defines:
+While a database is connected and its ECU answers, a **Reflash** button appears in the toolbar, and refreshes the database before it flashes (see *Read and Write* under *Panel scripts*); without a database, the **Flashing** button flashes with the built-in sequence over the ECU check of the chosen channel, to the ECU of the configuration the check uses. The Form Designer's **Test panel...** window has a **Flashing...** button with the same dialog and both ways, against the simulated ECU. The dialog names the ECU - the configuration and its request and response identifiers. There are two ways to flash, and the dialog offers whichever are available: the built-in ISO 14229 sequence, which needs nothing but a connection, and the database script's own function, offered when the script defines:
 
 ```python
 def Flashing(api, firmware):
@@ -181,7 +238,7 @@ Clicking it asks which Motorola S-record (`.s19`, `.s28`, `.s37`, `.srec`, `.mot
 - `api.flash_cancelled` becomes true when the user presses Cancel; the script decides where it is safe to stop.
 - Returning `False` or raising an exception reports failure with that message; anything else reports success.
 
-`examples/firmware/demo_app.s19` and `demo_app.hex` are the same two-segment test image (2 KB at 0x00010000, 64 bytes at 0x00020000). To try flashing without a vehicle: open `examples/example_2026-09-18.xml` (or the showcase) in the Form Designer, click **Test panel...** and then **Flashing...**; or connect the main window to `dummy_ecu.py` with the **Dummy ECU** configuration, click **Flashing** and pick either file (the Dummy ECU window's **Save memory as S-record...** gives the received image back). The Dummy ECU window's Flashing tab sets what the simulated bootloader accepts: TransferData size (maxNumberOfBlockLength), data and address/length formats, memory ranges, full blocks, routine IDs and erase time.
+`examples/firmware/demo_app.s19` and `demo_app.hex` are the same two-segment test image (2 KB at 0x00010000, 64 bytes at 0x00020000). To try flashing without a vehicle: open `examples/example_2026-09-18.xml` (or the showcase) in the Form Designer, click **Test panel...** and then **Flashing...**; or connect the main window to `dummy_ecu.py` with the **Dummy ECU** configuration, click **Reflash** and pick either file (the Dummy ECU window's **Save memory as S-record...** gives the received image back). The Dummy ECU window's Flashing tab sets what the simulated bootloader accepts: TransferData size (maxNumberOfBlockLength), data and address/length formats, memory ranges, full blocks, routine IDs and erase time.
 
 ### The built-in sequence
 
@@ -217,7 +274,7 @@ DBC bindings use `Message.Signal`. Relative DBC paths resolve against the XML di
 
 The designer offers 20 controls (input, display and decoration categories), multi-select (Ctrl+click or a rubber band), align/same size/distribute relative to the last-selected control, a 10 px grid with snap, a resize handle, bring to front/send to back (saved as document order, so group boxes stay behind their contents), copy/cut/paste/duplicate, arrow-key nudging, undo/redo (Ctrl+Z / Ctrl+Y), every control moved by holding the left button (a read-only one too), Find / Find and replace / Go to line with line numbers in the script and the variables (Ctrl+F, Ctrl+H, F3, Ctrl+G), and DBC signal drag-and-drop (a display, or with Ctrl an input; value tables become indicators or combo boxes). **Test panel...** runs the unsaved form and script against the simulated ECU on a private virtual bus. On a running panel, an I/O box's value is selected and copied - a read-only one's too, kept selected as the value changes.
 
-Example panels and scripts live under `examples/`; `showcase_2026-09-18` uses every control with `DBC/dummy_ecu.dbc`. Copy them to `Databases/` and select family `example` to try them. They do not replace existing user databases automatically.
+Example panels and scripts live under `examples/`; `showcase_2026-09-18` uses every control with `DBC/dummy_ecu.dbc`, and its ECU information page reads what the Dummy ECU tells over UDS (identification DIDs, session, uptime, live values by DID, the fault memory) - at Connect, with its Read all button and with the toolbar's Read (`Read(api)`). Copy them to `Databases/` and select family `example` to try them. They do not replace existing user databases automatically.
 
 ## Verification and limits
 

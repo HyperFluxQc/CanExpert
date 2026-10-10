@@ -1,7 +1,7 @@
 """
 CAN Expert main window: configurations, CAN receivers with their ECU nodes, Connect/Disconnect (load
-the newest matching panel database, send periodic TesterPresent, run the panel's Python script),
-Flashing, the tool windows and the logs.
+the newest matching panel database, send periodic TesterPresent, run the panel's Python script), the
+database's Read, Write and Reflash, Flashing without a database, the tool windows and the logs.
 """
 import json
 import re
@@ -42,6 +42,7 @@ from canexpert.config import (
     ConfigurationDialog,
     read_configurations,
     save_configuration,
+    uds_transport,
     validate_config,
 )
 from canexpert.clock import TIME_DISPLAYS, MeasurementClock, absolute_text
@@ -71,20 +72,38 @@ MANUAL_ICON = ('<circle cx="12" cy="12" r="9"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5
                '<path d="M12 17.4h.01" stroke-width="2.2"/>')
 TIME_DISPLAY = "time_display"       # settings: Absolute or Relative, for the Write window and the console
 TOOLBAR_HIDDEN = "toolbar/hidden"    # settings: the toolbar buttons unticked (a JSON list)
+# The Write window - the script's output and its variables, for writing scripts - starts without a button on
+# the toolbar: Tools > Write and Ctrl+7 open it, and View > Toolbar buttons puts the button back.
+HIDDEN_AT_FIRST = ("write",)
 PANEL_ZOOM = "panel_zoom"           # settings: panel_zoom/<database>/<page> -> the page's zoom
 FLASH_PROFILE = "flash_profile"    # settings: the built-in flashing sequence, as JSON
 FRAME_HISTORY = 20000              # frames kept so a window opened later can still show them
 ALL_TOOL_PANES = ("trace", "logger", "data", "statistics", "transmit", "console",
-                  "write", "tests", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
+                  "write", "j1939", "sysvars")   # the windows with a switch on the toolbar, when their feature is on
 # Keys of the main window, which also work in its floating windows. F5 and the letters are left to the
 # panel scripts' @on_key.
 SHORTCUTS = {"connect": "F9", "disconnect": "Shift+F9", "kill": "Ctrl+F9", "trace": "Ctrl+1", "logger": "Ctrl+2", "data": "Ctrl+3",
              "statistics": "Ctrl+4", "transmit": "Ctrl+5", "console": "Ctrl+6", "write": "Ctrl+7",
-             "tests": "Ctrl+8", "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
+             "j1939": "Ctrl+9", "sysvars": "Ctrl+0", "designer": "Ctrl+E"}
+# The database's commands beside Kill CAN, as the View menu's Toolbar buttons names them: shown once the
+# connected database's ECU answers, greyed while it does not, gone with the database (_update_database_buttons).
+DATABASE_LABELS = {"ecu_read": "Read (database)", "ecu_write": "Write (database)", "reflash": "Reflash (database)"}
+_REFRESHED = ("The database is refreshed first: a newer one of its family, or the one loaded changed since, "
+              "takes its place.\nShown once the ECU answers; greyed while it does not answer, or while one of these "
+              "runs")
+DATABASE_HINTS = {
+    "ecu_read": f"Read: the database script's Read(api).\n{_REFRESHED}",
+    "ecu_write": f"Write: the database script's Write(api).\n{_REFRESHED}",
+    "reflash": "Reflash the ECU over the database: with its script's Flashing(api, firmware) or the built-in "
+               f"sequence.\n{_REFRESHED}",
+}
+FLASHING_HINT = ("Flash ECU firmware without a database: the built-in sequence, over the ECU check of the chosen "
+                 "interface\n(double-click it in CAN Channels), to the ECU of the configuration it checks with.\n"
+                 "With a database connected, Reflash flashes instead")
 # The manual's section for each tool window, for F1.
 HELP_SECTIONS = {"trace": "Trace window", "logger": "CAN Logger", "data": "Data window", "statistics": "Statistics",
                  "transmit": "Transmit window", "console": "UDS Console", "write": "Writing panel scripts",
-                 "tests": "Test modules", "j1939": "J1939", "sysvars": "Writing panel scripts"}
+                 "j1939": "J1939", "sysvars": "Writing panel scripts"}
 
 
 def tool_panes() -> tuple:
@@ -121,6 +140,14 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         self.flash_dialog = None
         self.flash_runner = None   # the built-in flashing sequence while it runs
         self.script_flash = False  # whether the panel script offers a Flashing(api, firmware)
+        # Read, Write and Reflash (_update_database_buttons): whether the connected database's ECU has answered,
+        # the script's Read() or Write() running, those it defines, the version of the database loaded
+        # (refresh_database), and what the buttons show now.
+        self._ecu_seen = False
+        self._function_running = None
+        self._script_functions = frozenset()
+        self._database_version = None
+        self._database_buttons = None
         self._auto_minimized = []  # dock title bars minimized on connect, restored on disconnect
         self._left_split = None    # Configuration / CAN Channels heights before they were minimized
         self.panel = None
@@ -197,7 +224,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         toolbar = QToolBar("Main actions", self)
         toolbar.setMovable(False)
         # Right-click it (or View > Toolbar buttons) to choose the buttons it shows.
-        self.toolbar_buttons = ToolbarButtons(toolbar, self._settings, TOOLBAR_HIDDEN)
+        self.toolbar_buttons = ToolbarButtons(toolbar, self._settings, TOOLBAR_HIDDEN, HIDDEN_AT_FIRST)
         toolbar.setIconSize(QSize(28, 28))
         toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         # A checked button keeps a pressed-in background with an accent line: a style sheet that names
@@ -219,9 +246,12 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
              self.disconnect_database),
             ("kill", "Kill CAN", "Kill switch: CAN Expert off the bus at once - nothing is sent or received until "
              "it is pressed again.\nThe database stays loaded and its script goes on; TesterPresent and the "
-             "Transmit window's messages wait;\na reflash, a test run, a scan and the ECU check stop. Pressed "
+             "Transmit window's messages wait;\na reflash, a scan and the ECU check stop. Pressed "
              "again, the rest goes on where it was.\nFor another tool, or another tester, to have the bus to "
              "itself", self.set_offline),
+            ("ecu_read", "Read", DATABASE_HINTS["ecu_read"], lambda: self.database_function("Read")),
+            ("ecu_write", "Write", DATABASE_HINTS["ecu_write"], lambda: self.database_function("Write")),
+            ("reflash", "Reflash", DATABASE_HINTS["reflash"], self.open_reflash),
             ("trace", "Trace", "Every frame of the measurement, decoded with the symbol databases",
              self.open_trace),
             ("logger", "CAN Logger", "Plot and export CAN signals", self.open_can_logger),
@@ -235,19 +265,16 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
              "memory",
              self.open_uds_console),
             ("write", "Write", "What the panel script writes, and its variables as it runs", self.open_write),
-            ("tests", "Test", "Run a test module's test cases against the bus, with a verdict per step and an HTML "
-             "and JUnit report", self.open_tests),
             ("j1939", "J1939", "J1939 networks: the nodes and their NAMEs, their faults (DM1, DM2, clear), and any "
              "PGN requested or sent", self.open_j1939),
             ("sysvars", "System Variables", "Values shared by the script, the windows and you", self.open_sysvars),
             ("designer", "Form Designer", "Design panels and edit their Python scripts", self.open_form_designer),
-            ("flashing", "Flashing", "Flash ECU firmware with the built-in sequence or the script's Flashing()",
-             self.open_flashing),
+            ("flashing", "Flashing", FLASHING_HINT, self.open_flashing),
         ]
         entries = [entry for entry in entries if entry[0] not in ALL_TOOL_PANES or entry[0] in self.tool_names]
         for name, label, hint, callback in entries:
-            if name == "trace":
-                toolbar.addSeparator()
+            if name in ("ecu_read", "trace"):
+                toolbar.addSeparator()               # the database's commands, then the tool windows
             action = QAction(toolbar_icon(name), label, self)
             if name in self.tool_names:
                 # A tool button works as a switch: it stays pressed while its pane is open, pressing it
@@ -271,14 +298,13 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             button.setIconSize(QSize(28, 28))
             button.setMinimumSize(88, 66)
-            button.setAccessibleName(label)
+            button.setAccessibleName(DATABASE_LABELS.get(name, label))
             toolbar_item = toolbar.addWidget(button)
             self._toolbar_actions[name] = action
-            self.toolbar_buttons.add(name, label, toolbar_item)
-            if name == "flashing":
-                # Shown only while connected to a database.
-                self.flashing_toolbar_item = toolbar_item
-                self.toolbar_buttons.set_available("flashing", False)
+            # The database's Write is not the Write window's: the View menu's ticks say which is which.
+            self.toolbar_buttons.add(name, DATABASE_LABELS.get(name, label), toolbar_item)
+            if name in DATABASE_LABELS:
+                self.toolbar_buttons.set_available(name, False)     # until a database's ECU answers
             if name == "connect":
                 self.connect_btn = button
             elif name == "disconnect":
@@ -784,13 +810,41 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
     # --- Flashing ---
 
     def _set_flashing_available(self, available):
-        """Whether the panel script offers a Flashing(); flashing itself needs only a connection."""
-        self.script_flash = available
-        action = self._toolbar_actions["flashing"]
-        action.setEnabled(self.active_session() is not None and self.flash_dialog is None)
-        action.setToolTip("Flash ECU firmware with the database script's Flashing()" if available else
-                          "Flash ECU firmware with the built-in sequence\n"
-                          "(the database script does not define Flashing(api, firmware))")
+        """Whether the panel script offers a Flashing() - Reflash's first choice; the built-in sequence needs none."""
+        self.script_flash = bool(available)
+        missing = not available and self.script_runtime is not None
+        self._toolbar_actions["reflash"].setToolTip(DATABASE_HINTS["reflash"] + (
+            "\n(the database script does not define Flashing(api, firmware): the built-in sequence flashes)"
+            if missing else ""))
+
+    def _set_database_functions(self, names):
+        """The script's Read() and Write(), as far as it defines them - said on their buttons. A button whose
+        function is missing still works: the database is refreshed first, and a newer one may have it."""
+        self._script_functions = frozenset(names)
+        for key, function in (("ecu_read", "Read"), ("ecu_write", "Write")):
+            missing = function not in self._script_functions and self.script_runtime is not None
+            self._toolbar_actions[key].setToolTip(DATABASE_HINTS[key] + (
+                f"\n(the database script does not define {function}(api))" if missing else ""))
+
+    def _update_database_buttons(self):
+        """Read, Write and Reflash appear once the database is connected and its ECU has answered; they grey out
+        while the ECU does not answer - lost, or off the bus with Kill CAN - and while one of them, or any
+        flashing, runs; they go when the database is closed. Flashing, without a database, is there while none
+        is connected, and works over the ECU check of the chosen interface."""
+        connected = self.active_session() is not None and self.app_database is not None
+        answering = connected and self._session_ecu_responding()
+        self._ecu_seen = self._ecu_seen or answering
+        busy = self.flash_dialog is not None or self._function_running is not None
+        state = (connected and self._ecu_seen, answering and not busy, not connected,
+                 self.monitor_session() is not None and not busy)
+        if state == self._database_buttons:
+            return
+        self._database_buttons = shown, usable, standalone, flashable = state
+        for name in DATABASE_LABELS:
+            self.toolbar_buttons.set_available(name, shown)
+            self._toolbar_actions[name].setEnabled(usable)
+        self.toolbar_buttons.set_available("flashing", standalone)
+        self._toolbar_actions["flashing"].setEnabled(flashable)
 
     def flash_profile(self):
         """The built-in sequence's settings, as they were last left."""
@@ -800,33 +854,56 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
             return FlashProfile()
 
     def open_flashing(self):
-        """Choose a firmware file, then flash it with the script's Flashing() or the built-in sequence."""
-        if self.active_session() is None:
+        """Flashing without a database: a firmware file chosen and flashed with the built-in sequence over the ECU
+        check of the chosen interface, to the ECU of the configuration it checks with. With a database
+        connected, Reflash flashes."""
+        if self.active_session() is not None or self.monitor_session() is None or self.flash_dialog is not None:
             return
+        self._flash_chosen_firmware(self.monitor_session, script_available=None)
+
+    def open_reflash(self):
+        """Reflash: the database refreshed (refresh_database), then a firmware file chosen and flashed over the
+        session - with the script's Flashing() or the built-in sequence, as the dialog says."""
+        if self.active_session() is None or self.flash_dialog is not None or self._function_running:
+            return
+        if self.refresh_database():
+            self._flash_chosen_firmware(self.active_session, script_available=self.script_flash)
+
+    def _flash_chosen_firmware(self, session, script_available):
+        """Choose a firmware file, then flash it with the script's Flashing() or the built-in sequence over
+        session() - (bus, worker, configuration). script_available None: no database, the built-in sequence.
+        The dialog names the ECU: the configuration and the identifiers the flashing goes to."""
         settings = app_settings()
         firmware = choose_firmware(self, settings.value("last_firmware_dir", str(APP_DIR), type=str))
-        if firmware is None:
+        if firmware is None or session() is None:
             return
         settings.setValue("last_firmware_dir", str(Path(firmware.path).parent))
-        dialog = FlashDialog(firmware, self.flash_profile(), script_available=self.script_flash, parent=self)
+        config = session()[2]
+        transport = uds_transport(config)
+        target = (f"the ECU of \"{config.get('name', '')}\" (request 0x{transport['request_id']:X}, "
+                  f"response 0x{transport['response_id']:X})")
+        dialog = FlashDialog(firmware, self.flash_profile(), script_available=script_available, parent=self,
+                             target=target)
         if dialog.exec_() != QDialog.Accepted:
             return
         self._settings.setValue(FLASH_PROFILE, json.dumps(dialog.profile.to_dict()))
         if dialog.use_script():
             self.start_flashing(firmware)
         else:
-            self.start_built_in_flash(firmware, dialog.profile)
+            self.start_built_in_flash(firmware, dialog.profile, session)
 
-    def start_built_in_flash(self, firmware, profile):
-        """Flash without a panel script: the ISO 14229 sequence the profile describes, on its own thread."""
-        if self.active_session() is None or self.flash_dialog is not None:
+    def start_built_in_flash(self, firmware, profile, session=None):
+        """Flash without a panel script: the ISO 14229 sequence the profile describes, on its own thread - over the
+        database session, or over session() when given (monitor_session: the ECU check, without a database)."""
+        session = session or self.active_session
+        if session() is None or self.flash_dialog is not None:
             return
-        self.flash_runner = FlashRunner(self.active_session, self)
+        self.flash_runner = FlashRunner(session, self)
         self.flash_runner.logged.connect(self.log_verbose)
         self.flash_runner.progress.connect(self._on_flash_progress)
         self.flash_runner.finished.connect(self._on_flash_finished)
-        self._toolbar_actions["flashing"].setEnabled(False)
         self.flash_dialog = progress_dialog(self, firmware, self.flash_runner.cancel)
+        self._update_database_buttons()
         self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in "
                          f"{len(firmware.segments)} segment(s), built-in sequence - no TesterPresent until it is over")
         if not self.flash_runner.start(firmware, profile):
@@ -835,8 +912,8 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
     def start_flashing(self, firmware):
         if self.script_runtime is None:
             return
-        self._toolbar_actions["flashing"].setEnabled(False)
         self.flash_dialog = progress_dialog(self, firmware, self.script_runtime.cancel_flash)
+        self._update_database_buttons()
         self.log_verbose(f"Flashing {firmware.path}: {firmware.size} bytes in {len(firmware.segments)} segment(s) "
                          "- no TesterPresent until it is over")
         self.script_runtime.start_flash(firmware)
@@ -851,7 +928,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
     def _on_flash_finished(self, ok, text):
         self._close_flash_dialog()
         self.flash_runner = None
-        self._set_flashing_available(self.script_flash)
+        self._update_database_buttons()
         self.log_verbose(f"Flashing {'succeeded' if ok else 'failed'}: {text}")
         self._set_status(f"Flashing {'complete' if ok else 'failed'}", "green" if ok else "red")
         report_result(self, ok, text)
@@ -893,6 +970,7 @@ class MainWindow(ToolWindows, Layouts, Channels, Session, QMainWindow):
         family = re.sub(r"_\d{4}-\d{2}-\d{2}$", "", Path(app_db.get("source_path") or "panel").stem)
         self.panel = PanelView(app_db, self.send_can_message, self.log_verbose, tabs=False,
                                zooms=self._page_zooms(family))
+        self.panel.control_changed.connect(self._panel_input)     # to the script running then
         self.app_db_layout.addWidget(self.panel)              # the description, when the database has one
         self.panel.setVisible(bool(self.panel.description))
         for index, (name, window) in enumerate(self.panel.page_windows):

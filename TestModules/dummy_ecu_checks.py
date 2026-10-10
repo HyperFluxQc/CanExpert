@@ -1,7 +1,7 @@
 """Dummy ECU checks
 
 An example test module: run it against the Dummy ECU (python dummy_ecu.py) with the default configuration
-(request 7E0, response 7E8). Tools -> Test opens it; tick the test cases and press Run.
+(request 7E0, response 7E8). TestExpert runs it: Add... it on the Modules tab, tick its test cases and run.
 
 Every test case gets t: t.check(...) records a step that passes or fails and goes on, t.require(...) ends
 the test case when it fails, t.expect_nrc(...) wants a negative response. The UDS functions are the ones the

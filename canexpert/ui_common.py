@@ -32,6 +32,16 @@ def app_settings() -> QSettings:
     return QSettings(ORGANIZATION, APPLICATION)
 
 
+class MemorySettings(dict):
+    """Settings kept in memory, where no QSettings is given (TestExpert's smoke test, a module's symbols)."""
+
+    def value(self, key, default=None, type=None):
+        return self.get(key, default)
+
+    def setValue(self, key, value):
+        self[key] = value
+
+
 def is_dark_theme(widget) -> bool:
     """Dark theme when the window colour is darker than the text on it. Read from the palette in use, so a
     window follows a theme change while it is open."""
@@ -79,22 +89,34 @@ def fit_new_window(window, anchor=None):
 
 class ToolbarButtons:
     """Which buttons a toolbar shows: every one unless it was unticked - right-click the toolbar, or the window's
-    View menu - and kept so in the settings (key: a JSON list of the hidden ones). A window can also take a button
-    away for a while (set_available: Flashing while nothing is connected); it shows again only if it is ticked.
+    View menu - and kept so in the settings (key: a JSON list of the hidden ones). hidden_at_first: buttons that
+    start unticked. Each is unticked once - also where the settings already hold a choice of buttons - and from
+    then on stays as it is left (key_at_first: the ones unticked so far). A window can also take a button away
+    for a while (set_available: Reflash until a database's ECU answers); it shows again only if it is ticked.
     Separators with nothing shown on one side go too. A hidden button's action still works from the menus and
     its key."""
 
-    def __init__(self, toolbar, settings, key):
+    def __init__(self, toolbar, settings, key, hidden_at_first=()):
         self.toolbar, self.settings, self.key = toolbar, settings, key
         self.items = {}                         # name -> (label, the toolbar's action for the button)
         self.available = {}
-        try:
-            hidden = json.loads(str(settings.value(key, "") or "[]"))
-            self.hidden = {str(name) for name in hidden} if isinstance(hidden, list) else set()
-        except ValueError:
-            self.hidden = set()
+        self.hidden = self._names(key)
+        done = self._names(f"{key}_at_first")
+        first = set(hidden_at_first) - done
+        if first:
+            self.hidden |= first
+            settings.setValue(key, json.dumps(sorted(self.hidden)))
+            settings.setValue(f"{key}_at_first", json.dumps(sorted(done | first)))
         toolbar.setContextMenuPolicy(Qt.CustomContextMenu)
         toolbar.customContextMenuRequested.connect(lambda pos: self.menu().exec_(toolbar.mapToGlobal(pos)))
+
+    def _names(self, key) -> set:
+        """The names a setting holds as a JSON list; none when it holds nothing, or something else."""
+        try:
+            names = json.loads(str(self.settings.value(key, "") or "[]"))
+        except ValueError:
+            return set()
+        return {str(name) for name in names} if isinstance(names, list) else set()
 
     def add(self, name, label, item):
         """A button of the toolbar: item is what QToolBar.addWidget() returned for it."""
@@ -175,6 +197,13 @@ _PATHS = {
     "flashing": '<path d="M12 3v8m-3.5-3.5L12 11l3.5-3.5"/>'
                 '<rect x="5" y="14" width="14" height="7" rx="1.5"/>'
                 '<path d="M8 21v2m4-2v2m4-2v2M9 17.5h6"/>',
+    # The database's Read, Write and Reflash: an arrow out of the ECU, one into it, and the ECU flashed again.
+    "ecu_read": '<rect x="3" y="6" width="9" height="12" rx="1.5"/><path d="M1 10h2M1 14h2M6 4v2M9 4v2M6 18v2M9 18v2"/>'
+                '<path d="M14.5 12H22m-3-3 3 3-3 3"/>',
+    "ecu_write": '<rect x="12" y="6" width="9" height="12" rx="1.5"/><path d="M21 10h2M21 14h2M15 4v2M18 4v2M15 18v2'
+                 'M18 18v2"/><path d="M1.5 12H9m-3-3 3 3-3 3"/>',
+    "reflash": '<path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 3v4h-4"/>'
+               '<rect x="9" y="9" width="6" height="6" rx="1"/><path d="M11 7.5V9m2-1.5V9m-2 6v1.5m2-1.5v1.5"/>',
     "trace": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 13h10M7 16.5h6"/>',
     "transmit": '<path d="M12 3v10"/><path d="M8.5 6.5 12 3l3.5 3.5"/>'
                 '<path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/>',
@@ -184,8 +213,6 @@ _PATHS = {
                   '<rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>',
     "write": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6.5 9h7M6.5 12.5h5M6.5 16h3"/>'
              '<path d="m14 17 1-3 4.5-4.5 2 2L17 16l-3 1z"/>',
-    "tests": '<rect x="4" y="3" width="16" height="18" rx="2"/>'
-             '<path d="m7.5 8.5 1.5 1.5 3-3M14 9h3M7.5 15.5 9 17l3-3M14 16h3"/>',
     "j1939": '<rect x="2" y="6" width="12" height="10" rx="1"/><path d="M14 10h4l3 3.5V16h-7z"/>'
              '<circle cx="6.5" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/><path d="M5 11h6"/>',
     "sysvars": '<path d="M7 5c-2 0-2 2-2 3.5S4 11 3 12c1 1 2 1.5 2 3.5S5 19 7 19"/>'
@@ -215,13 +242,15 @@ _COLORS = {
     "logger": ("#1566ae", "#7ac4ff"),
     "diagnostics": ("#a6600b", "#f6c16b"),
     "flashing": ("#b42318", "#ff9c8a"),
+    "ecu_read": ("#0369a1", "#7dd3fc"),
+    "ecu_write": ("#c2410c", "#fdba74"),
+    "reflash": ("#be123c", "#fda4af"),
     "trace": ("#1f6feb", "#8ab4ff"),
     "transmit": ("#b45309", "#fbbf24"),
     "console": ("#7c3aed", "#c4b5fd"),
     "data": ("#2563eb", "#93c5fd"),
     "statistics": ("#0e7490", "#67e8f9"),
     "write": ("#4b5563", "#d1d5db"),
-    "tests": ("#047857", "#6ee7b7"),
     "j1939": ("#9a3412", "#fdba74"),
     "sysvars": ("#9d174d", "#f9a8d4"),
     "open": ("#b45309", "#fbbf24"),
